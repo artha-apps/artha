@@ -1,9 +1,8 @@
-import { useEffect } from 'react';
 import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench } from 'lucide-react';
-import { useChatStore } from '../../stores/chat';
+import { useChatStore, ActiveView } from '../../stores/chat';
 
 export default function Sidebar() {
-  const { sessions, activeSessionId, setActiveSession, setMessages, setSessions } = useChatStore();
+  const { sessions, activeSessionId, setActiveSession, setMessages, setSessions, activeView, setActiveView } = useChatStore();
 
   const newChat = async () => {
     const session = await window.artha.sessions.create();
@@ -11,13 +10,22 @@ export default function Sidebar() {
     setSessions(updated);
     setActiveSession(session.session_id);
     setMessages([]);
+    setActiveView('chat');
   };
 
   const openSession = async (id: string) => {
+    setActiveView('chat');
     setActiveSession(id);
     const msgs = await window.artha.sessions.getMessages(id);
     setMessages(msgs);
   };
+
+  const navItems: { icon: React.ElementType; label: string; view: ActiveView }[] = [
+    { icon: Cpu,          label: 'Models',    view: 'models'   },
+    { icon: Wrench,       label: 'MCP Tools', view: 'mcp'      },
+    { icon: FolderSearch, label: 'RAG Index', view: 'rag'      },
+    { icon: Settings,     label: 'Settings',  view: 'settings' },
+  ];
 
   return (
     <aside className="flex flex-col w-56 bg-artha-s2 border-r border-artha-border pt-10 shrink-0">
@@ -34,7 +42,7 @@ export default function Sidebar() {
         {sessions.map(s => (
           <button key={s.session_id} onClick={() => openSession(s.session_id)}
             className={`no-drag flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-left transition-colors truncate
-              ${s.session_id === activeSessionId
+              ${s.session_id === activeSessionId && activeView === 'chat'
                 ? 'bg-artha-accent/25 text-white'
                 : 'text-artha-muted hover:bg-white/5 hover:text-white'}`}>
             <MessageSquare size={13} className="shrink-0" />
@@ -45,14 +53,13 @@ export default function Sidebar() {
 
       {/* Bottom nav */}
       <nav className="border-t border-artha-border p-3 space-y-1">
-        {[
-          { icon: Cpu,          label: 'Models'    },
-          { icon: Wrench,       label: 'MCP Tools' },
-          { icon: FolderSearch, label: 'RAG Index' },
-          { icon: Settings,     label: 'Settings'  },
-        ].map(({ icon: Icon, label }) => (
+        {navItems.map(({ icon: Icon, label, view }) => (
           <button key={label}
-            className="no-drag flex items-center gap-2 w-full px-3 py-2 rounded-lg text-artha-muted hover:bg-white/5 hover:text-white text-sm transition-colors">
+            onClick={() => setActiveView(view)}
+            className={`no-drag flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm transition-colors
+              ${activeView === view
+                ? 'bg-artha-accent/20 text-white'
+                : 'text-artha-muted hover:bg-white/5 hover:text-white'}`}>
             <Icon size={14} /> {label}
           </button>
         ))}

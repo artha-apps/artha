@@ -83,10 +83,25 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return res.ok;
   });
 
-  ipcMain.handle('llm:setActiveModel', (_e, modelId: string) => {
+  ipcMain.handle('llm:getActiveModel', () => {
     const db = getDb();
+    const row = db.prepare(`SELECT ollama_name FROM llm_models WHERE is_active=1 LIMIT 1`).get() as { ollama_name: string } | undefined;
+    return row?.ollama_name ?? null;
+  });
+
+  ipcMain.handle('llm:setActiveModel', (_e, modelName: string) => {
+    const db = getDb();
+    // Upsert by ollama_name so any model from the Ollama list can be activated
+    const existing = db.prepare(`SELECT model_id FROM llm_models WHERE ollama_name=?`).get(modelName) as { model_id: string } | undefined;
     db.prepare(`UPDATE llm_models SET is_active=0`).run();
-    db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(modelId);
+    if (existing) {
+      db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(existing.model_id);
+    } else {
+      const id = crypto.randomUUID();
+      db.prepare(`INSERT INTO llm_models (model_id, name, ollama_name, base_url, api_key, is_active) VALUES (?,?,?,?,?,1)`)
+        .run(id, modelName, modelName, 'http://localhost:11434/v1', 'ollama');
+    }
+    return true;
   });
 
   // ── MCP ────────────────────────────────────────────────────────────────

@@ -35,6 +35,8 @@ export interface Session {
   last_activity: number;
 }
 
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'rag' | 'settings';
+
 interface ChatState {
   sessions: Session[];
   activeSessionId: string | null;
@@ -43,6 +45,7 @@ interface ChatState {
   isStreaming: boolean;
   executionLog: ToolCallEvent[];
   pendingPlan: AgentPlan | null;
+  activeView: ActiveView;
 
   // Actions
   setSessions: (s: Session[]) => void;
@@ -53,6 +56,7 @@ interface ChatState {
   finaliseStream: () => void;
   addToolEvent: (ev: ToolCallEvent) => void;
   setPendingPlan: (plan: AgentPlan | null) => void;
+  setActiveView: (view: ActiveView) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -63,6 +67,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   executionLog: [],
   pendingPlan: null,
+  activeView: 'chat',
 
   setSessions: (sessions) => set({ sessions }),
   setActiveSession: (id) => set({ activeSessionId: id, messages: [], streamingContent: '', executionLog: [] }),
@@ -96,4 +101,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({ executionLog: [...s.executionLog, ev] })),
 
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
+  setActiveView: (view) => set({ activeView: view }),
 }));

@@ -8,6 +8,7 @@ import Sidebar from './components/Sidebar/Sidebar';
 import ChatWindow from './components/Chat/ChatWindow';
 import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
+import ModelsPanel from './components/Settings/ModelsPanel';
 
 declare global {
   interface Window {
@@ -16,7 +17,7 @@ declare global {
 }
 
 export default function App() {
-  const { appendToken, finaliseStream, addToolEvent, setPendingPlan, setSessions } = useChatStore();
+  const { appendToken, finaliseStream, addToolEvent, setPendingPlan, setSessions, activeView } = useChatStore();
 
   useEffect(() => {
     // Wire IPC → store
@@ -48,8 +49,28 @@ export default function App() {
       <Sidebar />
 
       <main className="flex flex-1 overflow-hidden pt-8">
-        <ChatWindow />
-        <ExecutionLog />
+        {activeView === 'chat' && (
+          <>
+            <ChatWindow />
+            <ExecutionLog />
+          </>
+        )}
+        {activeView === 'models' && <ModelsPanel />}
+        {activeView === 'mcp' && (
+          <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
+            MCP Tools — coming soon
+          </div>
+        )}
+        {activeView === 'rag' && (
+          <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
+            RAG Index — coming soon
+          </div>
+        )}
+        {activeView === 'settings' && (
+          <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
+            Settings — coming soon
+          </div>
+        )}
       </main>
 
       <PlanApproval />

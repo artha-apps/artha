@@ -41,10 +41,11 @@ const api = {
   // ── LLM / Models ────────────────────────────────────────────────────────
   llm: {
     listModels: () => ipcRenderer.invoke('llm:listModels'),
+    getActiveModel: () => ipcRenderer.invoke('llm:getActiveModel'),
     detectHardware: () => ipcRenderer.invoke('llm:detectHardware'),
     pullModel: (name: string) => ipcRenderer.invoke('llm:pullModel', name),
-    setActiveModel: (modelId: string) =>
-      ipcRenderer.invoke('llm:setActiveModel', modelId),
+    setActiveModel: (modelName: string) =>
+      ipcRenderer.invoke('llm:setActiveModel', modelName),
   },
 
   // ── MCP Tools ────────────────────────────────────────────────────────────

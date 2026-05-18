@@ -1,0 +1,214 @@
+/**
+ * ModelsPanel — browse available Ollama models, see hardware info,
+ * and set the active model with one click.
+ */
+import { useEffect, useState } from 'react';
+import { Cpu, CheckCircle2, RefreshCw, HardDrive, MemoryStick, ChevronRight } from 'lucide-react';
+
+interface OllamaModel {
+  name: string;
+  size: number; // bytes
+  modified_at?: string;
+  details?: { parameter_size?: string; quantization_level?: string; family?: string };
+}
+
+interface HardwareInfo {
+  gbRam: number;
+  recommendation: string;
+}
+
+function formatSize(bytes: number): string {
+  const gb = bytes / 1024 / 1024 / 1024;
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / 1024 / 1024).toFixed(0)} MB`;
+}
+
+function modelFamily(name: string): string {
+  const n = name.toLowerCase();
+  if (n.includes('qwen')) return 'Qwen';
+  if (n.includes('llama')) return 'Llama';
+  if (n.includes('mistral')) return 'Mistral';
+  if (n.includes('gemma')) return 'Gemma';
+  if (n.includes('phi')) return 'Phi';
+  if (n.includes('deepseek')) return 'DeepSeek';
+  if (n.includes('nomic')) return 'Nomic';
+  if (n.includes('codellama')) return 'CodeLlama';
+  return 'Model';
+}
+
+function familyColor(family: string): string {
+  const map: Record<string, string> = {
+    Qwen: 'text-blue-400 bg-blue-400/10',
+    Llama: 'text-orange-400 bg-orange-400/10',
+    Mistral: 'text-violet-400 bg-violet-400/10',
+    Gemma: 'text-teal-400 bg-teal-400/10',
+    Phi: 'text-pink-400 bg-pink-400/10',
+    DeepSeek: 'text-cyan-400 bg-cyan-400/10',
+    CodeLlama: 'text-yellow-400 bg-yellow-400/10',
+  };
+  return map[family] ?? 'text-artha-muted bg-white/5';
+}
+
+export default function ModelsPanel() {
+  const [models, setModels] = useState<OllamaModel[]>([]);
+  const [activeModel, setActiveModelState] = useState<string | null>(null);
+  const [hardware, setHardware] = useState<HardwareInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [switching, setSwitching] = useState<string | null>(null);
+  const [ollamaOnline, setOllamaOnline] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [modelList, hw, active] = await Promise.all([
+        window.artha.llm.listModels() as Promise<OllamaModel[]>,
+        window.artha.llm.detectHardware() as Promise<HardwareInfo>,
+        window.artha.llm.getActiveModel() as Promise<string | null>,
+      ]);
+      setModels(modelList);
+      setHardware(hw);
+      setActiveModelState(active);
+      setOllamaOnline(modelList.length > 0 || true); // empty list is ok
+    } catch {
+      setOllamaOnline(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const switchModel = async (name: string) => {
+    if (switching) return;
+    setSwitching(name);
+    try {
+      await window.artha.llm.setActiveModel(name);
+      setActiveModelState(name);
+    } finally {
+      setSwitching(null);
+    }
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto px-8 py-8 max-w-3xl mx-auto w-full">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-artha-accent/20 flex items-center justify-center">
+            <Cpu size={16} className="text-artha-accent" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-white">Models</h1>
+            <p className="text-xs text-artha-muted">Manage your local Ollama models</p>
+          </div>
+        </div>
+        <button onClick={load} disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors disabled:opacity-40">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Refresh
+        </button>
+      </div>
+
+      {/* Hardware card */}
+      {hardware && (
+        <div className="bg-artha-s2 border border-artha-border rounded-xl p-4 mb-6 flex items-center gap-6">
+          <div className="flex items-center gap-2">
+            <MemoryStick size={15} className="text-artha-accent" />
+            <span className="text-sm font-medium text-white">{hardware.gbRam} GB RAM</span>
+          </div>
+          <div className="w-px h-5 bg-artha-border" />
+          <div className="flex items-start gap-2 flex-1">
+            <HardDrive size={15} className="text-artha-muted mt-0.5 shrink-0" />
+            <p className="text-xs text-artha-muted leading-relaxed">
+              Recommended: <span className="text-white">{hardware.recommendation}</span>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Ollama offline warning */}
+      {!ollamaOnline && (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-sm text-red-400">
+          Ollama is not running. Start it with <code className="bg-red-500/10 px-1.5 py-0.5 rounded font-mono text-xs">ollama serve</code> then refresh.
+        </div>
+      )}
+
+      {/* Active model badge */}
+      {activeModel && (
+        <div className="mb-4 flex items-center gap-2">
+          <CheckCircle2 size={14} className="text-green-400" />
+          <span className="text-xs text-artha-muted">Active: </span>
+          <code className="text-xs text-green-400 font-mono">{activeModel}</code>
+        </div>
+      )}
+
+      {/* Model list */}
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="h-16 bg-artha-s2 border border-artha-border rounded-xl animate-pulse" />
+          ))}
+        </div>
+      ) : models.length === 0 ? (
+        <div className="text-center py-16 text-artha-muted">
+          <Cpu size={32} className="mx-auto mb-3 opacity-30" />
+          <p className="text-sm font-medium text-white mb-1">No models installed</p>
+          <p className="text-xs">Run <code className="bg-white/5 px-1.5 py-0.5 rounded font-mono">ollama pull qwen2.5:7b</code> to get started</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {models.map((model) => {
+            const family = modelFamily(model.name);
+            const isActive = model.name === activeModel;
+            const isLoading = switching === model.name;
+
+            return (
+              <button
+                key={model.name}
+                onClick={() => switchModel(model.name)}
+                disabled={isActive || !!switching}
+                className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border text-left transition-all
+                  ${isActive
+                    ? 'bg-artha-accent/10 border-artha-accent/40 cursor-default'
+                    : 'bg-artha-s2 border-artha-border hover:border-artha-accent/30 hover:bg-artha-accent/5 disabled:opacity-50 disabled:cursor-wait'
+                  }`}
+              >
+                {/* Family badge */}
+                <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-md ${familyColor(family)}`}>
+                  {family}
+                </span>
+
+                {/* Name + details */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-white truncate">{model.name}</p>
+                  {model.details?.parameter_size && (
+                    <p className="text-xs text-artha-muted mt-0.5">
+                      {model.details.parameter_size}
+                      {model.details.quantization_level && ` · ${model.details.quantization_level}`}
+                    </p>
+                  )}
+                </div>
+
+                {/* Size */}
+                <span className="text-xs text-artha-muted shrink-0">{formatSize(model.size)}</span>
+
+                {/* Status indicator */}
+                <div className="shrink-0 w-5 flex items-center justify-center">
+                  {isActive ? (
+                    <CheckCircle2 size={16} className="text-artha-accent" />
+                  ) : isLoading ? (
+                    <RefreshCw size={14} className="text-artha-muted animate-spin" />
+                  ) : (
+                    <ChevronRight size={14} className="text-artha-muted opacity-0 group-hover:opacity-100" />
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <p className="text-xs text-artha-muted text-center mt-8">
+        Pull new models via terminal: <code className="bg-white/5 px-1.5 py-0.5 rounded font-mono">ollama pull &lt;model-name&gt;</code>
+      </p>
+    </div>
+  );
+}
