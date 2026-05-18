@@ -8,13 +8,15 @@
     "packages/renderer"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w packages/renderer\" \"wait-on http://localhost:5173 && npm run dev -w packages/app\"",
+    "dev": "fuser -k 5173/tcp 2>/dev/null; concurrently --names \"vite,tsc,electron\" --prefix-colors \"cyan,yellow,magenta\" \"npm run dev -w packages/renderer\" \"npm run dev -w packages/app\" \"wait-on http://localhost:5173 && sleep 4 && NODE_ENV=development npx electron packages/app/dist/main.js\"",
+    "electron": "NODE_ENV=development npx electron packages/app/dist/main.js",
     "build": "npm run build -w packages/renderer && npm run build -w packages/app",
     "dist": "npm run build && electron-builder",
     "lint": "eslint packages/*/src --ext .ts,.tsx",
     "typecheck": "tsc -b packages/app/tsconfig.json packages/renderer/tsconfig.json"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "concurrently": "^8.2.2",
@@ -28,20 +30,47 @@
     "appId": "ai.artha.app",
     "productName": "Artha",
     "copyright": "Copyright © 2026 Artha",
-    "directories": { "output": "dist" },
-    "files": ["packages/app/dist/**/*", "packages/renderer/dist/**/*"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "packages/app/dist/**/*",
+      "packages/renderer/dist/**/*"
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
-      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }]
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
     },
     "win": {
       "icon": "assets/icon.ico",
-      "target": [{ "target": "nsis", "arch": ["x64"] }]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
     "linux": {
       "icon": "assets/icon.png",
-      "target": [{ "target": "deb", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "category": "Utility"
     }
   }

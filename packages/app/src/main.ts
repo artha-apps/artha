@@ -9,7 +9,14 @@ let mainWindow: BrowserWindow | null = null;
 
 async function createWindow(): Promise<void> {
   // Initialise local SQLite database on first launch
-  await initDatabase();
+  try {
+    await initDatabase();
+  } catch (err) {
+    console.error('[Artha] Database init failed:', err);
+    console.error('[Artha] If you see a better-sqlite3 bindings error, run:');
+    console.error('[Artha]   npx electron-rebuild -f -w better-sqlite3');
+    // Continue loading the window anyway so the UI is visible
+  }
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -24,7 +31,7 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: false,
     },
-    show: false,
+    show: true,
   });
 
   // Register all IPC handlers (agent, LLM, MCP, docs, RAG)
@@ -33,7 +40,6 @@ async function createWindow(): Promise<void> {
   // Load renderer
   if (isDev) {
     await mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools();
   } else {
     await mainWindow.loadFile(
       path.join(__dirname, '../../renderer/dist/index.html')
@@ -49,12 +55,30 @@ async function createWindow(): Promise<void> {
   });
 }
 
-app.whenReady().then(createWindow);
+// ── Single-instance lock ───────────────────────────────────────────────────
+// Prevents a second Artha window from opening if the app is already running.
+// If a second launch is attempted, focus the existing window instead.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+if (!gotSingleInstanceLock) {
+  // Another instance is already running — quit immediately
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // User tried to open a second instance — bring the existing window forward
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
+  app.whenReady().then(createWindow);
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+}
