@@ -119,8 +119,20 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return { id, name };
   });
 
+  ipcMain.handle('mcp:toggleTool', (_e, toolId: string, enabled: boolean) => {
+    getDb().prepare(`UPDATE tools SET is_enabled=? WHERE tool_id=?`).run(enabled ? 1 : 0, toolId);
+    return true;
+  });
+
   ipcMain.handle('mcp:removeServer', (_e, id: string) => {
     getDb().prepare(`DELETE FROM tools WHERE tool_id=?`).run(id);
+    return true;
+  });
+
+  ipcMain.handle('mcp:getAuditLog', (_e, limit = 200) => {
+    return getDb().prepare(
+      `SELECT * FROM tool_audit_log ORDER BY ts DESC LIMIT ?`
+    ).all(limit);
   });
 
   // ── RAG ────────────────────────────────────────────────────────────────

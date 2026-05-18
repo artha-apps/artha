@@ -111,6 +111,19 @@ export async function initDatabase(): Promise<void> {
       created_at         INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- Tool invocation audit log
+    CREATE TABLE IF NOT EXISTS tool_audit_log (
+      id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      session_id  TEXT,
+      workflow_id TEXT,
+      tool_name   TEXT NOT NULL,
+      args_json   TEXT NOT NULL DEFAULT '{}',
+      result      TEXT,
+      duration_ms INTEGER,
+      status      TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok','error')),
+      ts          INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
   `);

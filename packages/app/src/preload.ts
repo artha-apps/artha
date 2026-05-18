@@ -53,9 +53,11 @@ const api = {
     listTools: () => ipcRenderer.invoke('mcp:listTools'),
     installServer: (uri: string) =>
       ipcRenderer.invoke('mcp:installServer', uri),
+    toggleTool: (toolId: string, enabled: boolean) =>
+      ipcRenderer.invoke('mcp:toggleTool', toolId, enabled),
     removeServer: (id: string) => ipcRenderer.invoke('mcp:removeServer', id),
-    updatePermissions: (toolId: string, perms: unknown) =>
-      ipcRenderer.invoke('mcp:updatePermissions', toolId, perms),
+    getAuditLog: (limit?: number) =>
+      ipcRenderer.invoke('mcp:getAuditLog', limit),
   },
 
   // ── RAG / Indexes ────────────────────────────────────────────────────────

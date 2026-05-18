@@ -213,6 +213,8 @@ RULES — follow exactly:
           });
 
           let toolResult: string;
+          const toolStart = Date.now();
+          let toolStatus: 'ok' | 'error' = 'ok';
           try {
             toolResult = await this.registry.invokeTool(
               toolCall.function.name,
@@ -220,7 +222,23 @@ RULES — follow exactly:
             );
           } catch (err) {
             toolResult = `Error: ${err instanceof Error ? err.message : String(err)}`;
+            toolStatus = 'error';
           }
+
+          // Persist invocation to audit log (non-critical)
+          try {
+            db.prepare(`
+              INSERT INTO tool_audit_log
+                (session_id, workflow_id, tool_name, args_json, result, duration_ms, status)
+              VALUES (?,?,?,?,?,?,?)
+            `).run(
+              plan.sessionId, plan.workflowId,
+              toolCall.function.name, toolCall.function.arguments,
+              toolResult.slice(0, 500),
+              Date.now() - toolStart,
+              toolStatus
+            );
+          } catch { /* non-critical */ }
 
           messages.push({
             role: 'tool',
