@@ -203,7 +203,8 @@ RULES — follow exactly:
       });
 
       if (msg.tool_calls?.length) {
-        // Execute every tool call the model requested, feed all results back
+        // Execute every tool call the model requested, feed all results back.
+        // Any text content alongside tool calls is intermediate reasoning — discard it.
         for (const toolCall of msg.tool_calls) {
           this.emit('agent:toolCall', {
             type: 'tool_invoke',
@@ -236,8 +237,13 @@ RULES — follow exactly:
         emptyCount = 0;
         // Loop continues — let the model decide what to do next
       } else if (msg.content?.trim()) {
-        // Model produced a final text response — task is complete
-        this.emit('agent:token', msg.content);
+        // No tool calls — this is the final response. Emit it and stop.
+        // Filter out any raw JSON that leaked into the text (3B model quirk).
+        const cleaned = msg.content
+          .replace(/\{[\s\S]*?"name":\s*"fs_[^}]*\}/g, '')  // strip leaked tool JSON
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+        if (cleaned) this.emit('agent:token', cleaned);
         break;
       } else {
         // Empty response — guard against infinite loop
