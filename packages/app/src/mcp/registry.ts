@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getDb } from '../db/schema';
 import OpenAI from 'openai';
+import { FILESYSTEM_TOOL_SCHEMAS, invokeFilesystemTool, isFilesystemTool } from '../tools/filesystem';
 
 interface MCPServerConnection {
   id: string;
@@ -62,13 +63,19 @@ export class MCPRegistry {
     console.log(`[MCP] Connected: ${name} (${tools.length} tools)`);
   }
 
-  /** Get all tool schemas as OpenAI-compatible function definitions. */
+  /** Get all tool schemas — built-in tools first, then any connected MCP servers. */
   getToolSchemas(): OpenAI.ChatCompletionTool[] {
-    return Array.from(this.connections.values()).flatMap(c => c.tools);
+    const mcpTools = Array.from(this.connections.values()).flatMap(c => c.tools);
+    return [...FILESYSTEM_TOOL_SCHEMAS, ...mcpTools];
   }
 
-  /** Invoke a named tool — routes to the correct MCP server. */
+  /** Invoke a named tool — built-in tools first, then MCP servers. */
   async invokeTool(toolName: string, args: Record<string, unknown>): Promise<string> {
+    // Built-in filesystem tools
+    if (isFilesystemTool(toolName)) {
+      return invokeFilesystemTool(toolName, args);
+    }
+    // External MCP server tools
     for (const conn of this.connections.values()) {
       const hasTool = conn.tools.some(t => t.function.name === toolName);
       if (hasTool) {

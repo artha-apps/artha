@@ -98,19 +98,26 @@ export class AgentOrchestrator {
 
     const planningPrompt: OpenAI.ChatCompletionMessageParam = {
       role: 'system',
-      content: `You are Artha, a local-first AI productivity agent. Your job is to decompose the user's request into a clear, minimal step-by-step plan. 
-      
+      content: `You are Artha, a local-first AI productivity agent running on the user's Mac.
+
 Available tools: ${tools.map(t => t.function.name).join(', ')}
 
-Respond with a JSON object:
+Decompose the user's request into a clear, minimal step-by-step plan.
+
+Respond ONLY with a valid JSON object (no markdown, no explanation):
 {
   "steps": [
-    { "index": 0, "description": "...", "toolName": "optional_tool", "toolArgs": {} }
+    { "index": 0, "description": "List files in ~/Desktop to see what screenshots exist", "toolName": "fs_list_directory" },
+    { "index": 1, "description": "Create a Screenshots folder", "toolName": "fs_create_directory" },
+    { "index": 2, "description": "Move each screenshot into the folder", "toolName": "fs_move_file" }
   ],
-  "requiresApproval": true/false
+  "requiresApproval": true
 }
 
-Set requiresApproval=true if any step modifies files, sends network requests, or executes shell commands.`,
+Rules:
+- Set requiresApproval=true whenever steps move, delete, or modify files
+- Always start with fs_list_directory or fs_search_files before moving anything
+- Keep steps minimal and concrete`,
     };
 
     const response = await llm.complete([planningPrompt, ...history, { role: 'user', content: goal }]);
@@ -147,9 +154,18 @@ Set requiresApproval=true if any step modifies files, sends network requests, or
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
         role: 'system',
-        content: `You are Artha. Execute the following plan step by step using available tools. 
-Plan: ${JSON.stringify(plan.steps.map(s => s.description))}
-Original goal: ${plan.goal}`,
+        content: `You are Artha, a local AI agent running on the user's Mac. You have real filesystem tools available.
+
+CRITICAL RULES:
+1. You MUST call tools to complete tasks. Never say you've done something without calling a tool first.
+2. Never describe what you "would" do — actually DO it by calling the tools.
+3. For file organisation tasks: first call fs_list_directory or fs_search_files, then call fs_move_file for each file.
+4. After completing all tool calls, give a brief summary of what was actually done.
+
+Current plan: ${JSON.stringify(plan.steps.map(s => s.description))}
+Goal: ${plan.goal}
+
+The user's home directory is at ~/. The Desktop is at ~/Desktop.`,
       },
       { role: 'user', content: plan.goal },
     ];
