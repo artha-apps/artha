@@ -9,6 +9,7 @@ import ChatWindow from './components/Chat/ChatWindow';
 import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
 import ModelsPanel from './components/Settings/ModelsPanel';
+import MCPToolsPanel from './components/Settings/MCPToolsPanel';
 
 declare global {
   interface Window {
@@ -56,11 +57,7 @@ export default function App() {
           </>
         )}
         {activeView === 'models' && <ModelsPanel />}
-        {activeView === 'mcp' && (
-          <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
-            MCP Tools — coming soon
-          </div>
-        )}
+        {activeView === 'mcp' && <MCPToolsPanel />}
         {activeView === 'rag' && (
           <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
             RAG Index — coming soon
