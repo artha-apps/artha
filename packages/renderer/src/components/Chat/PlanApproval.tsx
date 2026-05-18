@@ -5,9 +5,10 @@ export default function PlanApproval() {
   const { pendingPlan, setPendingPlan } = useChatStore();
   if (!pendingPlan) return null;
 
-  const approve = async (approved: boolean) => {
-    await window.artha.agent.approvePlan(pendingPlan.workflowId, approved);
-    setPendingPlan(null);
+  const approve = (approved: boolean) => {
+    const plan = pendingPlan;
+    setPendingPlan(null); // Dismiss modal immediately — don't wait for execution
+    window.artha.agent.approvePlan(plan.workflowId, approved); // Fire and continue
   };
 
   return (
