@@ -7,6 +7,7 @@
  * self-correcting on failure.
  */
 import { BrowserWindow } from 'electron';
+import * as os from 'os';
 import { getActiveLLMClient } from '../llm/client';
 import { MCPRegistry } from '../mcp/registry';
 import { getDb } from '../db/schema';
@@ -147,94 +148,101 @@ Rules:
     const db = getDb();
     const llm = getActiveLLMClient();
     const tools = this.registry.getToolSchemas();
+    const homeDir = os.homedir();
 
     db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`)
       .run(plan.workflowId);
 
+    // Single-conversation ReAct loop.
+    // The model keeps calling tools until it produces a final text response.
+    // No step tracking — we let the model decide when it is done.
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
         role: 'system',
-        content: `You are Artha, a local AI agent running on the user's Mac. You have real filesystem tools available.
+        content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools.
 
-CRITICAL RULES:
-1. You MUST call tools to complete tasks. Never say you've done something without calling a tool first.
-2. Never describe what you "would" do — actually DO it by calling the tools.
-3. For file organisation tasks: first call fs_list_directory or fs_search_files, then call fs_move_file for each file.
-4. After completing all tool calls, give a brief summary of what was actually done.
+Home: ${homeDir}
+Desktop: ${homeDir}/Desktop
+Documents: ${homeDir}/Documents
+Downloads: ${homeDir}/Downloads
 
-Current plan: ${JSON.stringify(plan.steps.map(s => s.description))}
-Goal: ${plan.goal}
-
-The user's home directory is at ~/. The Desktop is at ~/Desktop.`,
+RULES — follow exactly:
+1. Use tools to do ALL work. Never claim to have done something without calling a tool.
+2. To organise files: call fs_search_files first to find them, then fs_create_directory for the folder, then fs_move_file for EVERY file — one call per file.
+3. Do NOT stop calling tools until every single file is moved. Move them all before writing anything.
+4. Destination path must include the filename, e.g. ${homeDir}/Desktop/Screenshots/Screenshot 1.png
+5. Write a short summary ONLY after all tool calls are complete.`,
       },
       { role: 'user', content: plan.goal },
     ];
 
-    let stepsDone = 0;
-    let retries = 0;
+    // Allow enough iterations to handle directories with many files (up to 50 files)
+    const MAX_ITERATIONS = 60;
+    let iterations = 0;
+    let emptyCount = 0;
 
-    while (stepsDone < plan.steps.length && stepsDone < MAX_STEPS) {
-      const step = plan.steps[stepsDone];
-      step.status = 'running';
-      this.emit('agent:toolCall', { type: 'step_start', step });
+    while (iterations < MAX_ITERATIONS) {
+      iterations++;
 
+      let response: OpenAI.ChatCompletion;
       try {
-        const response = await llm.complete(messages, tools);
-        const msg = response.choices[0]?.message;
-
-        if (!msg) break;
-
-        messages.push({ role: 'assistant', content: msg.content, tool_calls: msg.tool_calls });
-
-        // Handle tool calls
-        if (msg.tool_calls?.length) {
-          for (const toolCall of msg.tool_calls) {
-            this.emit('agent:toolCall', { type: 'tool_invoke', name: toolCall.function.name, args: toolCall.function.arguments });
-            
-            let toolResult: string;
-            try {
-              toolResult = await this.registry.invokeTool(
-                toolCall.function.name,
-                JSON.parse(toolCall.function.arguments)
-              );
-            } catch (err) {
-              toolResult = `Error: ${err instanceof Error ? err.message : String(err)}`;
-            }
-
-            messages.push({
-              role: 'tool',
-              content: toolResult,
-              tool_call_id: toolCall.id,
-            });
-
-            this.emit('agent:toolCall', { type: 'tool_result', name: toolCall.function.name, result: toolResult });
-          }
-          retries = 0;
-        } else if (msg.content) {
-          // LLM produced a text response — stream it
-          this.emit('agent:token', msg.content);
-          step.output = msg.content;
-          step.status = 'done';
-          stepsDone++;
-          retries = 0;
-        } else {
-          // Empty response — retry
-          retries++;
-          if (retries >= MAX_RETRIES) {
-            step.status = 'failed';
-            step.error = 'Max retries reached on empty response';
-            stepsDone++;
-          }
-        }
+        response = await llm.complete(messages, tools);
       } catch (err) {
-        step.status = 'failed';
-        step.error = err instanceof Error ? err.message : String(err);
-        this.emit('agent:token', `\n\n⚠️ Step ${stepsDone + 1} failed: ${step.error}. Attempting self-correction...\n`);
-        retries++;
-        if (retries >= MAX_RETRIES) {
-          stepsDone++;
-          retries = 0;
+        const msg = err instanceof Error ? err.message : String(err);
+        this.emit('agent:token', `\n\n⚠️ Error: ${msg}`);
+        break;
+      }
+
+      const msg = response.choices[0]?.message;
+      if (!msg) break;
+
+      messages.push({
+        role: 'assistant',
+        content: msg.content ?? null,
+        tool_calls: msg.tool_calls,
+      });
+
+      if (msg.tool_calls?.length) {
+        // Execute every tool call the model requested, feed all results back
+        for (const toolCall of msg.tool_calls) {
+          this.emit('agent:toolCall', {
+            type: 'tool_invoke',
+            name: toolCall.function.name,
+            args: toolCall.function.arguments,
+          });
+
+          let toolResult: string;
+          try {
+            toolResult = await this.registry.invokeTool(
+              toolCall.function.name,
+              JSON.parse(toolCall.function.arguments)
+            );
+          } catch (err) {
+            toolResult = `Error: ${err instanceof Error ? err.message : String(err)}`;
+          }
+
+          messages.push({
+            role: 'tool',
+            content: toolResult,
+            tool_call_id: toolCall.id,
+          });
+
+          this.emit('agent:toolCall', {
+            type: 'tool_result',
+            name: toolCall.function.name,
+            result: toolResult,
+          });
         }
+        emptyCount = 0;
+        // Loop continues — let the model decide what to do next
+      } else if (msg.content?.trim()) {
+        // Model produced a final text response — task is complete
+        this.emit('agent:token', msg.content);
+        break;
+      } else {
+        // Empty response — guard against infinite loop
+        emptyCount++;
+        if (emptyCount >= 3) break;
       }
     }
 
