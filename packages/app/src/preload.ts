@@ -84,6 +84,23 @@ const api = {
     setWebConfig: (patch: unknown) => ipcRenderer.invoke('settings:setWebConfig', patch),
   },
 
+  // ── Router ───────────────────────────────────────────────────────────────
+  // Adaptive per-task-type model selection. `benchmark` probes every installed
+  // Ollama model on the three canonical tasks (plan / tool_args / synthesis)
+  // and records latency + a quality heuristic; `setOverride` lets the user pin
+  // a specific model for a task type, bypassing auto-selection.
+  router: {
+    benchmark: () => ipcRenderer.invoke('router:benchmark'),
+    listProfiles: () => ipcRenderer.invoke('router:listProfiles'),
+    listOverrides: () => ipcRenderer.invoke('router:listOverrides'),
+    setOverride: (taskType: string, ollamaName: string | null) =>
+      ipcRenderer.invoke('router:setOverride', taskType, ollamaName),
+    onBenchmarkProgress: (cb: (msg: string) => void) => {
+      ipcRenderer.on('router:benchmarkProgress', (_e, m) => cb(m));
+      return () => ipcRenderer.removeAllListeners('router:benchmarkProgress');
+    },
+  },
+
   // ── Web tools (built-in) ─────────────────────────────────────────────────
   // Backed by SearXNG + Mozilla Readability. Surface for managing the on-disk
   // fetch cache shown in the Web settings panel.

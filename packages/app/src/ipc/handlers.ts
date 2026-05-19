@@ -9,6 +9,7 @@ import { AgentOrchestrator } from '../agent/orchestrator';
 import { MCPRegistry } from '../mcp/registry';
 import { RAGIndexer } from '../rag/indexer';
 import { generateDocument } from '../docs/generator';
+import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
@@ -194,6 +195,21 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
     db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify({ ...existing, ...patch }));
   });
+
+  // ── Router ──────────────────────────────────────────────────────────────
+  // Adaptive per-task-type model selection. `benchmark` probes every installed
+  // Ollama model on the three canonical tasks (plan / tool_args / synthesis)
+  // and records latency + a quality heuristic; `setOverride` lets the user pin
+  // a specific model for a task type, bypassing auto-selection.
+  ipcMain.handle('router:benchmark', async () => {
+    return runBenchmark((msg) => window.webContents.send('router:benchmarkProgress', msg));
+  });
+
+  ipcMain.handle('router:listProfiles', () => listProfiles());
+  ipcMain.handle('router:listOverrides', () => listOverrides());
+  ipcMain.handle('router:setOverride', (_e, taskType: string, ollamaName: string | null) =>
+    setOverride(taskType, ollamaName)
+  );
 
   // ── Web tools ──────────────────────────────────────────────────────────
   // Settings live inside the `web` key on the user's settings_json blob.

@@ -13,6 +13,7 @@ import MCPToolsPanel from './components/Settings/MCPToolsPanel';
 import WebPanel from './components/Settings/WebPanel';
 import BrowserPane from './components/Browser/BrowserPane';
 import { useBrowserStore } from './stores/browser';
+import RouterPanel from './components/Settings/RouterPanel';
 
 declare global {
   interface Window {
@@ -69,6 +70,7 @@ export default function App() {
         {activeView === 'models' && <ModelsPanel />}
         {activeView === 'mcp' && <MCPToolsPanel />}
         {activeView === 'web' && <WebPanel />}
+        {activeView === 'router' && <RouterPanel />}
         {activeView === 'rag' && (
           <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
             RAG Index — coming soon

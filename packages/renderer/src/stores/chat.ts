@@ -35,7 +35,7 @@ export interface Session {
   last_activity: number;
 }
 
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'web' | 'rag' | 'settings';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'web' | 'rag' | 'router' | 'settings';
 
 interface ChatState {
   sessions: Session[];

@@ -79,25 +79,56 @@ export class LLMClient {
   }
 }
 
-/** Returns an LLMClient configured from the active model in the DB. */
-export function getActiveLLMClient(): LLMClient {
+/** Canonical task types the router benchmarks and routes by. */
+export type TaskType = 'plan' | 'tool_args' | 'synthesis';
+
+/** Pick the best Ollama model for a given task, in priority order:
+ *  1. modelOverride (caller pinned a specific model — e.g. fork replay)
+ *  2. router_overrides row for this task_type (user pinned)
+ *  3. highest-quality model_profiles row for this task_type
+ *  4. fall through to whatever's in llm_models WHERE is_active=1
+ */
+function resolveModelName(modelOverride?: string, taskType?: TaskType): string | undefined {
+  if (modelOverride) return modelOverride;
+  if (!taskType) return undefined;
+
+  const db = getDb();
+  try {
+    const pinned = db
+      .prepare(`SELECT ollama_name FROM router_overrides WHERE task_type=?`)
+      .get(taskType) as { ollama_name: string } | undefined;
+    if (pinned?.ollama_name) return pinned.ollama_name;
+
+    const best = db
+      .prepare(
+        `SELECT ollama_name FROM model_profiles
+         WHERE task_type=? ORDER BY quality DESC, latency_ms ASC LIMIT 1`
+      )
+      .get(taskType) as { ollama_name: string } | undefined;
+    return best?.ollama_name;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Returns an LLMClient configured from the active model in the DB.
+ *  `taskType` lets the router pick a different model per phase of a run;
+ *  `modelOverride` short-circuits everything (used by time-travel fork). */
+export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType): LLMClient {
   const db = getDb();
   const row = db
     .prepare(`SELECT * FROM llm_models WHERE is_active = 1 LIMIT 1`)
     .get() as Record<string, unknown> | undefined;
 
-  if (!row) {
-    // Default: Ollama with llama3.2 — safest starting point
-    return new LLMClient({
-      baseUrl: 'http://localhost:11434/v1',
-      apiKey: 'ollama',
-      model: 'llama3.2:3b-instruct-q4_K_M',
-    });
-  }
+  const baseUrl = (row?.base_url as string) ?? 'http://localhost:11434/v1';
+  const apiKey  = (row?.api_key as string)  ?? 'ollama';
+  const fallbackModel = (row?.ollama_name as string) ?? 'llama3.2:3b-instruct-q4_K_M';
+
+  const routed = resolveModelName(modelOverride, taskType);
 
   return new LLMClient({
-    baseUrl: (row.base_url as string) ?? 'http://localhost:11434/v1',
-    apiKey: (row.api_key as string) ?? 'ollama',
-    model: row.ollama_name as string,
+    baseUrl,
+    apiKey,
+    model: routed ?? fallbackModel,
   });
 }
