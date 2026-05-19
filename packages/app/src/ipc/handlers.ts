@@ -211,6 +211,38 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     setOverride(taskType, ollamaName)
   );
 
+  // ── Time-travel ─────────────────────────────────────────────────────────
+  // `has_snapshot` is a 0/1 flag the UI uses to disable the "Fork" button for
+  // steps that didn't capture a full messages array (only assistant/system
+  // steps with snapshots can be replayed).
+  ipcMain.handle('timetravel:listRuns', (_e, sessionId?: string) => {
+    const db = getDb();
+    if (sessionId) {
+      return db.prepare(
+        `SELECT run_id, session_id, workflow_id, parent_run_id, forked_from_step,
+                goal, model, status, created_at
+         FROM agent_runs WHERE session_id=? ORDER BY created_at DESC LIMIT 200`
+      ).all(sessionId);
+    }
+    return db.prepare(
+      `SELECT run_id, session_id, workflow_id, parent_run_id, forked_from_step,
+              goal, model, status, created_at
+       FROM agent_runs ORDER BY created_at DESC LIMIT 200`
+    ).all();
+  });
+
+  ipcMain.handle('timetravel:getSteps', (_e, runId: string) => {
+    return getDb().prepare(
+      `SELECT step_id, idx, kind, payload, ts,
+              CASE WHEN messages_snapshot IS NULL THEN 0 ELSE 1 END AS has_snapshot
+       FROM agent_steps WHERE run_id=? ORDER BY idx ASC`
+    ).all(runId);
+  });
+
+  ipcMain.handle('timetravel:fork', async (_e, stepId: string, modelOverride?: string) => {
+    return orchestrator.forkFromStep(stepId, modelOverride ? { modelOverride } : undefined);
+  });
+
   // ── Web tools ──────────────────────────────────────────────────────────
   // Settings live inside the `web` key on the user's settings_json blob.
   // getWebConfig fills in defaults so the renderer never has to.

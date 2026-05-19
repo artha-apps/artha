@@ -25,6 +25,14 @@ const api = {
       ipcRenderer.on('agent:planReady', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:planReady');
     },
+    onStreamEnd: (cb: () => void) => {
+      ipcRenderer.on('agent:streamEnd', () => cb());
+      return () => ipcRenderer.removeAllListeners('agent:streamEnd');
+    },
+    onWorkflowStart: (cb: (workflowId: string) => void) => {
+      ipcRenderer.on('agent:workflowStart', (_e, id) => cb(id));
+      return () => ipcRenderer.removeAllListeners('agent:workflowStart');
+    },
     approvePlan: (workflowId: string, approved: boolean) =>
       ipcRenderer.invoke('agent:approvePlan', workflowId, approved),
   },
@@ -99,6 +107,17 @@ const api = {
       ipcRenderer.on('router:benchmarkProgress', (_e, m) => cb(m));
       return () => ipcRenderer.removeAllListeners('router:benchmarkProgress');
     },
+  },
+
+  // ── Time travel ──────────────────────────────────────────────────────────
+  // Every step of every agent run is snapshotted in `agent_steps`. `fork`
+  // rehydrates the messages from a chosen step and resumes the ReAct loop
+  // from that exact context — optionally with a different model.
+  timetravel: {
+    listRuns: (sessionId?: string) => ipcRenderer.invoke('timetravel:listRuns', sessionId),
+    getSteps: (runId: string) => ipcRenderer.invoke('timetravel:getSteps', runId),
+    fork: (stepId: string, modelOverride?: string) =>
+      ipcRenderer.invoke('timetravel:fork', stepId, modelOverride),
   },
 
   // ── Web tools (built-in) ─────────────────────────────────────────────────

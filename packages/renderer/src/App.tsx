@@ -14,6 +14,7 @@ import WebPanel from './components/Settings/WebPanel';
 import BrowserPane from './components/Browser/BrowserPane';
 import { useBrowserStore } from './stores/browser';
 import RouterPanel from './components/Settings/RouterPanel';
+import TimeTravelPanel from './components/Settings/TimeTravelPanel';
 
 declare global {
   interface Window {
@@ -22,7 +23,7 @@ declare global {
 }
 
 export default function App() {
-  const { appendToken, finaliseStream, addToolEvent, setPendingPlan, setSessions, activeView } = useChatStore();
+  const { appendToken, finaliseStream, addToolEvent, setPendingPlan, setSessions, activeView, setStreaming, setActiveWorkflowId } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
 
   useEffect(() => {
@@ -34,11 +35,12 @@ export default function App() {
       finaliseStream();
     });
 
-    // Detect end of stream: 200ms silence after last token
-    let timer: ReturnType<typeof setTimeout>;
-    const offTokenFS = window.artha.agent.onToken(() => {
-      clearTimeout(timer);
-      timer = setTimeout(finaliseStream, 200);
+    // agent:streamEnd fires when the orchestrator is fully done — authoritative
+    // signal to flush the message, even for tool-only responses with no tokens.
+    const offEnd = window.artha.agent.onStreamEnd(finaliseStream);
+    const offWorkflow = window.artha.agent.onWorkflowStart((id) => {
+      setStreaming(true);
+      setActiveWorkflowId(id);
     });
 
     // Auto-open the browser pane when the agent calls a browser tool — keeps
@@ -48,7 +50,7 @@ export default function App() {
     // Load sessions
     window.artha.sessions.list().then(setSessions);
 
-    return () => { offToken(); offTool(); offPlan(); offTokenFS(); offAutoOpen(); clearTimeout(timer); };
+    return () => { offToken(); offTool(); offPlan(); offEnd(); offWorkflow(); offAutoOpen(); };
   }, []);
 
   return (
@@ -71,6 +73,7 @@ export default function App() {
         {activeView === 'mcp' && <MCPToolsPanel />}
         {activeView === 'web' && <WebPanel />}
         {activeView === 'router' && <RouterPanel />}
+        {activeView === 'timetravel' && <TimeTravelPanel />}
         {activeView === 'rag' && (
           <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
             RAG Index — coming soon

@@ -35,7 +35,7 @@ export interface Session {
   last_activity: number;
 }
 
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'web' | 'rag' | 'router' | 'settings';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'web' | 'rag' | 'router' | 'timetravel' | 'settings';
 
 interface ChatState {
   sessions: Session[];
@@ -46,6 +46,7 @@ interface ChatState {
   executionLog: ToolCallEvent[];
   pendingPlan: AgentPlan | null;
   activeView: ActiveView;
+  activeWorkflowId: string | null;
 
   // Actions
   setSessions: (s: Session[]) => void;
@@ -57,6 +58,8 @@ interface ChatState {
   addToolEvent: (ev: ToolCallEvent) => void;
   setPendingPlan: (plan: AgentPlan | null) => void;
   setActiveView: (view: ActiveView) => void;
+  setStreaming: (streaming: boolean) => void;
+  setActiveWorkflowId: (id: string | null) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -68,6 +71,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   executionLog: [],
   pendingPlan: null,
   activeView: 'chat',
+  activeWorkflowId: null,
 
   setSessions: (sessions) => set({ sessions }),
   setActiveSession: (id) => set({ activeSessionId: id, messages: [], streamingContent: '', executionLog: [] }),
@@ -86,7 +90,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   finaliseStream: () =>
     set((s) => {
-      if (!s.streamingContent.trim() || !s.activeSessionId) return { streamingContent: '', isStreaming: false };
+      if (!s.streamingContent.trim() || !s.activeSessionId) {
+        return { streamingContent: '', isStreaming: false, activeWorkflowId: null };
+      }
       return {
         messages: [...s.messages, {
           id: crypto.randomUUID(), sessionId: s.activeSessionId,
@@ -94,6 +100,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }],
         streamingContent: '',
         isStreaming: false,
+        activeWorkflowId: null,
       };
     }),
 
@@ -102,4 +109,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
   setActiveView: (view) => set({ activeView: view }),
+  setStreaming: (streaming) => set({ isStreaming: streaming }),
+  setActiveWorkflowId: (id) => set({ activeWorkflowId: id }),
 }));
