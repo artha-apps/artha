@@ -8,12 +8,22 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { getDb } from '../db/schema';
 
+/** File extensions we attempt to embed. Binary/proprietary types like .docx
+ *  and .pdf go through `readFileSync('utf-8')` today — Phase 2 will swap in
+ *  proper extractors. Keeping the list narrow avoids embedding e.g. images. */
 const SUPPORTED_EXTENSIONS = ['.txt', '.md', '.pdf', '.docx', '.csv', '.json', '.ts', '.js', '.py'];
-const CHUNK_SIZE = 512;       // characters per chunk
+/** Characters per chunk. 512 keeps each vector roughly within a single
+ *  semantic idea while staying well under nomic-embed-text's 2k token limit. */
+const CHUNK_SIZE = 512;
+/** Overlap between consecutive chunks so a fact straddling a boundary still
+ *  appears intact in at least one chunk. */
 const CHUNK_OVERLAP = 64;
 const OLLAMA_EMBED_URL = 'http://localhost:11434/api/embeddings';
 const EMBED_MODEL = 'nomic-embed-text';
 
+/** One indexed unit: a slice of a source file plus its embedding. The `id`
+ *  is a deterministic md5 of `${filePath}:${offset}` so re-indexing the same
+ *  file produces stable IDs (useful for incremental updates in Phase 2). */
 interface Chunk {
   id: string;
   filePath: string;
@@ -21,6 +31,9 @@ interface Chunk {
   embedding: number[];
 }
 
+/** File → chunk → vector pipeline rooted at a single on-disk directory.
+ *  One `RAGIndexer` instance covers many indexes (each persisted as its own
+ *  `<indexId>.json` file under `indexDir`). */
 export class RAGIndexer {
   private indexDir: string;
 
@@ -29,7 +42,9 @@ export class RAGIndexer {
     fs.mkdirSync(indexDir, { recursive: true });
   }
 
-  /** Index all supported files under a directory path. */
+  /** Walk `dirPath` recursively, chunk + embed every supported file, and write
+   *  the resulting array to `<indexDir>/<indexId>.json`. Returns the number of
+   *  chunks indexed and updates `rag_indexes.doc_count` + `last_indexed`. */
   async buildIndex(indexId: string, dirPath: string): Promise<number> {
     const files = this.collectFiles(dirPath);
     const chunks: Chunk[] = [];
@@ -57,7 +72,9 @@ export class RAGIndexer {
     return chunks.length;
   }
 
-  /** Retrieve top-k most relevant chunks for a query. */
+  /** Embed `query` and return the top-k chunk *texts* (not records) ranked by
+   *  cosine similarity. Returns `[]` if the index file doesn't exist yet so
+   *  callers can fall back gracefully on first-use. */
   async query(indexId: string, query: string, topK = 5): Promise<string[]> {
     const indexPath = path.join(this.indexDir, `${indexId}.json`);
     if (!fs.existsSync(indexPath)) return [];
@@ -103,6 +120,9 @@ export class RAGIndexer {
     return chunks;
   }
 
+  /** Call Ollama's /api/embeddings. On failure (Ollama down, model not
+   *  pulled, etc.) we return a 768-zero vector so indexing still completes;
+   *  query() will simply rank such chunks as having zero similarity. */
   private async embed(text: string): Promise<number[]> {
     try {
       const res = await fetch(OLLAMA_EMBED_URL, {
@@ -113,12 +133,13 @@ export class RAGIndexer {
       const json = await res.json() as { embedding: number[] };
       return json.embedding;
     } catch {
-      // Return zero vector if Ollama not available
       return new Array(768).fill(0);
     }
   }
 }
 
+/** Standard cosine similarity. Returns 0 when either vector is empty/zero so
+ *  zero-vector fallbacks from `embed()` rank last instead of NaN-poisoning. */
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
   let dot = 0, normA = 0, normB = 0;

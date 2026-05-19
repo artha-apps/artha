@@ -1,3 +1,8 @@
+/**
+ * PlanApproval — modal shown when the orchestrator pauses a workflow with
+ * `requiresApproval=true` (typically because the plan includes destructive
+ * filesystem mutations). Renders nothing when there's no pending plan.
+ */
 import { CheckCircle, XCircle, ListChecks } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
@@ -5,6 +10,8 @@ export default function PlanApproval() {
   const { pendingPlan, setPendingPlan } = useChatStore();
   if (!pendingPlan) return null;
 
+  /** Dismiss the modal first, then fire IPC — gives the user instant feedback
+   *  even on a slow IPC round-trip when starting a long-running workflow. */
   const approve = (approved: boolean) => {
     const plan = pendingPlan;
     setPendingPlan(null); // Dismiss modal immediately — don't wait for execution

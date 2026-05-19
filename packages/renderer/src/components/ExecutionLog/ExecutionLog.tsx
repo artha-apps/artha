@@ -1,3 +1,11 @@
+/**
+ * ExecutionLog — right-rail collapsible panel showing every tool invocation
+ * + result for the active session. Sourced from `chat.executionLog`, which
+ * the App-level IPC listener appends to on every `agent:toolCall` event.
+ *
+ * Hidden entirely when there's nothing to show and no in-flight stream, so
+ * idle sessions get a wider chat area.
+ */
 import { useState } from 'react';
 import { ChevronRight, ChevronDown, Zap, CheckCircle, XCircle, Loader } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';

@@ -4,6 +4,17 @@
  */
 import { create } from 'zustand';
 
+/** A web page surfaced by `web_search` / `web_fetch`. Rendered as a citation
+ *  chip under the assistant bubble that produced it. */
+export interface Citation {
+  url: string;
+  title: string;
+  fetched_at: number;
+}
+
+/** Chat bubble. `senderType='tool'` is reserved — current code stores tool
+ *  output on the assistant message via `toolEvents` rather than a separate
+ *  bubble, which keeps the visual thread tidy. */
 export interface Message {
   id: string;
   sessionId: string;
@@ -12,8 +23,12 @@ export interface Message {
   timestamp: number;
   toolCalls?: unknown[];
   toolOutputs?: unknown[];
+  toolEvents?: ToolCallEvent[];
+  citations?: Citation[];
 }
 
+/** One entry in the live execution log. Mirrors the orchestrator's
+ *  `agent:toolCall` event payload. */
 export interface ToolCallEvent {
   type: 'step_start' | 'tool_invoke' | 'tool_result';
   name?: string;
@@ -22,6 +37,7 @@ export interface ToolCallEvent {
   step?: unknown;
 }
 
+/** A plan the orchestrator paused on — drives the PlanApproval modal. */
 export interface AgentPlan {
   workflowId: string;
   goal: string;
@@ -29,14 +45,20 @@ export interface AgentPlan {
   requiresApproval: boolean;
 }
 
+/** Sidebar row shape. Mirrors `chat_sessions` columns we actually render. */
 export interface Session {
   session_id: string;
   title: string;
   last_activity: number;
 }
 
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'web' | 'rag' | 'router' | 'timetravel' | 'provenance' | 'bundles' | 'settings';
+/** Top-level view selector. Each value maps to a panel mounted under <main>
+ *  in App.tsx. */
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'settings';
 
+/** Single source of truth for the chat surface. `pendingToolEvents` and
+ *  `pendingCitations` accumulate during a streaming response and are folded
+ *  onto the final assistant message in `finaliseStream()`. */
 interface ChatState {
   sessions: Session[];
   activeSessionId: string | null;
@@ -45,6 +67,8 @@ interface ChatState {
   isStreaming: boolean;
   executionLog: ToolCallEvent[];
   pendingPlan: AgentPlan | null;
+  pendingToolEvents: ToolCallEvent[];
+  pendingCitations: Citation[];
   activeView: ActiveView;
   activeWorkflowId: string | null;
 
@@ -56,6 +80,7 @@ interface ChatState {
   appendToken: (token: string) => void;
   finaliseStream: () => void;
   addToolEvent: (ev: ToolCallEvent) => void;
+  addCitations: (citations: Citation[]) => void;
   setPendingPlan: (plan: AgentPlan | null) => void;
   setActiveView: (view: ActiveView) => void;
   setStreaming: (streaming: boolean) => void;
@@ -70,11 +95,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   executionLog: [],
   pendingPlan: null,
+  pendingToolEvents: [],
+  pendingCitations: [],
   activeView: 'chat',
   activeWorkflowId: null,
 
   setSessions: (sessions) => set({ sessions }),
-  setActiveSession: (id) => set({ activeSessionId: id, messages: [], streamingContent: '', executionLog: [] }),
+  // Switching sessions clears any in-flight stream and execution log — the
+  // previous session's pending events were tied to its workflowId and are
+  // no longer meaningful.
+  setActiveSession: (id) => set({ activeSessionId: id, messages: [], streamingContent: '', executionLog: [], pendingToolEvents: [], pendingCitations: [] }),
   setMessages: (messages) => set({ messages }),
 
   addUserMessage: (sessionId, content) =>
@@ -85,27 +115,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }],
     })),
 
+  // Streaming token from the orchestrator. We set isStreaming here too so
+  // tool-only responses (no text emitted before tools) still flip the UI
+  // into the streaming state via the first token they do emit.
   appendToken: (token) =>
     set((s) => ({ streamingContent: s.streamingContent + token, isStreaming: true })),
 
+  // Called once on agent:streamEnd. Folds pending content + tool events +
+  // citations into a single assistant message and resets the streaming state.
+  // No-op (other than the reset) when the stream produced nothing visible.
   finaliseStream: () =>
     set((s) => {
-      if (!s.streamingContent.trim() || !s.activeSessionId) {
-        return { streamingContent: '', isStreaming: false, activeWorkflowId: null };
+      const hasContent = s.streamingContent.trim().length > 0;
+      const hasToolEvents = s.pendingToolEvents.length > 0;
+      const hasCitations = s.pendingCitations.length > 0;
+      // Only skip if there's truly nothing to show and no session
+      if ((!hasContent && !hasToolEvents) || !s.activeSessionId) {
+        return { streamingContent: '', isStreaming: false, pendingToolEvents: [], pendingCitations: [], activeWorkflowId: null };
       }
       return {
         messages: [...s.messages, {
           id: crypto.randomUUID(), sessionId: s.activeSessionId,
-          senderType: 'agent', content: s.streamingContent, timestamp: Date.now(),
+          senderType: 'agent' as const, content: s.streamingContent,
+          timestamp: Date.now(),
+          toolEvents: hasToolEvents ? [...s.pendingToolEvents] : undefined,
+          citations: hasCitations ? [...s.pendingCitations] : undefined,
         }],
         streamingContent: '',
         isStreaming: false,
+        pendingToolEvents: [],
+        pendingCitations: [],
         activeWorkflowId: null,
       };
     }),
 
+  // Tool events fan out to two places: the persistent right-rail execution log
+  // and the per-message pending list (so they get folded onto the bubble that
+  // produced them in finaliseStream).
   addToolEvent: (ev) =>
-    set((s) => ({ executionLog: [...s.executionLog, ev] })),
+    set((s) => ({
+      executionLog: [...s.executionLog, ev],
+      pendingToolEvents: [...s.pendingToolEvents, ev],
+    })),
+
+  addCitations: (citations) =>
+    set((s) => {
+      // De-dupe by URL across pending + incoming
+      const seen = new Set(s.pendingCitations.map(c => c.url));
+      const fresh = citations.filter(c => !seen.has(c.url));
+      return { pendingCitations: [...s.pendingCitations, ...fresh] };
+    }),
 
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
   setActiveView: (view) => set({ activeView: view }),

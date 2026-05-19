@@ -25,13 +25,13 @@ declare global {
 }
 
 export default function App() {
-  const { appendToken, finaliseStream, addToolEvent, setPendingPlan, setSessions, activeView, setStreaming, setActiveWorkflowId } = useChatStore();
+  const { appendToken, finaliseStream, addToolEvent, addCitations, setPendingPlan, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
 
   useEffect(() => {
     // Wire IPC → store
     const offToken    = window.artha.agent.onToken(appendToken);
-    const offTool     = window.artha.agent.onToolCall(addToolEvent);
+    const offTool     = window.artha.agent.onToolCall((ev) => addToolEvent(ev as Parameters<typeof addToolEvent>[0]));
     const offPlan     = window.artha.agent.onPlanReady((plan) => {
       setPendingPlan(plan as never);
       finaliseStream();
@@ -44,6 +44,16 @@ export default function App() {
       setStreaming(true);
       setActiveWorkflowId(id);
     });
+    const offCitations = window.artha.agent.onCitations((p) => addCitations(p.citations));
+
+    // Live session title updates — main auto-titles a session from its first
+    // user message; this keeps the sidebar in sync without a manual reload.
+    const offTitle = window.artha.sessions.onTitleUpdated(({ sessionId, title }) => {
+      setSessions(sessions.map(s =>
+        s.session_id === sessionId ? { ...s, title } : s
+      ));
+      window.artha.sessions.list().then(setSessions);
+    });
 
     // Auto-open the browser pane when the agent calls a browser tool — keeps
     // the user in the loop without forcing them to find a toggle.
@@ -52,7 +62,7 @@ export default function App() {
     // Load sessions
     window.artha.sessions.list().then(setSessions);
 
-    return () => { offToken(); offTool(); offPlan(); offEnd(); offWorkflow(); offAutoOpen(); };
+    return () => { offToken(); offTool(); offPlan(); offEnd(); offWorkflow(); offCitations(); offTitle(); offAutoOpen(); };
   }, []);
 
   return (

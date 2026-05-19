@@ -25,16 +25,57 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Load all enabled MCP servers at startup
   MCPRegistry.getInstance().loadFromDatabase().catch(console.error);
 
+  // One-time migration: older sessions were stored as "New Chat" with no
+  // auto-title; back-fill their title from the first user message so the
+  // sidebar isn't a wall of identical entries.
+  try {
+    const db = getDb();
+    const untitled = db.prepare(
+      `SELECT session_id FROM chat_sessions WHERE title='New Chat'`
+    ).all() as { session_id: string }[];
+    for (const { session_id } of untitled) {
+      const first = db.prepare(
+        `SELECT content FROM messages WHERE session_id=? AND sender_type='user' ORDER BY timestamp ASC LIMIT 1`
+      ).get(session_id) as { content: string } | undefined;
+      if (first?.content) {
+        const title = first.content.trim().slice(0, 40).replace(/\n/g, ' ')
+          + (first.content.length > 40 ? '…' : '');
+        db.prepare(`UPDATE chat_sessions SET title=? WHERE session_id=?`).run(title, session_id);
+      }
+    }
+  } catch (err) {
+    console.warn('[Artha] Session retitle migration failed:', err);
+  }
+
   // ── Agent ──────────────────────────────────────────────────────────────
+  // Persist the user message synchronously, then hand off to the orchestrator.
+  // Side-effect: the *first* message of a session also sets the session title
+  // (truncated to 40 chars) and pushes a `session:titleUpdated` event so the
+  // sidebar updates without a full reload.
   ipcMain.handle('agent:sendMessage', async (_e, sessionId: string, content: string) => {
     const db = getDb();
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, content);
+
+    // Auto-title session from first user message (if still "New Chat")
+    const session = db.prepare(`SELECT title FROM chat_sessions WHERE session_id=?`).get(sessionId) as { title: string } | undefined;
+    if (session?.title === 'New Chat') {
+      const title = content.trim().slice(0, 40).replace(/\n/g, ' ') + (content.length > 40 ? '…' : '');
+      db.prepare(`UPDATE chat_sessions SET title=?, last_activity=unixepoch() WHERE session_id=?`).run(title, sessionId);
+      window.webContents.send('session:titleUpdated', { sessionId, title });
+    } else {
+      db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(sessionId);
+    }
+
     await orchestrator.handleMessage(sessionId, content);
   });
 
+  // Update the DB *before* signalling the orchestrator so that even if the
+  // ReAct loop hasn't yet observed the cancel flag, the persisted state is
+  // already correct for any UI re-render.
   ipcMain.handle('agent:cancelTask', async (_e, workflowId: string) => {
     const db = getDb();
     db.prepare(`UPDATE agent_states SET status='cancelled' WHERE workflow_id=?`).run(workflowId);
+    orchestrator.cancelWorkflow(workflowId);
     // Stop button must also release any awaited browser handoff or the
     // orchestrator's tool-await would block forever.
     BrowserController.getInstance().cancelHandoff();
@@ -61,7 +102,23 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   });
 
   ipcMain.handle('sessions:getMessages', (_e, sessionId: string) => {
-    return getDb().prepare(`SELECT * FROM messages WHERE session_id=? ORDER BY timestamp ASC`).all(sessionId);
+    const rows = getDb().prepare(
+      `SELECT * FROM messages WHERE session_id=? ORDER BY timestamp ASC`
+    ).all(sessionId) as Record<string, unknown>[];
+    return rows.map(r => {
+      let citations: unknown = undefined;
+      if (typeof r.citations_json === 'string' && r.citations_json) {
+        try { citations = JSON.parse(r.citations_json); } catch { /* skip */ }
+      }
+      return {
+        id: r.message_id,
+        sessionId: r.session_id,
+        senderType: r.sender_type,
+        content: r.content,
+        timestamp: r.timestamp,
+        citations,
+      };
+    });
   });
 
   // ── LLM / Models ───────────────────────────────────────────────────────

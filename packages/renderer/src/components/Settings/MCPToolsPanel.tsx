@@ -1,17 +1,21 @@
 /**
- * MCPToolsPanel — two tabs:
- *   Tools    — installed MCP servers + built-in tools, enable/disable/remove
- *   Audit Log — persistent history of every tool invocation
+ * MCPToolsPanel — three tabs:
+ *   Tools       — installed MCP servers + built-in tools, enable/disable/remove
+ *   Marketplace — curated popular MCP servers, one-click connect
+ *   Audit Log   — persistent history of every tool invocation
  */
 import { useEffect, useState } from 'react';
 import {
   Wrench, Plus, Trash2, ToggleLeft, ToggleRight,
   RefreshCw, Clock, CheckCircle2, XCircle, ChevronDown, ChevronRight,
-  Shield, Zap,
+  Shield, Zap, Store, ExternalLink, Loader2, Globe, Brain,
+  GitBranch, MessageSquare, Monitor, Database, Search, Eye,
 } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/** Row from the `tools` table — MCP servers and (via the built-in shim) the
+ *  filesystem helpers. `is_enabled` is 0/1, not boolean, to match SQLite. */
 interface MCPTool {
   tool_id: string;
   name: string;
@@ -21,6 +25,8 @@ interface MCPTool {
   installed_at: number;
 }
 
+/** Row from `tool_audit_log`. `result` is already truncated to 500 chars by
+ *  the orchestrator before insert. */
 interface AuditEntry {
   id: string;
   session_id: string | null;
@@ -33,11 +39,121 @@ interface AuditEntry {
   ts: number;
 }
 
-// ── Built-in tool names (always shown, cannot be disabled via UI) ─────────────
+/** Curated marketplace entry. `requiresEnv` triggers the env-var sub-form
+ *  before install; `docs` adds an "open docs" external link. */
+interface MarketplaceServer {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  command: string;
+  requiresEnv?: string[];
+  icon: React.ElementType;
+  iconColor: string;
+  docs?: string;
+}
+
+// ── Curated MCP server catalogue ──────────────────────────────────────────────
+// Hand-picked list shown in the Marketplace tab. Adding a row here is enough
+// to surface a one-click "Connect" — no backend changes required.
+
+const MARKETPLACE: MarketplaceServer[] = [
+  {
+    id: 'fetch',
+    name: 'Web Fetch',
+    description: 'Fetch and read web pages. Lets Artha pull live information from the internet.',
+    category: 'Web',
+    command: 'npx -y @modelcontextprotocol/server-fetch',
+    icon: Globe,
+    iconColor: 'text-cyan-400',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/fetch',
+  },
+  {
+    id: 'brave-search',
+    name: 'Brave Search',
+    description: 'Search the web via Brave. Lets Artha find up-to-date information without a browser.',
+    category: 'Search',
+    command: 'npx -y @modelcontextprotocol/server-brave-search',
+    requiresEnv: ['BRAVE_API_KEY'],
+    icon: Search,
+    iconColor: 'text-orange-400',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search',
+  },
+  {
+    id: 'memory',
+    name: 'Memory',
+    description: 'Persistent knowledge graph. Artha remembers facts across sessions.',
+    category: 'Memory',
+    command: 'npx -y @modelcontextprotocol/server-memory',
+    icon: Brain,
+    iconColor: 'text-violet-400',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/memory',
+  },
+  {
+    id: 'github',
+    name: 'GitHub',
+    description: 'Read repos, issues, PRs, and code. Manage your GitHub projects with Artha.',
+    category: 'Dev',
+    command: 'npx -y @modelcontextprotocol/server-github',
+    requiresEnv: ['GITHUB_PERSONAL_ACCESS_TOKEN'],
+    icon: GitBranch,
+    iconColor: 'text-white',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/github',
+  },
+  {
+    id: 'slack',
+    name: 'Slack',
+    description: 'Read messages and channels from your Slack workspace.',
+    category: 'Communication',
+    command: 'npx -y @modelcontextprotocol/server-slack',
+    requiresEnv: ['SLACK_BOT_TOKEN', 'SLACK_TEAM_ID'],
+    icon: MessageSquare,
+    iconColor: 'text-green-400',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/slack',
+  },
+  {
+    id: 'puppeteer',
+    name: 'Puppeteer',
+    description: 'Browser automation — take screenshots, fill forms, scrape dynamic web pages.',
+    category: 'Browser',
+    command: 'npx -y @modelcontextprotocol/server-puppeteer',
+    icon: Monitor,
+    iconColor: 'text-yellow-400',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer',
+  },
+  {
+    id: 'sqlite',
+    name: 'SQLite',
+    description: 'Query and explore SQLite database files — great for local app data.',
+    category: 'Data',
+    command: 'npx -y @modelcontextprotocol/server-sqlite --db-path ~/data.db',
+    icon: Database,
+    iconColor: 'text-blue-400',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite',
+  },
+  {
+    id: 'everything',
+    name: 'Everything (Demo)',
+    description: 'Full-featured demo server with prompts, resources, and all tool types.',
+    category: 'Dev',
+    command: 'npx -y @modelcontextprotocol/server-everything',
+    icon: Eye,
+    iconColor: 'text-artha-accent',
+    docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/everything',
+  },
+];
+
+const CATEGORY_ORDER = ['Web', 'Search', 'Memory', 'Dev', 'Communication', 'Browser', 'Data'];
+
+// ── Built-in tool names ───────────────────────────────────────────────────────
 const BUILTIN_TOOLS = [
   'fs_list_directory', 'fs_search_files', 'fs_create_directory',
   'fs_move_file', 'fs_copy_file', 'fs_read_file',
   'fs_get_file_info', 'fs_delete_file',
+  'web_fetch', 'web_search',
+  'browser_navigate', 'browser_click', 'browser_type', 'browser_wait_for',
+  'browser_read_dom', 'browser_screenshot', 'browser_get_url',
+  'browser_back', 'browser_forward', 'browser_reload', 'browser_request_user',
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -52,11 +168,14 @@ function relativeTime(unixSec: number): string {
 
 function toolColor(name: string): string {
   if (name.startsWith('fs_')) return 'text-blue-400 bg-blue-400/10';
+  if (name.startsWith('web_')) return 'text-cyan-400 bg-cyan-400/10';
+  if (name.startsWith('browser_')) return 'text-yellow-400 bg-yellow-400/10';
   return 'text-violet-400 bg-violet-400/10';
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
+/** Collapsible audit-log row. Click to expand the args + truncated result. */
 function AuditRow({ entry }: { entry: AuditEntry }) {
   const [expanded, setExpanded] = useState(false);
   let args: Record<string, unknown> = {};
@@ -119,16 +238,172 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
   );
 }
 
+interface MarketplaceCardProps {
+  server: MarketplaceServer;
+  isInstalled: boolean;
+  onInstall: (server: MarketplaceServer, envVars: Record<string, string>) => Promise<void>;
+}
+
+/** Marketplace card. If `requiresEnv` is set, the first click expands an
+ *  inline env-var form before the second click actually installs. Errors are
+ *  shown inline so the user never loses the form they're filling in. */
+function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [envValues, setEnvValues] = useState<Record<string, string>>({});
+  const [error, setError] = useState('');
+  const Icon = server.icon;
+
+  const handleConnect = async () => {
+    setError('');
+    if (server.requiresEnv && !expanded) {
+      setExpanded(true);
+      return;
+    }
+    setInstalling(true);
+    try {
+      await onInstall(server, envValues);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Connection failed');
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const categoryColors: Record<string, string> = {
+    Web: 'bg-cyan-400/10 text-cyan-400',
+    Search: 'bg-orange-400/10 text-orange-400',
+    Memory: 'bg-violet-400/10 text-violet-400',
+    Dev: 'bg-white/10 text-white',
+    Communication: 'bg-green-400/10 text-green-400',
+    Browser: 'bg-yellow-400/10 text-yellow-400',
+    Data: 'bg-blue-400/10 text-blue-400',
+  };
+
+  return (
+    <div className={`rounded-xl border transition-all ${
+      isInstalled ? 'border-green-500/30 bg-green-500/5' : 'border-artha-border bg-artha-s2'
+    }`}>
+      <div className="flex items-start gap-3 px-4 py-3">
+        {/* Icon */}
+        <div className="w-9 h-9 rounded-lg bg-artha-surface border border-artha-border flex items-center justify-center shrink-0 mt-0.5">
+          <Icon size={17} className={server.iconColor} />
+        </div>
+
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="text-sm font-medium text-white">{server.name}</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${categoryColors[server.category] ?? 'bg-white/10 text-white'}`}>
+              {server.category}
+            </span>
+          </div>
+          <p className="text-xs text-artha-muted leading-relaxed">{server.description}</p>
+
+          {/* Command preview */}
+          <code className="text-[10px] text-artha-muted/60 font-mono mt-1 block truncate">
+            {server.command}
+          </code>
+        </div>
+
+        {/* Action */}
+        <div className="flex items-center gap-2 shrink-0 ml-2">
+          {server.docs && (
+            <a
+              href={server.docs}
+              target="_blank"
+              rel="noreferrer"
+              className="p-1.5 rounded-lg text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
+              title="View docs"
+              onClick={e => e.stopPropagation()}
+            >
+              <ExternalLink size={12} />
+            </a>
+          )}
+          {isInstalled ? (
+            <span className="flex items-center gap-1 text-xs text-green-400 font-medium px-2 py-1">
+              <CheckCircle2 size={12} /> Connected
+            </span>
+          ) : (
+            <button
+              onClick={handleConnect}
+              disabled={installing}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium transition-colors"
+            >
+              {installing
+                ? <><Loader2 size={11} className="animate-spin" /> Connecting…</>
+                : server.requiresEnv && !expanded
+                  ? <><Plus size={11} /> Setup</>
+                  : <><Plus size={11} /> Connect</>}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Env var form — shown when server needs credentials */}
+      {expanded && !isInstalled && server.requiresEnv && (
+        <div className="px-4 pb-4 space-y-3 border-t border-artha-border/40 pt-3">
+          <p className="text-xs text-artha-muted">
+            This server needs API credentials. Enter them below — they're passed as environment variables to the server process and never leave your machine.
+          </p>
+          {server.requiresEnv.map(envKey => (
+            <div key={envKey}>
+              <label className="block text-xs font-medium text-artha-muted mb-1">{envKey}</label>
+              <input
+                type="password"
+                value={envValues[envKey] ?? ''}
+                onChange={e => setEnvValues(v => ({ ...v, [envKey]: e.target.value }))}
+                placeholder={`Enter ${envKey}`}
+                className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-xs text-artha-text placeholder-artha-muted/50 focus:border-artha-accent/50 focus:outline-none font-mono"
+              />
+            </div>
+          ))}
+          {error && (
+            <p className="text-xs text-red-400 flex items-center gap-1">
+              <XCircle size={11} /> {error}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={handleConnect}
+              disabled={installing || (server.requiresEnv?.some(k => !envValues[k]))}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium transition-colors"
+            >
+              {installing ? <><Loader2 size={11} className="animate-spin" /> Connecting…</> : <><Zap size={11} /> Connect</>}
+            </button>
+            <button
+              onClick={() => { setExpanded(false); setError(''); }}
+              className="px-3 py-2 rounded-lg text-xs text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Error without env form */}
+      {error && !server.requiresEnv && (
+        <div className="px-4 pb-3">
+          <p className="text-xs text-red-400 flex items-center gap-1">
+            <XCircle size={11} /> {error}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export default function MCPToolsPanel() {
-  const [tab, setTab] = useState<'tools' | 'audit'>('tools');
+  const [tab, setTab] = useState<'tools' | 'marketplace' | 'audit'>('tools');
   const [tools, setTools] = useState<MCPTool[]>([]);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [addUri, setAddUri] = useState('');
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState('');
+  const [marketplaceCategory, setMarketplaceCategory] = useState<string>('All');
 
   const load = async () => {
     setLoading(true);
@@ -175,7 +450,43 @@ export default function MCPToolsPanel() {
     }
   };
 
+  /** Install a curated marketplace entry. Env vars from the inline form are
+   *  prefixed with the `ENV:` convention that the MCP registry parses back
+   *  into a process.env override at spawn time. */
+  const installMarketplaceServer = async (
+    server: MarketplaceServer,
+    envVars: Record<string, string>
+  ) => {
+    let cmd = server.command;
+    const envParts = Object.entries(envVars)
+      .filter(([, v]) => v.trim())
+      .map(([k, v]) => `ENV:${k}=${v}`);
+
+    const fullUri = envParts.length > 0 ? `${envParts.join(' ')} ${cmd}` : cmd;
+    await window.artha.mcp.installServer(fullUri);
+    await load();
+  };
+
+  const installedCommandSet = new Set(
+    tools
+      .filter(t => t.mcp_server_uri)
+      .map(t => {
+        // Strip ENV: prefixes to compare base command
+        const parts = (t.mcp_server_uri ?? '').split(' ').filter(p => !p.startsWith('ENV:'));
+        return parts.join(' ');
+      })
+  );
+
+  const isServerInstalled = (server: MarketplaceServer) => {
+    const baseCmd = server.command.split(' ').slice(0, 3).join(' ');
+    return Array.from(installedCommandSet).some(uri => uri.includes(baseCmd.split(' ')[2] ?? baseCmd));
+  };
+
   const mcpTools = tools.filter(t => t.mcp_server_uri);
+
+  const filteredMarketplace = marketplaceCategory === 'All'
+    ? MARKETPLACE
+    : MARKETPLACE.filter(s => s.category === marketplaceCategory);
 
   return (
     <div className="flex-1 overflow-y-auto px-8 py-8 max-w-3xl mx-auto w-full">
@@ -187,7 +498,7 @@ export default function MCPToolsPanel() {
           </div>
           <div>
             <h1 className="text-base font-semibold text-white">MCP Tools</h1>
-            <p className="text-xs text-artha-muted">Manage tools and review execution history</p>
+            <p className="text-xs text-artha-muted">Manage tools and extend Artha's capabilities</p>
           </div>
         </div>
         <button onClick={load} disabled={loading}
@@ -198,14 +509,20 @@ export default function MCPToolsPanel() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 p-1 bg-artha-s2 border border-artha-border rounded-xl w-fit">
-        {(['tools', 'audit'] as const).map(t => (
+        {(['tools', 'marketplace', 'audit'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize flex items-center gap-1.5
               ${tab === t ? 'bg-artha-accent/20 text-white' : 'text-artha-muted hover:text-white'}`}>
-            {t === 'audit' ? 'Audit Log' : 'Tools'}
+            {t === 'marketplace' && <Store size={12} />}
+            {t === 'audit' ? 'Audit Log' : t === 'marketplace' ? 'Marketplace' : 'Tools'}
             {t === 'audit' && auditLog.length > 0 && (
-              <span className="ml-1.5 text-xs bg-artha-accent/20 text-artha-accent px-1.5 py-0.5 rounded-full">
+              <span className="text-xs bg-artha-accent/20 text-artha-accent px-1.5 py-0.5 rounded-full">
                 {auditLog.length}
+              </span>
+            )}
+            {t === 'marketplace' && (
+              <span className="text-xs bg-artha-accent/20 text-artha-accent px-1.5 py-0.5 rounded-full">
+                {MARKETPLACE.length}
               </span>
             )}
           </button>
@@ -241,7 +558,7 @@ export default function MCPToolsPanel() {
             <div className="flex items-center gap-2 mb-3">
               <Wrench size={13} className="text-artha-accent" />
               <h2 className="text-xs font-semibold text-artha-muted uppercase tracking-wide">
-                MCP Servers
+                Connected MCP Servers
               </h2>
               {mcpTools.length > 0 && (
                 <span className="text-xs text-artha-muted">({mcpTools.length})</span>
@@ -250,9 +567,15 @@ export default function MCPToolsPanel() {
 
             {mcpTools.length === 0 ? (
               <div className="text-center py-8 bg-artha-s2 border border-dashed border-artha-border rounded-xl">
-                <Wrench size={24} className="mx-auto mb-2 text-artha-muted opacity-30" />
-                <p className="text-sm text-artha-muted">No MCP servers installed</p>
-                <p className="text-xs text-artha-muted mt-1">Add a server URI below to extend Artha's capabilities</p>
+                <Store size={24} className="mx-auto mb-2 text-artha-muted opacity-30" />
+                <p className="text-sm text-artha-muted">No MCP servers installed yet</p>
+                <p className="text-xs text-artha-muted mt-1">
+                  Browse the{' '}
+                  <button onClick={() => setTab('marketplace')} className="text-artha-accent hover:underline">
+                    Marketplace
+                  </button>
+                  {' '}to add web search, GitHub, Slack, and more.
+                </p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -262,7 +585,9 @@ export default function MCPToolsPanel() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-white truncate">{tool.name}</p>
                       {tool.mcp_server_uri && (
-                        <code className="text-xs text-artha-muted font-mono truncate block">{tool.mcp_server_uri}</code>
+                        <code className="text-xs text-artha-muted font-mono truncate block">
+                          {tool.mcp_server_uri.replace(/ENV:[^\s]+ /g, '')}
+                        </code>
                       )}
                     </div>
 
@@ -284,8 +609,9 @@ export default function MCPToolsPanel() {
               </div>
             )}
 
-            {/* Add server */}
+            {/* Manual add server */}
             <div className="mt-4 space-y-2">
+              <p className="text-xs font-medium text-artha-muted uppercase tracking-wide">Add custom server</p>
               <div className="flex gap-2">
                 <input
                   value={addUri}
@@ -310,6 +636,61 @@ export default function MCPToolsPanel() {
               </p>
             </div>
           </section>
+        </div>
+      )}
+
+      {/* ── Marketplace tab ── */}
+      {tab === 'marketplace' && (
+        <div className="space-y-5">
+          <div>
+            <p className="text-sm text-artha-muted mb-4">
+              Extend Artha with one-click MCP servers. All run locally via{' '}
+              <code className="text-xs bg-artha-s2 border border-artha-border px-1.5 py-0.5 rounded font-mono">npx</code>
+              {' '}— no cloud, no accounts required (unless the service itself needs one).
+            </p>
+
+            {/* Category filter */}
+            <div className="flex gap-1.5 flex-wrap mb-5">
+              {['All', ...CATEGORY_ORDER].map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setMarketplaceCategory(cat)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    marketplaceCategory === cat
+                      ? 'bg-artha-accent/20 text-white border border-artha-accent/30'
+                      : 'bg-artha-s2 border border-artha-border text-artha-muted hover:text-white'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {filteredMarketplace.map(server => (
+              <MarketplaceCard
+                key={server.id}
+                server={server}
+                isInstalled={isServerInstalled(server)}
+                onInstall={installMarketplaceServer}
+              />
+            ))}
+          </div>
+
+          <div className="pt-2 pb-4 border-t border-artha-border">
+            <p className="text-xs text-artha-muted">
+              Looking for more?{' '}
+              <a
+                href="https://github.com/modelcontextprotocol/servers"
+                target="_blank"
+                rel="noreferrer"
+                className="text-artha-accent hover:underline inline-flex items-center gap-1"
+              >
+                Browse the full MCP server catalogue <ExternalLink size={10} />
+              </a>
+            </p>
+          </div>
         </div>
       )}
 

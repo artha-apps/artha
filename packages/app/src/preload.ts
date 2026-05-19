@@ -33,6 +33,10 @@ const api = {
       ipcRenderer.on('agent:workflowStart', (_e, id) => cb(id));
       return () => ipcRenderer.removeAllListeners('agent:workflowStart');
     },
+    onCitations: (cb: (payload: { citations: { url: string; title: string; fetched_at: number }[] }) => void) => {
+      ipcRenderer.on('agent:citations', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:citations');
+    },
     approvePlan: (workflowId: string, approved: boolean) =>
       ipcRenderer.invoke('agent:approvePlan', workflowId, approved),
   },
@@ -44,6 +48,10 @@ const api = {
     delete: (id: string) => ipcRenderer.invoke('sessions:delete', id),
     getMessages: (sessionId: string) =>
       ipcRenderer.invoke('sessions:getMessages', sessionId),
+    onTitleUpdated: (cb: (payload: { sessionId: string; title: string }) => void) => {
+      ipcRenderer.on('session:titleUpdated', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('session:titleUpdated');
+    },
   },
 
   // ── LLM / Models ────────────────────────────────────────────────────────

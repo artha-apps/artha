@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { Cpu, CheckCircle2, RefreshCw, HardDrive, MemoryStick, ChevronRight } from 'lucide-react';
 
+/** Subset of Ollama's /api/tags model entry we actually render. */
 interface OllamaModel {
   name: string;
   size: number; // bytes
@@ -12,16 +13,20 @@ interface OllamaModel {
   details?: { parameter_size?: string; quantization_level?: string; family?: string };
 }
 
+/** Result of `llm:detectHardware` — feeds the "Recommended" hint. */
 interface HardwareInfo {
   gbRam: number;
   recommendation: string;
 }
 
+/** Bytes → human-readable size for the model card. */
 function formatSize(bytes: number): string {
   const gb = bytes / 1024 / 1024 / 1024;
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 }
 
+/** Infer the model family from its Ollama tag name. Drives the colored badge
+ *  in the model card. Returns a generic "Model" label for anything unknown. */
 function modelFamily(name: string): string {
   const n = name.toLowerCase();
   if (n.includes('qwen')) return 'Qwen';
@@ -56,6 +61,9 @@ export default function ModelsPanel() {
   const [switching, setSwitching] = useState<string | null>(null);
   const [ollamaOnline, setOllamaOnline] = useState(true);
 
+  /** Pull model list + hardware info + active model in parallel. Falls back to
+   *  "Ollama offline" on any failure so the user sees an actionable empty state
+   *  instead of a stuck spinner. */
   const load = async () => {
     setLoading(true);
     try {
@@ -66,8 +74,16 @@ export default function ModelsPanel() {
       ]);
       setModels(modelList);
       setHardware(hw);
-      setActiveModelState(active);
-      setOllamaOnline(modelList.length > 0 || true); // empty list is ok
+
+      // If no model is marked active in DB, default-highlight qwen2.5:7b
+      // (matches the LLM client fallback) — or the first available model
+      if (!active && modelList.length > 0) {
+        const preferred = modelList.find(m => m.name.startsWith('qwen2.5')) ?? modelList[0];
+        setActiveModelState(preferred.name);
+      } else {
+        setActiveModelState(active);
+      }
+      setOllamaOnline(true);
     } catch {
       setOllamaOnline(false);
     } finally {
@@ -77,6 +93,8 @@ export default function ModelsPanel() {
 
   useEffect(() => { load(); }, []);
 
+  /** Persist the new active model and reflect it in local state. Guards against
+   *  double-click races via the `switching` flag. */
   const switchModel = async (name: string) => {
     if (switching) return;
     setSwitching(name);

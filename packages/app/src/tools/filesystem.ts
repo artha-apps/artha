@@ -15,7 +15,13 @@ const HOME = os.homedir();
 
 // ── Path safety ─────────────────────────────────────────────────────────────
 
+/** Resolve a user-supplied path and reject anything that lives under a known
+ *  OS-system directory. The agent runs with the user's full uid, so this is
+ *  the last line of defence between an LLM hallucination and `rm /etc`. */
 function safePath(p: string): string {
+  if (!p || typeof p !== 'string') {
+    throw new Error(`Invalid path argument: received ${JSON.stringify(p)}`);
+  }
   const resolved = path.resolve(p);
   const blocked = ['/System', '/Library/System', '/usr', '/etc', '/bin', '/sbin', '/private/etc'];
   if (blocked.some(b => resolved.startsWith(b))) {
@@ -25,6 +31,10 @@ function safePath(p: string): string {
 }
 
 // ── Tool schemas (OpenAI function format) ────────────────────────────────────
+// One entry per built-in filesystem tool. Descriptions are tuned for *the
+// model*, not human readers — they include hints like "always call this first"
+// that shape ReAct planning. Keep them concrete; bare wording like "list files"
+// is enough to make small models hallucinate args.
 
 export const FILESYSTEM_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
   {
@@ -187,6 +197,8 @@ export const FILESYSTEM_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
 
 // ── Tool implementations ─────────────────────────────────────────────────────
 
+/** Resolve a leading `~` to the user's home dir. Models hand us either form
+ *  interchangeably, so we normalise before the `safePath` guard runs. */
 function expandTilde(p: string): string {
   if (p.startsWith('~/') || p === '~') {
     return path.join(HOME, p.slice(1));
@@ -194,7 +206,9 @@ function expandTilde(p: string): string {
   return p;
 }
 
-/** Match a filename against a glob-style pattern (*, ?) */
+/** Match a filename against a glob-style pattern (*, ?). We compile to a
+ *  RegExp rather than pulling in minimatch — the patterns are user-typed
+ *  filenames, not full shell globs, so this is sufficient and dependency-free. */
 function matchPattern(filename: string, pattern: string): boolean {
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -251,7 +265,8 @@ async function moveFileImpl(source: string, destination: string): Promise<string
   const src = safePath(expandTilde(source));
   const dst = safePath(expandTilde(destination));
 
-  // Ensure destination directory exists
+  // Auto-create the destination directory so the LLM doesn't have to chain a
+  // separate mkdir call; matches the spirit of `mv` in interactive use.
   await fsp.mkdir(path.dirname(dst), { recursive: true });
   await fsp.rename(src, dst);
   return JSON.stringify({ moved: src, to: dst, success: true });
@@ -302,7 +317,10 @@ async function deleteFileImpl(filePath: string, permanent = false): Promise<stri
     }
     return JSON.stringify({ deleted: resolved, permanent: true });
   }
-  // Move to Trash on macOS
+  // Default path: move to ~/.Trash so the user can recover from a wrong move.
+  // Note: this is a plain rename, not an osascript "Move to Bin" — clashing
+  // basenames will overwrite rather than auto-rename. Acceptable trade-off
+  // for a Phase-1 agent; permanent=true is gated behind explicit user intent.
   const trashDir = path.join(HOME, '.Trash');
   const trashPath = path.join(trashDir, path.basename(resolved));
   await fsp.rename(resolved, trashPath);
@@ -311,6 +329,10 @@ async function deleteFileImpl(filePath: string, permanent = false): Promise<stri
 
 // ── Main dispatch ────────────────────────────────────────────────────────────
 
+/** Central dispatcher used by MCPRegistry. Argument aliasing
+ *  (`source`/`src`, `destination`/`dst`/`dest`) accommodates the way
+ *  smaller / quantised models often shorten field names — preventing a
+ *  retry loop where the agent re-issues the call with a different alias. */
 export async function invokeFilesystemTool(
   name: string,
   args: Record<string, unknown>
@@ -323,9 +345,15 @@ export async function invokeFilesystemTool(
     case 'fs_create_directory':
       return createDirectoryImpl(args.path as string);
     case 'fs_move_file':
-      return moveFileImpl(args.source as string, args.destination as string);
+      return moveFileImpl(
+        (args.source ?? args.src) as string,
+        (args.destination ?? args.dst ?? args.dest) as string
+      );
     case 'fs_copy_file':
-      return copyFileImpl(args.source as string, args.destination as string);
+      return copyFileImpl(
+        (args.source ?? args.src) as string,
+        (args.destination ?? args.dst ?? args.dest) as string
+      );
     case 'fs_read_file':
       return readFileImpl(args.path as string);
     case 'fs_get_file_info':
