@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import * as path from 'path';
 import { registerIpcHandlers } from './ipc/handlers';
 import { initDatabase } from './db/schema';
+import { BrowserController } from './browser/controller';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -34,7 +35,11 @@ async function createWindow(): Promise<void> {
     show: true,
   });
 
-  // Register all IPC handlers (agent, LLM, MCP, docs, RAG)
+  // The BrowserController owns the agent's BrowserView; bind it to the main
+  // window before any IPC handler that might reach for it.
+  BrowserController.getInstance().bindWindow(mainWindow);
+
+  // Register all IPC handlers (agent, LLM, MCP, docs, RAG, web, browser)
   registerIpcHandlers(mainWindow);
 
   // Load renderer

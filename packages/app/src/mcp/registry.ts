@@ -8,6 +8,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getDb } from '../db/schema';
 import OpenAI from 'openai';
 import { FILESYSTEM_TOOL_SCHEMAS, invokeFilesystemTool, isFilesystemTool } from '../tools/filesystem';
+import { WEB_TOOL_SCHEMAS, invokeWebTool, isWebTool } from '../tools/web';
+import { BROWSER_TOOL_SCHEMAS, invokeBrowserTool, isBrowserTool } from '../tools/browser';
 
 interface MCPServerConnection {
   id: string;
@@ -36,7 +38,7 @@ export class MCPRegistry {
       try {
         await this.connectServer(row.tool_id, row.name, row.mcp_server_uri);
       } catch (err) {
-        console.warn(`[MCP] Failed to connect ${row.name}:`, err);
+        console.error(`Failed to connect MCP server ${row.name}:`, err);
       }
     }
   }
@@ -66,16 +68,22 @@ export class MCPRegistry {
   /** Get all tool schemas — built-in tools first, then any connected MCP servers. */
   getToolSchemas(): OpenAI.ChatCompletionTool[] {
     const mcpTools = Array.from(this.connections.values()).flatMap(c => c.tools);
-    return [...FILESYSTEM_TOOL_SCHEMAS, ...mcpTools];
+    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...mcpTools];
   }
 
-  /** Invoke a named tool — built-in tools first, then MCP servers. */
+  /** Invoke a named tool — built-in tools first, then MCP servers.
+   *  Built-ins are checked first so a malicious or buggy MCP server can't
+   *  shadow `fs_move_file` etc. by re-using the name. */
   async invokeTool(toolName: string, args: Record<string, unknown>): Promise<string> {
-    // Built-in filesystem tools
     if (isFilesystemTool(toolName)) {
       return invokeFilesystemTool(toolName, args);
     }
-    // External MCP server tools
+    if (isWebTool(toolName)) {
+      return invokeWebTool(toolName, args);
+    }
+    if (isBrowserTool(toolName)) {
+      return invokeBrowserTool(toolName, args);
+    }
     for (const conn of this.connections.values()) {
       const hasTool = conn.tools.some(t => t.function.name === toolName);
       if (hasTool) {
@@ -86,6 +94,7 @@ export class MCPRegistry {
     throw new Error(`Tool not found: ${toolName}`);
   }
 
+  /** Tear down every stdio sub-process. Called on app quit / hot reload. */
   async disconnectAll(): Promise<void> {
     for (const conn of this.connections.values()) {
       await conn.client.close();

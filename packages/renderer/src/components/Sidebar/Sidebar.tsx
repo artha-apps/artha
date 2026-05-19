@@ -1,4 +1,4 @@
-import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench } from 'lucide-react';
+import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench, Globe } from 'lucide-react';
 import { useChatStore, ActiveView } from '../../stores/chat';
 
 export default function Sidebar() {
@@ -23,6 +23,7 @@ export default function Sidebar() {
   const navItems: { icon: React.ElementType; label: string; view: ActiveView }[] = [
     { icon: Cpu,          label: 'Models',    view: 'models'   },
     { icon: Wrench,       label: 'MCP Tools', view: 'mcp'      },
+    { icon: Globe,        label: 'Web',       view: 'web'      },
     { icon: FolderSearch, label: 'RAG Index', view: 'rag'      },
     { icon: Settings,     label: 'Settings',  view: 'settings' },
   ];

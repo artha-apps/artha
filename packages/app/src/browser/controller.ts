@@ -1,0 +1,261 @@
+/**
+ * BrowserController — the singleton that owns the agent's browser surface.
+ *
+ * Architecture: we use Electron's own Chromium via a BrowserView attached to
+ * the main window. That gives the user a *real* page (no screenshot
+ * streaming) and turns "hand the agent the wheel" into a literal click —
+ * the agent and the user share one webContents.
+ *
+ * Driving mode is a simple latch: when the user takes the wheel, every
+ * agent-issued tool returns an error until they release it. There's also a
+ * deferred-promise "handoff" channel used by `browser_request_user` — the
+ * orchestrator awaits it and the user resolves it from the UI.
+ */
+import { BrowserView, BrowserWindow } from 'electron';
+import { EventEmitter } from 'events';
+
+/** Pixel rect (in renderer-window coordinates) where the BrowserView should
+ *  be positioned. The renderer measures its pane and pushes these via IPC. */
+export interface BrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Who's currently allowed to drive the page. Switches via the driving-mode
+ *  latch + handoff promise; consulted by `assertAgentMayAct`. */
+export type DrivingMode = 'agent' | 'user';
+
+/** Snapshot pushed to the renderer on every state change. `awaitingHandoff`
+ *  is non-null while `browser_request_user` is waiting on the user. */
+export interface BrowserState {
+  attached: boolean;
+  url: string;
+  title: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  isLoading: boolean;
+  drivingMode: DrivingMode;
+  awaitingHandoff: { reason: string; since: number } | null;
+}
+
+/** Synthetic landing page rendered into the BrowserView before the agent
+ *  navigates anywhere — gives the user something to look at and explains how
+ *  the surface is meant to be driven. Served from a data: URL so there's no
+ *  network dependency on first open. */
+const ABOUT_BLANK = 'about:blank';
+const HOME_HTML = `
+  <!doctype html><html><head><meta charset="utf-8"><title>Artha Browser</title>
+  <style>
+    html,body{margin:0;padding:0;height:100%;font-family:-apple-system,system-ui,sans-serif;
+      background:#0f1117;color:#9ba1ad;display:flex;align-items:center;justify-content:center}
+    .card{text-align:center;max-width:420px;padding:32px}
+    .glyph{font-size:42px;margin-bottom:8px}
+    h1{font-size:15px;color:#e6e8ec;font-weight:600;margin:0 0 6px}
+    p{font-size:13px;line-height:1.55;margin:0}
+    code{background:#1a1d24;color:#7fb4ff;padding:2px 6px;border-radius:4px;font-size:12px}
+  </style></head>
+  <body><div class="card">
+    <div class="glyph">🪔</div>
+    <h1>Artha Browser</h1>
+    <p>Ready. Ask the agent to look something up, or paste a URL above.<br/>
+    Run <code>web_search</code> + <code>browser_navigate</code> to start.</p>
+  </div></body></html>
+`;
+
+export class BrowserController extends EventEmitter {
+  private static instance: BrowserController | null = null;
+
+  private window: BrowserWindow | null = null;
+  private view: BrowserView | null = null;
+  private attached = false;
+  private drivingMode: DrivingMode = 'agent';
+  private pendingHandoff: {
+    reason: string;
+    since: number;
+    resolve: (value: 'resumed' | 'cancelled') => void;
+  } | null = null;
+  private bounds: BrowserBounds = { x: 0, y: 0, width: 0, height: 0 };
+
+  static getInstance(): BrowserController {
+    if (!BrowserController.instance) BrowserController.instance = new BrowserController();
+    return BrowserController.instance;
+  }
+
+  /** Called once from main.ts after the BrowserWindow is created. */
+  bindWindow(window: BrowserWindow): void {
+    this.window = window;
+    // Lazily create the underlying BrowserView so memory only goes to it once
+    // the user actually opens the browser pane.
+  }
+
+  private ensureView(): BrowserView {
+    if (this.view) return this.view;
+    if (!this.window) throw new Error('BrowserController: window not bound yet');
+
+    this.view = new BrowserView({
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        // No preload — this is the *open web* surface, not the trusted UI.
+      },
+    });
+
+    const wc = this.view.webContents;
+
+    // Mirror state changes to anyone listening (the IPC layer pipes these to
+    // the renderer so the pane toolbar / URL bar stay in sync).
+    wc.on('did-navigate', () => this.emitState());
+    wc.on('did-navigate-in-page', () => this.emitState());
+    wc.on('did-start-loading', () => this.emitState());
+    wc.on('did-stop-loading', () => this.emitState());
+    wc.on('page-title-updated', () => this.emitState());
+
+    // Block window.open from spinning up new Electron BrowserWindows; force
+    // them into the agent's view so the screenshot/state model stays sane.
+    wc.setWindowOpenHandler(({ url }) => {
+      void wc.loadURL(url);
+      return { action: 'deny' };
+    });
+
+    void wc.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(HOME_HTML)}`);
+    return this.view;
+  }
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+  // attach/detach/setBounds are driven by the renderer's BrowserPane component
+  // as it mounts/unmounts and resizes. Coordinates come straight from
+  // getBoundingClientRect() on the pane container.
+
+  attach(bounds: BrowserBounds): void {
+    if (!this.window) return;
+    const view = this.ensureView();
+    if (!this.attached) {
+      this.window.setBrowserView(view);
+      this.attached = true;
+    }
+    this.setBounds(bounds);
+    this.emitState();
+  }
+
+  detach(): void {
+    if (!this.window || !this.view) return;
+    if (this.attached) {
+      this.window.setBrowserView(null);
+      this.attached = false;
+      this.emitState();
+    }
+  }
+
+  setBounds(bounds: BrowserBounds): void {
+    this.bounds = bounds;
+    if (this.view && this.attached) {
+      this.view.setBounds({
+        x: Math.round(bounds.x),
+        y: Math.round(bounds.y),
+        width: Math.round(bounds.width),
+        height: Math.round(bounds.height),
+      });
+    }
+  }
+
+  // ── Driving mode ──────────────────────────────────────────────────────────
+
+  setDrivingMode(mode: DrivingMode): void {
+    if (this.drivingMode === mode) return;
+    this.drivingMode = mode;
+    this.emitState();
+  }
+
+  getDrivingMode(): DrivingMode {
+    return this.drivingMode;
+  }
+
+  /** Throws if the agent is not allowed to act right now. Every browser_*
+   *  tool calls this before doing anything. */
+  assertAgentMayAct(): void {
+    if (this.drivingMode === 'user') {
+      throw new Error(
+        'The user currently has the wheel. Call browser_request_user or wait — ' +
+        'the user must hand control back before you can act.'
+      );
+    }
+  }
+
+  // ── Handoff (request_user / resume) ───────────────────────────────────────
+
+  /** Called by `browser_request_user`. Resolves when the user clicks Resume
+   *  (or rejects if they cancel). Only one handoff can be pending at a time. */
+  requestUser(reason: string): Promise<'resumed' | 'cancelled'> {
+    if (this.pendingHandoff) {
+      // A second concurrent request is almost certainly a bug; reject the old
+      // one and accept the new so the orchestrator doesn't deadlock.
+      this.pendingHandoff.resolve('cancelled');
+      this.pendingHandoff = null;
+    }
+    this.setDrivingMode('user');
+    return new Promise<'resumed' | 'cancelled'>((resolve) => {
+      this.pendingHandoff = { reason, since: Date.now(), resolve };
+      this.emitState();
+    });
+  }
+
+  resumeAgent(): void {
+    if (this.pendingHandoff) {
+      this.pendingHandoff.resolve('resumed');
+      this.pendingHandoff = null;
+    }
+    this.setDrivingMode('agent');
+  }
+
+  cancelHandoff(): void {
+    if (this.pendingHandoff) {
+      this.pendingHandoff.resolve('cancelled');
+      this.pendingHandoff = null;
+    }
+    // Stay in user mode — user explicitly cancelled, agent shouldn't barge in.
+    this.emitState();
+  }
+
+  // ── Accessors ─────────────────────────────────────────────────────────────
+
+  /** Returns the live webContents — used by the action helpers. Throws if the
+   *  view hasn't been created yet (someone tried to drive before attaching). */
+  getWebContents(): Electron.WebContents {
+    const view = this.ensureView();
+    return view.webContents;
+  }
+
+  getState(): BrowserState {
+    const wc = this.view?.webContents;
+    return {
+      attached: this.attached,
+      url: wc?.getURL() ?? ABOUT_BLANK,
+      title: wc?.getTitle() ?? '',
+      canGoBack: wc?.canGoBack() ?? false,
+      canGoForward: wc?.canGoForward() ?? false,
+      isLoading: wc?.isLoading() ?? false,
+      drivingMode: this.drivingMode,
+      awaitingHandoff: this.pendingHandoff
+        ? { reason: this.pendingHandoff.reason, since: this.pendingHandoff.since }
+        : null,
+    };
+  }
+
+  // ── Internals ─────────────────────────────────────────────────────────────
+
+  private emitState(): void {
+    this.emit('state', this.getState());
+  }
+
+  /** Force-destroy the view (called on app quit). */
+  async destroy(): Promise<void> {
+    this.detach();
+    if (this.view) {
+      // Electron 29 has no destroy(); just drop the reference and let GC.
+      this.view = null;
+    }
+  }
+}

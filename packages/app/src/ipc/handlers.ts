@@ -10,6 +10,9 @@ import { MCPRegistry } from '../mcp/registry';
 import { RAGIndexer } from '../rag/indexer';
 import { generateDocument } from '../docs/generator';
 import { getDb } from '../db/schema';
+import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
+import { BrowserController } from '../browser/controller';
+import { setBrowserToolEmitter } from '../tools/browser';
 
 let orchestrator: AgentOrchestrator;
 const ragIndexer = new RAGIndexer(path.join(app.getPath('userData'), 'rag-indexes'));
@@ -30,6 +33,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('agent:cancelTask', async (_e, workflowId: string) => {
     const db = getDb();
     db.prepare(`UPDATE agent_states SET status='cancelled' WHERE workflow_id=?`).run(workflowId);
+    // Stop button must also release any awaited browser handoff or the
+    // orchestrator's tool-await would block forever.
+    BrowserController.getInstance().cancelHandoff();
   });
 
   ipcMain.handle('agent:approvePlan', async (_e, workflowId: string, approved: boolean) => {
@@ -188,4 +194,102 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
     db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify({ ...existing, ...patch }));
   });
+
+  // ── Web tools ──────────────────────────────────────────────────────────
+  // Settings live inside the `web` key on the user's settings_json blob.
+  // getWebConfig fills in defaults so the renderer never has to.
+  ipcMain.handle('settings:getWebConfig', (): WebConfig => {
+    const db = getDb();
+    const row = db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+    const settings = JSON.parse(row?.settings_json ?? '{}') as { web?: Partial<WebConfig> };
+    return { ...DEFAULT_WEB_CONFIG, ...(settings.web ?? {}) };
+  });
+
+  ipcMain.handle('settings:setWebConfig', (_e, patch: Partial<WebConfig>) => {
+    const db = getDb();
+    const row = db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+    const settings = JSON.parse(row?.settings_json ?? '{}') as { web?: Partial<WebConfig> };
+    const nextWeb = { ...DEFAULT_WEB_CONFIG, ...(settings.web ?? {}), ...patch };
+    db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`)
+      .run(JSON.stringify({ ...settings, web: nextWeb }));
+    return nextWeb;
+  });
+
+  ipcMain.handle('web:clearCache', () => clearWebCache());
+
+  ipcMain.handle('web:getCacheStats', () => {
+    const db = getDb();
+    const row = db.prepare(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(content)),0) AS bytes FROM web_cache`
+    ).get() as { count: number; bytes: number };
+    return row;
+  });
+
+  // ── Browser (BrowserView co-pilot) ──────────────────────────────────────
+  // The renderer owns the pane geometry; main owns the actual webContents.
+  // A tiny event bridge keeps the URL bar / wheel indicator in sync.
+  const browser = BrowserController.getInstance();
+
+  browser.on('state', (state) => {
+    if (!window.isDestroyed()) {
+      window.webContents.send('browser:state', state);
+    }
+  });
+
+  // Browser tools fire these events through the emitter — surface them to the
+  // renderer so the pane can auto-open and the handoff banner can appear.
+  setBrowserToolEmitter({
+    emit: (channel, payload) => {
+      if (!window.isDestroyed()) window.webContents.send(channel, payload);
+    },
+  });
+
+  ipcMain.handle('browser:attach', (_e, bounds: { x: number; y: number; width: number; height: number }) => {
+    browser.attach(bounds);
+    return browser.getState();
+  });
+
+  ipcMain.handle('browser:detach', () => {
+    browser.detach();
+    return browser.getState();
+  });
+
+  ipcMain.handle('browser:setBounds', (_e, bounds: { x: number; y: number; width: number; height: number }) => {
+    browser.setBounds(bounds);
+  });
+
+  ipcMain.handle('browser:navigate', async (_e, url: string) => {
+    const wc = browser.getWebContents();
+    const { navigate } = await import('../browser/actions');
+    const r = await navigate(wc, url);
+    return r;
+  });
+
+  ipcMain.handle('browser:back', () => {
+    const wc = browser.getWebContents();
+    if (wc.canGoBack()) wc.goBack();
+  });
+  ipcMain.handle('browser:forward', () => {
+    const wc = browser.getWebContents();
+    if (wc.canGoForward()) wc.goForward();
+  });
+  ipcMain.handle('browser:reload', () => browser.getWebContents().reload());
+  ipcMain.handle('browser:stop', () => browser.getWebContents().stop());
+
+  ipcMain.handle('browser:takeWheel', () => {
+    browser.setDrivingMode('user');
+    return browser.getState();
+  });
+
+  ipcMain.handle('browser:resumeAgent', () => {
+    browser.resumeAgent();
+    return browser.getState();
+  });
+
+  ipcMain.handle('browser:cancelHandoff', () => {
+    browser.cancelHandoff();
+    return browser.getState();
+  });
+
+  ipcMain.handle('browser:getState', () => browser.getState());
 }
