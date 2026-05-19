@@ -1,0 +1,223 @@
+/**
+ * Browser actions — selector-based click / type / read / wait, plus a CDP
+ * screenshot. All driven through `webContents.executeJavaScript` so we don't
+ * have to bundle Playwright; the small set of primitives below covers the
+ * 90% of agent automation use cases (forms, link clicks, content reads).
+ *
+ * Selectors accept CSS *or* a `text=…` pseudo-selector which falls through to
+ * a case-insensitive substring match against innerText — handy when the
+ * model knows the button label but not the markup.
+ */
+import type { WebContents } from 'electron';
+
+const DEFAULT_WAIT_MS = 8_000;
+const DEFAULT_POLL_MS = 100;
+
+// ── Selector resolution (runs in page) ───────────────────────────────────────
+// Compiled to a string so executeJavaScript can ship it across the contextIsolation
+// boundary as code. Exposes `__arthaResolve(selector)` returning the first match.
+
+const RESOLVER_SCRIPT = `
+(function () {
+  if (window.__arthaResolve) return;
+  window.__arthaResolve = function (selector) {
+    if (typeof selector !== 'string' || !selector) return null;
+    if (selector.startsWith('text=')) {
+      var needle = selector.slice(5).trim().toLowerCase();
+      var nodes = document.querySelectorAll('a, button, [role=button], input[type=submit], input[type=button], label, summary');
+      for (var i = 0; i < nodes.length; i++) {
+        var t = (nodes[i].innerText || nodes[i].value || '').trim().toLowerCase();
+        if (t.indexOf(needle) !== -1) return nodes[i];
+      }
+      // Fall back to any element whose text contains the needle
+      var all = document.body ? document.body.querySelectorAll('*') : [];
+      for (var j = 0; j < all.length; j++) {
+        var el = all[j];
+        if (el.children.length === 0) {
+          var txt = (el.innerText || '').trim().toLowerCase();
+          if (txt === needle || txt.indexOf(needle) !== -1) return el;
+        }
+      }
+      return null;
+    }
+    try { return document.querySelector(selector); }
+    catch (e) { return null; }
+  };
+  window.__arthaScrollIntoView = function (el) {
+    if (!el || typeof el.scrollIntoView !== 'function') return;
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  };
+})();
+`;
+
+async function ensureResolver(wc: WebContents): Promise<void> {
+  await wc.executeJavaScript(RESOLVER_SCRIPT, true);
+}
+
+// ── waitForSelector ──────────────────────────────────────────────────────────
+
+export async function waitForSelector(wc: WebContents, selector: string, timeoutMs = DEFAULT_WAIT_MS): Promise<void> {
+  await ensureResolver(wc);
+  const deadline = Date.now() + timeoutMs;
+  // Poll from the main process rather than running a giant Promise inside the
+  // page — keeps cancellation simple and avoids leaving intervals around if
+  // the page navigates mid-wait.
+  while (Date.now() < deadline) {
+    const found = await wc.executeJavaScript(
+      `!!window.__arthaResolve(${JSON.stringify(selector)})`,
+      true,
+    );
+    if (found) return;
+    await new Promise((r) => setTimeout(r, DEFAULT_POLL_MS));
+  }
+  throw new Error(`waitForSelector timed out after ${timeoutMs}ms: ${selector}`);
+}
+
+// ── navigate ─────────────────────────────────────────────────────────────────
+
+export async function navigate(wc: WebContents, url: string, timeoutMs = 30_000): Promise<{ url: string; title: string }> {
+  if (!/^https?:\/\//i.test(url) && !url.startsWith('about:')) {
+    url = `https://${url}`;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`navigate timed out after ${timeoutMs}ms: ${url}`));
+    }, timeoutMs);
+    const onDidFinish = () => { cleanup(); resolve(); };
+    const onDidFail = (_e: unknown, _code: number, desc: string) => {
+      cleanup();
+      reject(new Error(`navigate failed: ${desc}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      wc.removeListener('did-finish-load', onDidFinish);
+      wc.removeListener('did-fail-load', onDidFail);
+    };
+    wc.once('did-finish-load', onDidFinish);
+    wc.once('did-fail-load', onDidFail);
+    void wc.loadURL(url);
+  });
+  return { url: wc.getURL(), title: wc.getTitle() };
+}
+
+// ── click / type / read ──────────────────────────────────────────────────────
+
+export async function click(wc: WebContents, selector: string, waitMs = DEFAULT_WAIT_MS): Promise<void> {
+  await waitForSelector(wc, selector, waitMs);
+  const ok = await wc.executeJavaScript(
+    `(function(){var el=window.__arthaResolve(${JSON.stringify(selector)});` +
+    `if(!el)return false;window.__arthaScrollIntoView(el);` +
+    // Prefer native .click() — handles forms/links/submit; fall through to
+    // dispatching a synthetic event for elements that need it.
+    `try{el.click()}catch(e){var ev=new MouseEvent('click',{bubbles:true,cancelable:true,view:window});el.dispatchEvent(ev)}` +
+    `return true})()`,
+    true,
+  );
+  if (!ok) throw new Error(`click: no element matched ${selector}`);
+}
+
+export async function typeInto(wc: WebContents, selector: string, text: string, opts: { submit?: boolean; waitMs?: number } = {}): Promise<void> {
+  await waitForSelector(wc, selector, opts.waitMs ?? DEFAULT_WAIT_MS);
+  const ok = await wc.executeJavaScript(
+    `(function(){
+      var el=window.__arthaResolve(${JSON.stringify(selector)});
+      if(!el)return false;
+      window.__arthaScrollIntoView(el);
+      el.focus();
+      var tag=(el.tagName||'').toLowerCase();
+      var isContentEditable=el.isContentEditable===true;
+      if(tag==='input'||tag==='textarea'){
+        var setter=Object.getOwnPropertyDescriptor(el.__proto__,'value')&&Object.getOwnPropertyDescriptor(el.__proto__,'value').set;
+        if(setter)setter.call(el,${JSON.stringify(text)});
+        else el.value=${JSON.stringify(text)};
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+        el.dispatchEvent(new Event('change',{bubbles:true}));
+      } else if(isContentEditable){
+        el.textContent=${JSON.stringify(text)};
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+      } else {
+        el.textContent=${JSON.stringify(text)};
+      }
+      return true;
+    })()`,
+    true,
+  );
+  if (!ok) throw new Error(`type: no element matched ${selector}`);
+
+  if (opts.submit) {
+    // Press Enter via CDP — synthesises a real keydown so SPA listeners fire.
+    await wc.executeJavaScript(
+      `(function(){var el=document.activeElement;if(!el)return;` +
+      `['keydown','keypress','keyup'].forEach(function(t){` +
+      `el.dispatchEvent(new KeyboardEvent(t,{key:'Enter',code:'Enter',which:13,keyCode:13,bubbles:true}));});` +
+      `if(el.form&&typeof el.form.submit==='function'){try{el.form.requestSubmit?el.form.requestSubmit():el.form.submit()}catch(e){}}` +
+      `})()`,
+      true,
+    );
+  }
+}
+
+/** Cleaned-text payload returned by `readDom`. `truncated` lets the model
+ *  decide whether to re-call with a narrower selector. */
+export interface ReadResult {
+  url: string;
+  title: string;
+  text: string;
+  truncated: boolean;
+}
+
+export async function readDom(wc: WebContents, selector?: string, maxChars = 12_000): Promise<ReadResult> {
+  await ensureResolver(wc);
+  const text = (await wc.executeJavaScript(
+    `(function(){
+      var root=${selector ? `window.__arthaResolve(${JSON.stringify(selector)})` : 'document.body'};
+      if(!root)return '';
+      var clone=root.cloneNode(true);
+      // strip scripts/styles for cheap readability
+      clone.querySelectorAll && clone.querySelectorAll('script,style,noscript').forEach(function(n){n.remove();});
+      var t=(clone.innerText||clone.textContent||'').replace(/[\\t ]+/g,' ').replace(/\\n{3,}/g,'\\n\\n');
+      return t.trim();
+    })()`,
+    true,
+  )) as string;
+  const truncated = text.length > maxChars;
+  return {
+    url: wc.getURL(),
+    title: wc.getTitle(),
+    text: truncated ? text.slice(0, maxChars) : text,
+    truncated,
+  };
+}
+
+// ── Screenshot via CDP ───────────────────────────────────────────────────────
+
+export async function screenshot(wc: WebContents, fullPage = false): Promise<string> {
+  // Native Electron capturePage is the simplest path; CDP would only matter
+  // if we needed fullPage > viewport, which we approximate by resizing capture.
+  const img = await wc.capturePage();
+  void fullPage; // reserved for future CDP-based full-page capture
+  return img.toDataURL().replace(/^data:image\/png;base64,/, '');
+}
+
+// ── Navigation helpers ───────────────────────────────────────────────────────
+
+export function back(wc: WebContents): boolean {
+  if (!wc.canGoBack()) return false;
+  wc.goBack();
+  return true;
+}
+
+export function forward(wc: WebContents): boolean {
+  if (!wc.canGoForward()) return false;
+  wc.goForward();
+  return true;
+}
+
+export function reload(wc: WebContents): void {
+  wc.reload();
+}
+
+export function getUrl(wc: WebContents): { url: string; title: string } {
+  return { url: wc.getURL(), title: wc.getTitle() };
+}

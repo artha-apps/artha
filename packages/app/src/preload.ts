@@ -80,6 +80,54 @@ const api = {
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch: unknown) => ipcRenderer.invoke('settings:set', patch),
+    getWebConfig: () => ipcRenderer.invoke('settings:getWebConfig'),
+    setWebConfig: (patch: unknown) => ipcRenderer.invoke('settings:setWebConfig', patch),
+  },
+
+  // ── Web tools (built-in) ─────────────────────────────────────────────────
+  // Backed by SearXNG + Mozilla Readability. Surface for managing the on-disk
+  // fetch cache shown in the Web settings panel.
+  web: {
+    clearCache: () => ipcRenderer.invoke('web:clearCache') as Promise<number>,
+    getCacheStats: () => ipcRenderer.invoke('web:getCacheStats') as Promise<{ count: number; bytes: number }>,
+  },
+
+  // ── Browser (co-piloted BrowserView) ─────────────────────────────────────
+  // attach/detach show or hide the BrowserView under the renderer's pane.
+  // The renderer is the source of truth for pane geometry; main owns the
+  // webContents. Events stream the current URL, title, loading state, and
+  // driving mode (agent | user) so the toolbar stays accurate.
+  browser: {
+    attach: (bounds: { x: number; y: number; width: number; height: number }) =>
+      ipcRenderer.invoke('browser:attach', bounds),
+    detach: () => ipcRenderer.invoke('browser:detach'),
+    setBounds: (bounds: { x: number; y: number; width: number; height: number }) =>
+      ipcRenderer.invoke('browser:setBounds', bounds),
+    navigate: (url: string) => ipcRenderer.invoke('browser:navigate', url),
+    back: () => ipcRenderer.invoke('browser:back'),
+    forward: () => ipcRenderer.invoke('browser:forward'),
+    reload: () => ipcRenderer.invoke('browser:reload'),
+    stop: () => ipcRenderer.invoke('browser:stop'),
+    takeWheel: () => ipcRenderer.invoke('browser:takeWheel'),
+    resumeAgent: () => ipcRenderer.invoke('browser:resumeAgent'),
+    cancelHandoff: () => ipcRenderer.invoke('browser:cancelHandoff'),
+    getState: () => ipcRenderer.invoke('browser:getState'),
+    onState: (cb: (state: unknown) => void) => {
+      ipcRenderer.on('browser:state', (_e, s) => cb(s));
+      return () => ipcRenderer.removeAllListeners('browser:state');
+    },
+    onAutoOpen: (cb: () => void) => {
+      ipcRenderer.on('browser:autoOpen', () => cb());
+      return () => ipcRenderer.removeAllListeners('browser:autoOpen');
+    },
+    onHandoffRequested: (cb: (payload: { reason: string }) => void) => {
+      ipcRenderer.on('browser:handoffRequested', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('browser:handoffRequested');
+    },
+    onHandoffResolved: (cb: (payload: { outcome: 'resumed' | 'cancelled' }) => void) => {
+      ipcRenderer.on('browser:handoffResolved', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('browser:handoffResolved');
+    },
   },
 };
 

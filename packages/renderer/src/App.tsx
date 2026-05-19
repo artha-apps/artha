@@ -1,6 +1,6 @@
 /**
  * App root — wires IPC event listeners and renders the shell layout.
- * Layout: [Sidebar | ChatWindow | ExecutionLog]
+ * Layout: [Sidebar | ChatWindow | (BrowserPane OR ExecutionLog)]
  */
 import { useEffect } from 'react';
 import { useChatStore } from './stores/chat';
@@ -10,6 +10,9 @@ import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
 import ModelsPanel from './components/Settings/ModelsPanel';
 import MCPToolsPanel from './components/Settings/MCPToolsPanel';
+import WebPanel from './components/Settings/WebPanel';
+import BrowserPane from './components/Browser/BrowserPane';
+import { useBrowserStore } from './stores/browser';
 
 declare global {
   interface Window {
@@ -19,6 +22,7 @@ declare global {
 
 export default function App() {
   const { appendToken, finaliseStream, addToolEvent, setPendingPlan, setSessions, activeView } = useChatStore();
+  const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
 
   useEffect(() => {
     // Wire IPC → store
@@ -36,10 +40,14 @@ export default function App() {
       timer = setTimeout(finaliseStream, 200);
     });
 
+    // Auto-open the browser pane when the agent calls a browser tool — keeps
+    // the user in the loop without forcing them to find a toggle.
+    const offAutoOpen = window.artha.browser.onAutoOpen(() => setBrowserOpen(true));
+
     // Load sessions
     window.artha.sessions.list().then(setSessions);
 
-    return () => { offToken(); offTool(); offPlan(); offTokenFS(); clearTimeout(timer); };
+    return () => { offToken(); offTool(); offPlan(); offTokenFS(); offAutoOpen(); clearTimeout(timer); };
   }, []);
 
   return (
@@ -53,11 +61,14 @@ export default function App() {
         {activeView === 'chat' && (
           <>
             <ChatWindow />
-            <ExecutionLog />
+            {isBrowserOpen
+              ? <BrowserPane onClose={() => setBrowserOpen(false)} />
+              : <ExecutionLog />}
           </>
         )}
         {activeView === 'models' && <ModelsPanel />}
         {activeView === 'mcp' && <MCPToolsPanel />}
+        {activeView === 'web' && <WebPanel />}
         {activeView === 'rag' && (
           <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
             RAG Index — coming soon
