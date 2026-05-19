@@ -92,6 +92,16 @@ const api = {
     setWebConfig: (patch: unknown) => ipcRenderer.invoke('settings:setWebConfig', patch),
   },
 
+  // ── Bundles ──────────────────────────────────────────────────────────────
+  // `.artha-bundle` = signed, portable record of an agent run + artifacts that
+  // can be re-imported and inspected on another machine.
+  bundles: {
+    export: (runId: string, docId?: string) =>
+      ipcRenderer.invoke('bundles:export', runId, docId),
+    import: () => ipcRenderer.invoke('bundles:import'),
+    openExtracted: (dir: string) => ipcRenderer.invoke('bundles:openExtracted', dir),
+  },
+
   // ── Router ───────────────────────────────────────────────────────────────
   // Adaptive per-task-type model selection. `benchmark` probes every installed
   // Ollama model on the three canonical tasks (plan / tool_args / synthesis)

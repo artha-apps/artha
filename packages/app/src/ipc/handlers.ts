@@ -9,6 +9,7 @@ import { AgentOrchestrator } from '../agent/orchestrator';
 import { MCPRegistry } from '../mcp/registry';
 import { RAGIndexer } from '../rag/indexer';
 import { generateDocument } from '../docs/generator';
+import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
@@ -194,6 +195,30 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const db = getDb();
     const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
     db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify({ ...existing, ...patch }));
+  });
+
+  // ── Bundles ─────────────────────────────────────────────────────────────
+  ipcMain.handle('bundles:export', async (_e, runId: string, docId?: string) => {
+    const result = await dialog.showSaveDialog(window, {
+      defaultPath: `workflow-${runId.slice(0, 8)}.artha-bundle`,
+      filters: [{ name: 'Artha Bundle', extensions: ['artha-bundle'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    return exportBundle({ runId, outPath: result.filePath, docId });
+  });
+
+  ipcMain.handle('bundles:import', async () => {
+    const result = await dialog.showOpenDialog(window, {
+      filters: [{ name: 'Artha Bundle', extensions: ['artha-bundle'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const importsDir = path.join(app.getPath('userData'), 'imported-bundles');
+    return importBundle(result.filePaths[0], importsDir);
+  });
+
+  ipcMain.handle('bundles:openExtracted', (_e, dir: string) => {
+    shell.openPath(dir);
   });
 
   // ── Router ──────────────────────────────────────────────────────────────
