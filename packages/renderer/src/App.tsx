@@ -15,6 +15,7 @@ import BrowserPane from './components/Browser/BrowserPane';
 import { useBrowserStore } from './stores/browser';
 import RouterPanel from './components/Settings/RouterPanel';
 import TimeTravelPanel from './components/Settings/TimeTravelPanel';
+import ProvenancePanel from './components/Settings/ProvenancePanel';
 
 declare global {
   interface Window {
@@ -74,6 +75,7 @@ export default function App() {
         {activeView === 'web' && <WebPanel />}
         {activeView === 'router' && <RouterPanel />}
         {activeView === 'timetravel' && <TimeTravelPanel />}
+        {activeView === 'provenance' && <ProvenancePanel />}
         {activeView === 'rag' && (
           <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
             RAG Index — coming soon

@@ -211,6 +211,37 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     setOverride(taskType, ollamaName)
   );
 
+  // ── Provenance ──────────────────────────────────────────────────────────
+  ipcMain.handle('provenance:listDocs', () => {
+    return getDb().prepare(
+      `SELECT doc_id, file_path, doc_type, title, model, content_hash, created_at
+       FROM generated_documents ORDER BY created_at DESC LIMIT 200`
+    ).all();
+  });
+
+  ipcMain.handle('provenance:listAnchors', (_e, docId: string) => {
+    return getDb().prepare(
+      `SELECT anchor_id, source_type, source_ref, excerpt
+       FROM provenance_records WHERE doc_id=? ORDER BY rowid ASC`
+    ).all(docId);
+  });
+
+  // The receipt is a sidecar JSON file written by the document generator next
+  // to the artifact. It's the canonical signed record of "what produced this
+  // file" — returned to the renderer so the user can audit before sharing.
+  ipcMain.handle('provenance:getReceipt', (_e, docId: string) => {
+    const row = getDb().prepare(
+      `SELECT receipt_path FROM generated_documents WHERE doc_id=?`
+    ).get(docId) as { receipt_path: string } | undefined;
+    if (!row?.receipt_path) return null;
+    try {
+      const fs = require('fs') as typeof import('fs');
+      return JSON.parse(fs.readFileSync(row.receipt_path, 'utf-8'));
+    } catch {
+      return null;
+    }
+  });
+
   // ── Time-travel ─────────────────────────────────────────────────────────
   // `has_snapshot` is a 0/1 flag the UI uses to disable the "Fork" button for
   // steps that didn't capture a full messages array (only assistant/system

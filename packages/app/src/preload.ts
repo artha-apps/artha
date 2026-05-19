@@ -109,6 +109,16 @@ const api = {
     },
   },
 
+  // ── Provenance ───────────────────────────────────────────────────────────
+  // For any generated document: list the per-anchor source records (which
+  // RAG chunk / tool call / LLM completion produced each paragraph or cell)
+  // and read the signed JSON receipt written alongside the artifact.
+  provenance: {
+    listDocs: () => ipcRenderer.invoke('provenance:listDocs'),
+    listAnchors: (docId: string) => ipcRenderer.invoke('provenance:listAnchors', docId),
+    getReceipt: (docId: string) => ipcRenderer.invoke('provenance:getReceipt', docId),
+  },
+
   // ── Time travel ──────────────────────────────────────────────────────────
   // Every step of every agent run is snapshotted in `agent_steps`. `fork`
   // rehydrates the messages from a chosen step and resumes the ReAct loop
