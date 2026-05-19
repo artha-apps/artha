@@ -1,4 +1,4 @@
-import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench, Globe, Route } from 'lucide-react';
+import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench, Globe, Route, History } from 'lucide-react';
 import { useChatStore, ActiveView } from '../../stores/chat';
 
 export default function Sidebar() {
@@ -26,6 +26,7 @@ export default function Sidebar() {
     { icon: Globe,        label: 'Web',       view: 'web'      },
     { icon: FolderSearch, label: 'RAG Index', view: 'rag'      },
     { icon: Route,        label: 'Router',    view: 'router'   },
+    { icon: History,      label: 'Time Travel', view: 'timetravel' },
     { icon: Settings,     label: 'Settings',  view: 'settings' },
   ];
 
