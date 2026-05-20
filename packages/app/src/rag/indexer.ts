@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { app } from 'electron';
 import { getDb } from '../db/schema';
+import { extractText } from './extract';
 
 /** A retrieved chunk with its originating file — used to cite real sources in
  *  generated documents (not just anonymous context). */
@@ -21,7 +22,7 @@ export interface RetrievedChunk {
 /** File extensions we attempt to embed. Binary/proprietary types like .docx
  *  and .pdf go through `readFileSync('utf-8')` today — Phase 2 will swap in
  *  proper extractors. Keeping the list narrow avoids embedding e.g. images. */
-const SUPPORTED_EXTENSIONS = ['.txt', '.md', '.pdf', '.docx', '.csv', '.json', '.ts', '.js', '.py'];
+const SUPPORTED_EXTENSIONS = ['.txt', '.md', '.pdf', '.docx', '.xlsx', '.csv', '.json', '.ts', '.js', '.py'];
 /** Characters per chunk. 512 keeps each vector roughly within a single
  *  semantic idea while staying well under nomic-embed-text's 2k token limit. */
 const CHUNK_SIZE = 512;
@@ -61,7 +62,10 @@ export class RAGIndexer {
 
     for (const file of files) {
       try {
-        const text = fs.readFileSync(file, 'utf-8');
+        // Real extraction per format — reading a .pdf/.docx as UTF-8 yields
+        // garbage that poisons the embeddings.
+        const text = await extractText(file);
+        if (!text.trim()) continue;
         const fileChunks = this.chunkText(text, file);
         for (const chunk of fileChunks) {
           const embedding = await this.embed(chunk.text);

@@ -244,6 +244,13 @@ embeds every supported file locally. Rebuild re-embeds after the folder changes.
 Both `rag_search` and `docs_generate use_rag` are inert until at least one index
 exists — the panel is the on-ramp for that whole capability.
 
+Indexing extracts text per format (`rag/extract.ts`) rather than reading bytes
+as UTF-8: `pdf-parse` for PDF, `mammoth` for DOCX, the `xlsx` lib for
+spreadsheets (each sheet → CSV), and a direct UTF-8 read for text/code. Heavy
+parsers are dynamically imported and any parse failure yields an empty string
+so one bad file never aborts a build. This is what makes PDF/DOCX retrieval
+actually useful instead of embedding binary noise.
+
 ## Cloud Models (BYOK, opt-in)
 
 Local Ollama is the default and the privacy promise. Because `LLMClient` is
