@@ -9,6 +9,7 @@ import * as crypto from 'crypto';
 import { app } from 'electron';
 import { getDb } from '../db/schema';
 import { extractText } from './extract';
+import { parseIndexFile, type Chunk, type IndexFile } from './indexFormat';
 
 /** A retrieved chunk with its originating file — used to cite real sources in
  *  generated documents (not just anonymous context). */
@@ -19,9 +20,9 @@ export interface RetrievedChunk {
   score: number;
 }
 
-/** File extensions we attempt to embed. Binary/proprietary types like .docx
- *  and .pdf go through `readFileSync('utf-8')` today — Phase 2 will swap in
- *  proper extractors. Keeping the list narrow avoids embedding e.g. images. */
+/** File extensions we attempt to embed. PDF/DOCX/XLSX go through real
+ *  extractors (see `extract.ts`); the rest are read as UTF-8. Keeping the list
+ *  narrow avoids embedding e.g. images. */
 const SUPPORTED_EXTENSIONS = ['.txt', '.md', '.pdf', '.docx', '.xlsx', '.csv', '.json', '.ts', '.js', '.py'];
 /** Characters per chunk. 512 keeps each vector roughly within a single
  *  semantic idea while staying well under nomic-embed-text's 2k token limit. */
@@ -31,16 +32,6 @@ const CHUNK_SIZE = 512;
 const CHUNK_OVERLAP = 64;
 const OLLAMA_EMBED_URL = 'http://localhost:11434/api/embeddings';
 const EMBED_MODEL = 'nomic-embed-text';
-
-/** One indexed unit: a slice of a source file plus its embedding. The `id`
- *  is a deterministic md5 of `${filePath}:${offset}` so re-indexing the same
- *  file produces stable IDs (useful for incremental updates in Phase 2). */
-interface Chunk {
-  id: string;
-  filePath: string;
-  text: string;
-  embedding: number[];
-}
 
 /** File → chunk → vector pipeline rooted at a single on-disk directory.
  *  One `RAGIndexer` instance covers many indexes (each persisted as its own
@@ -57,17 +48,42 @@ export class RAGIndexer {
    *  the resulting array to `<indexDir>/<indexId>.json`. Returns the number of
    *  chunks indexed and updates `rag_indexes.doc_count` + `last_indexed`. */
   async buildIndex(indexId: string, dirPath: string): Promise<number> {
+    const indexPath = path.join(this.indexDir, `${indexId}.json`);
+
+    // Load the previous index (if any) so we can reuse embeddings for files
+    // whose content hasn't changed — re-embedding is the expensive part.
+    let prev: { chunks: Chunk[]; fileHashes: Record<string, string> } = { chunks: [], fileHashes: {} };
+    if (fs.existsSync(indexPath)) {
+      try { prev = parseIndexFile(fs.readFileSync(indexPath, 'utf-8')); } catch { /* rebuild from scratch */ }
+    }
+    const prevByFile = new Map<string, Chunk[]>();
+    for (const c of prev.chunks) {
+      const arr = prevByFile.get(c.filePath) ?? [];
+      arr.push(c);
+      prevByFile.set(c.filePath, arr);
+    }
+
     const files = this.collectFiles(dirPath);
     const chunks: Chunk[] = [];
+    const fileHashes: Record<string, string> = {};
 
     for (const file of files) {
       try {
-        // Real extraction per format — reading a .pdf/.docx as UTF-8 yields
-        // garbage that poisons the embeddings.
+        const buf = fs.readFileSync(file);
+        const hash = crypto.createHash('md5').update(buf).digest('hex');
+        fileHashes[file] = hash;
+
+        // Unchanged + already embedded → carry the existing chunks forward.
+        const cached = prevByFile.get(file);
+        if (prev.fileHashes[file] === hash && cached?.length) {
+          chunks.push(...cached);
+          continue;
+        }
+
+        // New or changed — extract real text (not raw UTF-8) and re-embed.
         const text = await extractText(file);
         if (!text.trim()) continue;
-        const fileChunks = this.chunkText(text, file);
-        for (const chunk of fileChunks) {
+        for (const chunk of this.chunkText(text, file)) {
           const embedding = await this.embed(chunk.text);
           chunks.push({ ...chunk, embedding });
         }
@@ -75,9 +91,10 @@ export class RAGIndexer {
         // Skip unreadable files silently
       }
     }
+    // Files that disappeared from disk are simply not carried forward.
 
-    const indexPath = path.join(this.indexDir, `${indexId}.json`);
-    fs.writeFileSync(indexPath, JSON.stringify(chunks));
+    const payload: IndexFile = { version: 2, chunks, fileHashes };
+    fs.writeFileSync(indexPath, JSON.stringify(payload));
 
     const db = getDb();
     db.prepare(`UPDATE rag_indexes SET doc_count=?, last_indexed=unixepoch() WHERE index_id=?`)
@@ -93,7 +110,7 @@ export class RAGIndexer {
     const indexPath = path.join(this.indexDir, `${indexId}.json`);
     if (!fs.existsSync(indexPath)) return [];
 
-    const chunks: Chunk[] = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+    const { chunks } = parseIndexFile(fs.readFileSync(indexPath, 'utf-8'));
     const queryEmbedding = await this.embed(query);
 
     const scored = chunks.map(chunk => ({
@@ -111,7 +128,7 @@ export class RAGIndexer {
     const indexPath = path.join(this.indexDir, `${indexId}.json`);
     if (!fs.existsSync(indexPath)) return [];
 
-    const chunks: Chunk[] = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+    const { chunks } = parseIndexFile(fs.readFileSync(indexPath, 'utf-8'));
     const queryEmbedding = await this.embed(query);
 
     return chunks
