@@ -2,14 +2,16 @@
  * App root — wires IPC event listeners and renders the shell layout.
  * Layout: [Sidebar | ChatWindow | (BrowserPane OR ExecutionLog)]
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useChatStore } from './stores/chat';
+import Onboarding from './components/Onboarding/Onboarding';
 import Sidebar from './components/Sidebar/Sidebar';
 import ChatWindow from './components/Chat/ChatWindow';
 import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
 import ModelsPanel from './components/Settings/ModelsPanel';
 import MCPToolsPanel from './components/Settings/MCPToolsPanel';
+import SkillsPanel from './components/Settings/SkillsPanel';
 import WebPanel from './components/Settings/WebPanel';
 import BrowserPane from './components/Browser/BrowserPane';
 import { useBrowserStore } from './stores/browser';
@@ -25,8 +27,18 @@ declare global {
 }
 
 export default function App() {
-  const { appendToken, finaliseStream, addToolEvent, addCitations, setPendingPlan, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId } = useChatStore();
+  const { appendToken, finaliseStream, addToolEvent, addCitations, setPendingPlan, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId, setActiveSkill } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
+
+  // First-run onboarding gate. `null` = still loading the flag; show nothing
+  // structural until we know, to avoid a flash of the empty chat behind it.
+  const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    window.artha.settings.get().then((s: { onboardingComplete?: boolean }) => {
+      setShowOnboarding(!s?.onboardingComplete);
+    }).catch(() => setShowOnboarding(false));
+  }, []);
 
   useEffect(() => {
     // Wire IPC → store
@@ -46,6 +58,10 @@ export default function App() {
     });
     const offCitations = window.artha.agent.onCitations((p) => addCitations(p.citations));
 
+    // The orchestrator tells us which skill (if any) it loaded for this run —
+    // surfaced as a badge in the composer until the stream ends.
+    const offSkill = window.artha.agent.onSkillActive((s) => setActiveSkill(s));
+
     // Live session title updates — main auto-titles a session from its first
     // user message; this keeps the sidebar in sync without a manual reload.
     const offTitle = window.artha.sessions.onTitleUpdated(({ sessionId, title }) => {
@@ -62,7 +78,7 @@ export default function App() {
     // Load sessions
     window.artha.sessions.list().then(setSessions);
 
-    return () => { offToken(); offTool(); offPlan(); offEnd(); offWorkflow(); offCitations(); offTitle(); offAutoOpen(); };
+    return () => { offToken(); offTool(); offPlan(); offEnd(); offWorkflow(); offCitations(); offSkill(); offTitle(); offAutoOpen(); };
   }, []);
 
   return (
@@ -82,6 +98,7 @@ export default function App() {
           </>
         )}
         {activeView === 'models' && <ModelsPanel />}
+        {activeView === 'skills' && <SkillsPanel />}
         {activeView === 'mcp' && <MCPToolsPanel />}
         {activeView === 'web' && <WebPanel />}
         {activeView === 'router' && <RouterPanel />}
@@ -101,6 +118,8 @@ export default function App() {
       </main>
 
       <PlanApproval />
+
+      {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
     </div>
   );
 }

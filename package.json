@@ -13,7 +13,9 @@
     "build": "npm run build -w packages/renderer && npm run build -w packages/app",
     "dist": "npm run build && electron-builder",
     "lint": "eslint packages/*/src --ext .ts,.tsx",
-    "typecheck": "tsc -b packages/app/tsconfig.json packages/renderer/tsconfig.json"
+    "typecheck": "tsc -b packages/app/tsconfig.json packages/renderer/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
@@ -24,6 +26,7 @@
     "electron-builder": "^24.9.1",
     "eslint": "^8.57.0",
     "typescript": "^5.4.0",
+    "vitest": "^2.1.0",
     "wait-on": "^7.2.0"
   },
   "build": {
@@ -36,6 +39,13 @@
     "files": [
       "packages/app/dist/**/*",
       "packages/renderer/dist/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Noopurtrivedi",
+        "repo": "artha"
+      }
     ],
     "mac": {
       "category": "public.app-category.productivity",

@@ -154,6 +154,7 @@ const BUILTIN_TOOLS = [
   'browser_navigate', 'browser_click', 'browser_type', 'browser_wait_for',
   'browser_read_dom', 'browser_screenshot', 'browser_get_url',
   'browser_back', 'browser_forward', 'browser_reload', 'browser_request_user',
+  'docs_generate',
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

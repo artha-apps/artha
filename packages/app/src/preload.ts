@@ -39,6 +39,10 @@ const api = {
     },
     approvePlan: (workflowId: string, approved: boolean) =>
       ipcRenderer.invoke('agent:approvePlan', workflowId, approved),
+    onSkillActive: (cb: (payload: { slug: string; name: string; icon: string }) => void) => {
+      ipcRenderer.on('agent:skillActive', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:skillActive');
+    },
   },
 
   // ── Sessions & History ───────────────────────────────────────────────────
@@ -59,9 +63,23 @@ const api = {
     listModels: () => ipcRenderer.invoke('llm:listModels'),
     getActiveModel: () => ipcRenderer.invoke('llm:getActiveModel'),
     detectHardware: () => ipcRenderer.invoke('llm:detectHardware'),
+    checkOllama: () => ipcRenderer.invoke('llm:checkOllama') as Promise<boolean>,
     pullModel: (name: string) => ipcRenderer.invoke('llm:pullModel', name),
+    pullModelStream: (name: string) => ipcRenderer.invoke('llm:pullModelStream', name) as Promise<boolean>,
+    onPullProgress: (cb: (p: { name: string; status: string; completed?: number; total?: number; percent?: number; error?: string }) => void) => {
+      ipcRenderer.on('llm:pullProgress', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('llm:pullProgress');
+    },
     setActiveModel: (modelName: string) =>
       ipcRenderer.invoke('llm:setActiveModel', modelName),
+    // Cloud models (BYOK, opt-in). Keys are stored locally and only sent to the
+    // provider the user configured; local Ollama remains the default.
+    listConfigured: () => ipcRenderer.invoke('llm:listConfigured'),
+    addCloudModel: (m: { provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean }) =>
+      ipcRenderer.invoke('llm:addCloudModel', m),
+    setActiveModelById: (modelId: string) =>
+      ipcRenderer.invoke('llm:setActiveModelById', modelId),
+    removeModel: (modelId: string) => ipcRenderer.invoke('llm:removeModel', modelId),
   },
 
   // ── MCP Tools ────────────────────────────────────────────────────────────
@@ -74,6 +92,20 @@ const api = {
     removeServer: (id: string) => ipcRenderer.invoke('mcp:removeServer', id),
     getAuditLog: (limit?: number) =>
       ipcRenderer.invoke('mcp:getAuditLog', limit),
+  },
+
+  // ── Skills ───────────────────────────────────────────────────────────────
+  // Reusable agent playbooks. Invoked by typing "/slug" in chat or matched
+  // automatically by description. CRUD here drives the Skills settings panel.
+  skills: {
+    list: () => ipcRenderer.invoke('skills:list'),
+    listEnabled: () => ipcRenderer.invoke('skills:listEnabled'),
+    create: (input: unknown) => ipcRenderer.invoke('skills:create', input),
+    update: (skillId: string, patch: unknown) =>
+      ipcRenderer.invoke('skills:update', skillId, patch),
+    toggle: (skillId: string, enabled: boolean) =>
+      ipcRenderer.invoke('skills:toggle', skillId, enabled),
+    remove: (skillId: string) => ipcRenderer.invoke('skills:remove', skillId),
   },
 
   // ── RAG / Indexes ────────────────────────────────────────────────────────

@@ -7,7 +7,8 @@ import * as path from 'path';
 import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { MCPRegistry } from '../mcp/registry';
-import { RAGIndexer } from '../rag/indexer';
+import { SkillRegistry, type SkillInput } from '../skills/registry';
+import { getDefaultRagIndexer } from '../rag/indexer';
 import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
@@ -17,7 +18,7 @@ import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
 
 let orchestrator: AgentOrchestrator;
-const ragIndexer = new RAGIndexer(path.join(app.getPath('userData'), 'rag-indexes'));
+const ragIndexer = getDefaultRagIndexer();
 
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
@@ -137,7 +138,24 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const totalMem = (await import('os')).totalmem();
     const gbRam = Math.round(totalMem / 1024 / 1024 / 1024);
     const recommendation = gbRam >= 32 ? 'Q8 or F16 models' : gbRam >= 16 ? 'Q8 models (8B)' : 'Q4 models (3B-8B)';
-    return { gbRam, recommendation };
+    // A concrete starter model sized to the machine — qwen2.5 is strong at the
+    // tool-calling the agent leans on; llama3.2:3b is the safe low-RAM default.
+    const recommendedModel = gbRam >= 32
+      ? 'qwen2.5:14b-instruct-q4_K_M'
+      : gbRam >= 16
+        ? 'qwen2.5:7b-instruct-q4_K_M'
+        : 'llama3.2:3b-instruct-q4_K_M';
+    return { gbRam, recommendation, recommendedModel };
+  });
+
+  // Check whether the local Ollama runtime is reachable — drives onboarding.
+  ipcMain.handle('llm:checkOllama', async () => {
+    try {
+      const res = await fetch('http://localhost:11434/api/tags');
+      return res.ok;
+    } catch {
+      return false;
+    }
   });
 
   ipcMain.handle('llm:pullModel', async (_e, name: string) => {
@@ -146,6 +164,47 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       body: JSON.stringify({ name, stream: false }),
     });
     return res.ok;
+  });
+
+  // Streaming pull — Ollama returns NDJSON progress lines; we forward each as a
+  // `llm:pullProgress` event so onboarding can show a real download bar.
+  ipcMain.handle('llm:pullModelStream', async (_e, name: string) => {
+    const emit = (payload: unknown) => {
+      if (!window.isDestroyed()) window.webContents.send('llm:pullProgress', payload);
+    };
+    try {
+      const res = await fetch('http://localhost:11434/api/pull', {
+        method: 'POST',
+        body: JSON.stringify({ name, stream: true }),
+      });
+      if (!res.ok || !res.body) {
+        emit({ name, status: 'error', error: `Ollama responded ${res.status}` });
+        return false;
+      }
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const obj = JSON.parse(line) as { status?: string; completed?: number; total?: number; error?: string };
+            const percent = obj.total && obj.completed ? Math.round((obj.completed / obj.total) * 100) : undefined;
+            emit({ name, status: obj.status ?? 'pulling', completed: obj.completed, total: obj.total, percent, error: obj.error });
+          } catch { /* skip partial line */ }
+        }
+      }
+      emit({ name, status: 'success', percent: 100 });
+      return true;
+    } catch (err) {
+      emit({ name, status: 'error', error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
   });
 
   ipcMain.handle('llm:getActiveModel', () => {
@@ -166,6 +225,51 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       db.prepare(`INSERT INTO llm_models (model_id, name, ollama_name, base_url, api_key, is_active) VALUES (?,?,?,?,?,1)`)
         .run(id, modelName, modelName, 'http://localhost:11434/v1', 'ollama');
     }
+    return true;
+  });
+
+  // ── Cloud models (BYOK, opt-in) ──────────────────────────────────────────
+  // Cloud providers are just llm_models rows with a non-local base_url + key.
+  // The API key is stored in the local SQLite DB and only ever sent to the
+  // provider the user explicitly configured. Local Ollama stays the default;
+  // nothing here is enabled unless the user adds and activates a cloud model.
+  ipcMain.handle('llm:listConfigured', () => {
+    return getDb().prepare(
+      `SELECT model_id, name, ollama_name, base_url, provider, is_active
+       FROM llm_models ORDER BY added_at DESC`
+    ).all();
+  });
+
+  ipcMain.handle('llm:addCloudModel', (_e, m: {
+    provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean;
+  }) => {
+    const db = getDb();
+    const existing = db.prepare(`SELECT model_id FROM llm_models WHERE ollama_name=?`).get(m.model) as { model_id: string } | undefined;
+    const id = existing?.model_id ?? crypto.randomUUID();
+    if (existing) {
+      db.prepare(`UPDATE llm_models SET name=?, base_url=?, api_key=?, provider=? WHERE model_id=?`)
+        .run(m.label || m.model, m.baseUrl, m.apiKey, m.provider, id);
+    } else {
+      db.prepare(`INSERT INTO llm_models (model_id, name, ollama_name, base_url, api_key, provider, is_active)
+                  VALUES (?,?,?,?,?,?,0)`)
+        .run(id, m.label || m.model, m.model, m.baseUrl, m.apiKey, m.provider);
+    }
+    if (m.activate) {
+      db.prepare(`UPDATE llm_models SET is_active=0`).run();
+      db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(id);
+    }
+    return { model_id: id };
+  });
+
+  ipcMain.handle('llm:setActiveModelById', (_e, modelId: string) => {
+    const db = getDb();
+    db.prepare(`UPDATE llm_models SET is_active=0`).run();
+    db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(modelId);
+    return true;
+  });
+
+  ipcMain.handle('llm:removeModel', (_e, modelId: string) => {
+    getDb().prepare(`DELETE FROM llm_models WHERE model_id=?`).run(modelId);
     return true;
   });
 
@@ -199,6 +303,22 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       `SELECT * FROM tool_audit_log ORDER BY ts DESC LIMIT ?`
     ).all(limit);
   });
+
+  // ── Skills ───────────────────────────────────────────────────────────────
+  // Named playbooks the agent loads on intent-match or explicit "/slug".
+  const skills = SkillRegistry.getInstance();
+
+  ipcMain.handle('skills:list', () => skills.list());
+  ipcMain.handle('skills:listEnabled', () => skills.listEnabled());
+  ipcMain.handle('skills:create', (_e, input: SkillInput) => skills.create(input));
+  ipcMain.handle('skills:update', (_e, skillId: string, patch: Partial<SkillInput>) =>
+    skills.update(skillId, patch)
+  );
+  ipcMain.handle('skills:toggle', (_e, skillId: string, enabled: boolean) => {
+    skills.toggle(skillId, enabled);
+    return true;
+  });
+  ipcMain.handle('skills:remove', (_e, skillId: string) => skills.remove(skillId));
 
   // ── RAG ────────────────────────────────────────────────────────────────
   ipcMain.handle('rag:listIndexes', () => {
