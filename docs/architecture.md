@@ -261,6 +261,14 @@ parsers are dynamically imported and any parse failure yields an empty string
 so one bad file never aborts a build. This is what makes PDF/DOCX retrieval
 actually useful instead of embedding binary noise.
 
+**Incremental rebuilds.** The persisted index is a v2 `IndexFile`
+(`{ version, chunks, fileHashes }`) carrying a per-file MD5 manifest; the parser
+(`rag/indexFormat.ts`) still reads the legacy bare-`Chunk[]` format. On rebuild,
+a file whose hash matches the manifest reuses its existing embeddings — only
+new/changed files are re-embedded, and deleted files drop out. Re-indexing a
+large folder after a small edit goes from "re-embed everything" to "embed one
+file."
+
 ## Cloud Models (BYOK, opt-in)
 
 Local Ollama is the default and the privacy promise. Because `LLMClient` is
