@@ -38,6 +38,10 @@ export interface BrowserState {
   isLoading: boolean;
   drivingMode: DrivingMode;
   awaitingHandoff: { reason: string; since: number } | null;
+  /** Non-null while the page's renderer process has crashed and a single
+   *  silent auto-reload didn't bring it back — the pane shows a recovery
+   *  overlay and the user retries via `recover()`. */
+  crashed: { reason: string; since: number } | null;
 }
 
 /** Synthetic landing page rendered into the BrowserView before the agent
@@ -77,6 +81,15 @@ export class BrowserController extends EventEmitter {
     resolve: (value: 'resumed' | 'cancelled') => void;
   } | null = null;
   private bounds: BrowserBounds = { x: 0, y: 0, width: 0, height: 0 };
+  /** Last real (non-data:) URL the view navigated to — the target a crash
+   *  recovery re-navigates to. */
+  private lastUrl: string = ABOUT_BLANK;
+  /** Set when the renderer process is gone and auto-recovery has been
+   *  exhausted; cleared once a navigation succeeds. */
+  private crashed: { reason: string; since: number } | null = null;
+  /** Timestamp of the last silent auto-reload, so a crash that recurs
+   *  immediately surfaces the manual overlay instead of looping forever. */
+  private lastAutoRecoverAt = 0;
 
   static getInstance(): BrowserController {
     if (!BrowserController.instance) BrowserController.instance = new BrowserController();
@@ -107,11 +120,38 @@ export class BrowserController extends EventEmitter {
 
     // Mirror state changes to anyone listening (the IPC layer pipes these to
     // the renderer so the pane toolbar / URL bar stay in sync).
-    wc.on('did-navigate', () => this.emitState());
+    wc.on('did-navigate', (_e, url) => {
+      // Remember the last real destination so crash recovery can return to it.
+      if (url && !url.startsWith('data:') && url !== ABOUT_BLANK) this.lastUrl = url;
+      // A successful navigation means the renderer is healthy again.
+      if (this.crashed) this.crashed = null;
+      this.emitState();
+    });
     wc.on('did-navigate-in-page', () => this.emitState());
     wc.on('did-start-loading', () => this.emitState());
     wc.on('did-stop-loading', () => this.emitState());
     wc.on('page-title-updated', () => this.emitState());
+
+    // Crash recovery: a BrowserView whose renderer process dies leaves a blank
+    // pane forever unless we react. Try one silent reload (most GPU/OOM
+    // crashes recover cleanly); if it dies again right away, stop looping and
+    // surface a recovery overlay the user can retry from.
+    wc.on('render-process-gone', (_e, details) => {
+      // 'clean-exit' is normal teardown (e.g. app quit) — not a crash.
+      if (details?.reason === 'clean-exit') return;
+      const reason = details?.reason ?? 'crashed';
+      const now = Date.now();
+      if (now - this.lastAutoRecoverAt > 10_000) {
+        this.lastAutoRecoverAt = now;
+        this.crashed = null;
+        this.reloadLast();
+        this.emitState();
+        return;
+      }
+      // Crashed again within 10s of an auto-reload → don't crashloop.
+      this.crashed = { reason, since: now };
+      this.emitState();
+    });
 
     // Block window.open from spinning up new Electron BrowserWindows; force
     // them into the agent's view so the screenshot/state model stays sane.
@@ -219,6 +259,30 @@ export class BrowserController extends EventEmitter {
     this.emitState();
   }
 
+  // ── Crash recovery ─────────────────────────────────────────────────────────
+
+  /** Re-navigate to the last real URL (or the home page if there isn't one).
+   *  Used by both the silent auto-reload and the manual recover() path. */
+  private reloadLast(): void {
+    const wc = this.view?.webContents;
+    if (!wc) return;
+    const target =
+      this.lastUrl && this.lastUrl !== ABOUT_BLANK
+        ? this.lastUrl
+        : `data:text/html;charset=utf-8,${encodeURIComponent(HOME_HTML)}`;
+    void wc.loadURL(target);
+  }
+
+  /** Called from the renderer's recovery overlay. Clears the crashed latch and
+   *  reloads, resetting the auto-recover window so the next reload is allowed
+   *  to retry silently again. */
+  recover(): void {
+    this.crashed = null;
+    this.lastAutoRecoverAt = 0;
+    this.reloadLast();
+    this.emitState();
+  }
+
   // ── Accessors ─────────────────────────────────────────────────────────────
 
   /** Returns the live webContents — used by the action helpers. Throws if the
@@ -241,6 +305,7 @@ export class BrowserController extends EventEmitter {
       awaitingHandoff: this.pendingHandoff
         ? { reason: this.pendingHandoff.reason, since: this.pendingHandoff.since }
         : null,
+      crashed: this.crashed,
     };
   }
 

@@ -19,7 +19,8 @@ interface Props {
 
 export default function BrowserPane({ onClose }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
-  const { setState } = useBrowserStore();
+  const { state, setState } = useBrowserStore();
+  const crashed = state.crashed;
 
   // Push the viewport rectangle to main on every layout change.
   useEffect(() => {
@@ -66,6 +67,32 @@ export default function BrowserPane({ onClose }: Props) {
           it's obvious when the BrowserView hasn't attached yet (debug aid). */}
       <div ref={viewportRef} className="flex-1 bg-[#0f1117] relative">
         <HandoffBanner />
+        {/* Recovery overlay — the native BrowserView is blank after a renderer
+            crash that survived the auto-reload, so cover the pane and offer a
+            deliberate retry. Rendered above the (now-empty) native view. */}
+        {crashed && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0f1117] text-center px-8">
+            <div className="max-w-sm">
+              <div className="text-4xl mb-3">💥</div>
+              <h2 className="text-[15px] font-semibold text-artha-text mb-1.5">
+                This page crashed
+              </h2>
+              <p className="text-[13px] leading-relaxed text-artha-muted mb-5">
+                The browser tab’s process stopped unexpectedly
+                {crashed.reason && crashed.reason !== 'crashed'
+                  ? ` (${crashed.reason})`
+                  : ''}
+                . Reloading usually fixes it.
+              </p>
+              <button
+                onClick={() => void window.artha.browser.recover()}
+                className="px-4 py-2 rounded-md bg-artha-accent text-white text-[13px] font-medium hover:opacity-90 transition"
+              >
+                Reload page
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </aside>
   );

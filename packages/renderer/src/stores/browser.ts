@@ -21,6 +21,9 @@ export interface BrowserState {
   isLoading: boolean;
   drivingMode: DrivingMode;
   awaitingHandoff: { reason: string; since: number } | null;
+  /** Non-null while the page renderer crashed and auto-recovery was exhausted;
+   *  drives the recovery overlay in BrowserPane. */
+  crashed: { reason: string; since: number } | null;
 }
 
 /** Store contract. `isOpen` is renderer-only (pane visibility); `state` is the
@@ -41,6 +44,7 @@ const INITIAL_STATE: BrowserState = {
   isLoading: false,
   drivingMode: 'agent',
   awaitingHandoff: null,
+  crashed: null,
 };
 
 export const useBrowserStore = create<BrowserStore>((set) => ({
