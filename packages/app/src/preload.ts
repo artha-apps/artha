@@ -110,6 +110,8 @@ const api = {
     toggle: (skillId: string, enabled: boolean) =>
       ipcRenderer.invoke('skills:toggle', skillId, enabled),
     remove: (skillId: string) => ipcRenderer.invoke('skills:remove', skillId),
+    export: (skillId: string) => ipcRenderer.invoke('skills:export', skillId) as Promise<string | null>,
+    import: () => ipcRenderer.invoke('skills:import') as Promise<{ count: number } | null>,
   },
 
   // ── RAG / Indexes ────────────────────────────────────────────────────────

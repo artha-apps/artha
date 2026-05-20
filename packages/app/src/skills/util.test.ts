@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import OpenAI from 'openai';
-import { normaliseSlug, parseSlashInvocation, filterToolsByAllowlist } from './util';
+import { normaliseSlug, parseSlashInvocation, filterToolsByAllowlist, parseSkillImport } from './util';
 
 const tool = (name: string): OpenAI.ChatCompletionTool => ({
   type: 'function',
@@ -56,5 +56,32 @@ describe('filterToolsByAllowlist', () => {
   it('does not let an exact name leak prefix siblings', () => {
     const names = filterToolsByAllowlist(tools, ['fs_list_directory']).map(t => t.function.name);
     expect(names).toEqual(['fs_list_directory']);
+  });
+});
+
+describe('parseSkillImport', () => {
+  const full = { slug: 'rep', name: 'Rep', description: 'd', instructions: 'i', allowedTools: ['web_'], icon: '📊' };
+
+  it('accepts a bare skill object', () => {
+    const out = parseSkillImport(full);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ slug: 'rep', name: 'Rep', allowedTools: ['web_'] });
+  });
+
+  it('accepts { skill } and { skills: [] } wrappers and bare arrays', () => {
+    expect(parseSkillImport({ skill: full })).toHaveLength(1);
+    expect(parseSkillImport({ skills: [full, full] })).toHaveLength(2);
+    expect(parseSkillImport([full, full, full])).toHaveLength(3);
+  });
+
+  it('drops entries with neither name nor slug, and fills defaults', () => {
+    const out = parseSkillImport({ skills: [{ foo: 'bar' }, { name: 'OnlyName' }] });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ name: 'OnlyName', description: '', instructions: '', icon: '✨', allowedTools: [] });
+  });
+
+  it('returns [] for junk input', () => {
+    expect(parseSkillImport(null)).toEqual([]);
+    expect(parseSkillImport(42)).toEqual([]);
   });
 });

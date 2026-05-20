@@ -17,7 +17,7 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/schema';
 import { getActiveLLMClient } from '../llm/client';
-import { normaliseSlug, parseSlashInvocation, filterToolsByAllowlist } from './util';
+import { normaliseSlug, parseSlashInvocation, filterToolsByAllowlist, type SkillExportData } from './util';
 
 /** A row from the `skills` table, normalised for use in the main process. */
 export interface Skill {
@@ -145,6 +145,38 @@ export class SkillRegistry {
     if (!row || row.is_builtin) return false;
     db.prepare(`DELETE FROM skills WHERE skill_id=?`).run(skillId);
     return true;
+  }
+
+  /** Serialise a skill to its portable form for export. */
+  serialize(skillId: string): SkillExportData | null {
+    const s = getDb().prepare(`SELECT * FROM skills WHERE skill_id=?`).get(skillId) as Skill | undefined;
+    if (!s) return null;
+    let allowedTools: string[] = [];
+    try { const p = JSON.parse(s.allowed_tools_json); if (Array.isArray(p)) allowedTools = p; } catch { /* empty */ }
+    return { slug: s.slug, name: s.name, description: s.description, instructions: s.instructions, allowedTools, icon: s.icon };
+  }
+
+  /** Import a portable skill as a new (user) skill, giving it a collision-free
+   *  slug so it never clobbers an existing one. */
+  importSkill(data: SkillExportData): Skill {
+    return this.create({
+      slug: this.uniqueSlug(data.slug || data.name),
+      name: data.name,
+      description: data.description ?? '',
+      instructions: data.instructions ?? '',
+      allowedTools: data.allowedTools ?? [],
+      icon: data.icon ?? '✨',
+      isEnabled: true,
+    });
+  }
+
+  /** A normalised slug that isn't already taken (appends -2, -3, … on clash). */
+  private uniqueSlug(base: string): string {
+    const root = normaliseSlug(base);
+    let slug = root;
+    let n = 2;
+    while (this.getBySlug(slug)) slug = `${root}-${n++}`;
+    return slug;
   }
 
   /** Resolve a user message to a skill (explicit "/slug" wins; otherwise

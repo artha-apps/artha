@@ -136,6 +136,11 @@ Design choices:
   so a skill chosen pre-approval still drives execution after the user approves.
 - Managed in **Settings → Skills** (`SkillsPanel.tsx`); invoked from the chat
   composer's `/` slash-menu.
+- **Import / export.** Skills serialise to a portable `.artha-skill.json`
+  (`{ schema, skill }`); import (`parseSkillImport` in `skills/util.ts`, pure +
+  tested) tolerates a bare object, `{ skill }`, `{ skills: [] }`, or an array,
+  and assigns collision-free slugs so an import never overwrites an existing
+  skill. This is the sharing path for skills between machines/users.
 
 ## Web Tools (built-in, no API keys)
 

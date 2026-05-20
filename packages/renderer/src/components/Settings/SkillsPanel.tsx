@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 import {
   Sparkles, Plus, Trash2, Pencil, ToggleLeft, ToggleRight,
-  RefreshCw, Save, X, Lock, Wrench,
+  RefreshCw, Save, X, Lock, Wrench, Upload, Download,
 } from 'lucide-react';
 
 interface Skill {
@@ -99,6 +99,20 @@ export default function SkillsPanel() {
     if (s.is_builtin) return;
     await window.artha.skills.remove(s.skill_id);
     setSkills(prev => prev.filter(x => x.skill_id !== s.skill_id));
+  };
+
+  const exportSkill = async (s: Skill) => {
+    await window.artha.skills.export(s.skill_id);
+  };
+
+  const importSkill = async () => {
+    setError('');
+    try {
+      const res = await window.artha.skills.import();
+      if (res) await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed');
+    }
   };
 
   const save = async () => {
@@ -296,12 +310,20 @@ export default function SkillsPanel() {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors disabled:opacity-40">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
+          <button onClick={importSkill}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors">
+            <Upload size={12} /> Import
+          </button>
           <button onClick={() => { setError(''); setEditing({ ...EMPTY_DRAFT }); }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium transition-colors">
             <Plus size={13} /> New Skill
           </button>
         </div>
       </div>
+
+      {error && (
+        <p className="text-xs text-red-400 flex items-center gap-1 mb-3"><X size={11} /> {error}</p>
+      )}
 
       {loading ? (
         <div className="space-y-2">
@@ -350,6 +372,10 @@ export default function SkillsPanel() {
                     <button onClick={() => toggle(s)} title={s.is_enabled ? 'Disable' : 'Enable'}
                       className="text-artha-muted hover:text-white transition-colors">
                       {s.is_enabled ? <ToggleRight size={20} className="text-artha-accent" /> : <ToggleLeft size={20} />}
+                    </button>
+                    <button onClick={() => exportSkill(s)} title="Export"
+                      className="p-1.5 text-artha-muted hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+                      <Download size={13} />
                     </button>
                     <button onClick={() => { setError(''); setEditing(toDraft(s)); }} title="Edit"
                       className="p-1.5 text-artha-muted hover:text-white hover:bg-white/5 rounded-lg transition-colors">

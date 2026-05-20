@@ -8,6 +8,7 @@ import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
+import { parseSkillImport } from '../skills/util';
 import { getDefaultRagIndexer } from '../rag/indexer';
 import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
@@ -319,6 +320,40 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return true;
   });
   ipcMain.handle('skills:remove', (_e, skillId: string) => skills.remove(skillId));
+
+  // Export one skill to a portable .artha-skill.json file.
+  ipcMain.handle('skills:export', async (_e, skillId: string) => {
+    const data = skills.serialize(skillId);
+    if (!data) return null;
+    const result = await dialog.showSaveDialog(window, {
+      defaultPath: `${data.slug}.artha-skill.json`,
+      filters: [{ name: 'Artha Skill', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    const fs = require('fs') as typeof import('fs');
+    fs.writeFileSync(result.filePath, JSON.stringify({ schema: 'artha-skill/v1', skill: data }, null, 2));
+    return result.filePath;
+  });
+
+  // Import skill(s) from a JSON file. Tolerates several payload shapes and
+  // assigns collision-free slugs so imports never overwrite existing skills.
+  ipcMain.handle('skills:import', async () => {
+    const result = await dialog.showOpenDialog(window, {
+      filters: [{ name: 'Artha Skill', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const fs = require('fs') as typeof import('fs');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(result.filePaths[0], 'utf-8'));
+    } catch {
+      throw new Error('That file is not valid JSON.');
+    }
+    const items = parseSkillImport(parsed);
+    for (const item of items) skills.importSkill(item);
+    return { count: items.length };
+  });
 
   // ── RAG ────────────────────────────────────────────────────────────────
   // Native folder picker for choosing a directory to index.

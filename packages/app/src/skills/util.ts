@@ -23,6 +23,42 @@ export function parseSlashInvocation(message: string): { slug: string; rest: str
   return { slug: m[1].toLowerCase(), rest: m[2].trim() };
 }
 
+/** A skill in portable form — what gets written to / read from a `.artha-skill`
+ *  file. Only `name` is truly required. */
+export interface SkillExportData {
+  slug?: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  allowedTools?: string[];
+  icon?: string;
+}
+
+/** Normalise an imported JSON payload into a list of skills. Accepts a bare
+ *  skill object, `{ skill: {...} }`, `{ skills: [...] }`, or a bare array, and
+ *  drops anything without a name or slug. Defensive against hand-edited files. */
+export function parseSkillImport(raw: unknown): SkillExportData[] {
+  const r = raw as Record<string, unknown> | unknown[] | null;
+  let items: unknown[];
+  if (Array.isArray(r)) items = r;
+  else if (r && Array.isArray((r as Record<string, unknown>).skills)) items = (r as { skills: unknown[] }).skills;
+  else if (r && (r as Record<string, unknown>).skill) items = [(r as { skill: unknown }).skill];
+  else if (r && typeof r === 'object') items = [r];
+  else items = [];
+
+  return items
+    .filter((it): it is Record<string, unknown> => !!it && typeof it === 'object')
+    .filter(it => typeof it.name === 'string' || typeof it.slug === 'string')
+    .map(it => ({
+      slug: typeof it.slug === 'string' ? it.slug : undefined,
+      name: typeof it.name === 'string' ? it.name : String(it.slug),
+      description: typeof it.description === 'string' ? it.description : '',
+      instructions: typeof it.instructions === 'string' ? it.instructions : '',
+      allowedTools: Array.isArray(it.allowedTools) ? it.allowedTools.filter((x): x is string => typeof x === 'string') : [],
+      icon: typeof it.icon === 'string' ? it.icon : '✨',
+    }));
+}
+
 /** Filter tool schemas down to those an allowlist permits. An entry ending in
  *  "_" is a name *prefix* (e.g. "fs_"); any other entry is an exact name. An
  *  empty allowlist means "all tools". */
