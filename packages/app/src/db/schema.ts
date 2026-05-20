@@ -313,6 +313,19 @@ export async function initDatabase(): Promise<void> {
         '["web_","browser_navigate","browser_read_dom","docs_generate","fs_read_file","fs_list_directory"]',
         '📊',
         1
+      ),
+      (
+        'ask',
+        'Ask My Files',
+        'Answer questions using the user''s own indexed files (their notes, documents, knowledge base). Use when the user asks about their own files, notes, or personal documents.',
+        'You are operating as the Ask My Files skill — answer strictly from the user''s indexed files.' || char(10) ||
+        '1. Optionally call rag_list_indexes to confirm searchable files exist.' || char(10) ||
+        '2. Call rag_search with a focused query built from the user''s question.' || char(10) ||
+        '3. Answer only from the returned passages. Cite the source filename(s) in your reply.' || char(10) ||
+        '4. If nothing relevant is found, say so plainly — do NOT invent file contents.',
+        '["rag_search","rag_list_indexes","fs_read_file"]',
+        '📚',
+        1
       );
   `);
 
