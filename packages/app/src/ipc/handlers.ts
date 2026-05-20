@@ -617,5 +617,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return browser.getState();
   });
 
+  ipcMain.handle('browser:recover', () => {
+    browser.recover();
+    return browser.getState();
+  });
+
   ipcMain.handle('browser:getState', () => browser.getState());
 }

@@ -214,6 +214,7 @@ const api = {
     takeWheel: () => ipcRenderer.invoke('browser:takeWheel'),
     resumeAgent: () => ipcRenderer.invoke('browser:resumeAgent'),
     cancelHandoff: () => ipcRenderer.invoke('browser:cancelHandoff'),
+    recover: () => ipcRenderer.invoke('browser:recover'),
     getState: () => ipcRenderer.invoke('browser:getState'),
     onState: (cb: (state: unknown) => void) => {
       ipcRenderer.on('browser:state', (_e, s) => cb(s));
