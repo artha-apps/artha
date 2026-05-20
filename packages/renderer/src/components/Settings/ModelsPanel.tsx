@@ -3,7 +3,7 @@
  * and set the active model with one click.
  */
 import { useEffect, useState } from 'react';
-import { Cpu, CheckCircle2, RefreshCw, HardDrive, MemoryStick, ChevronRight } from 'lucide-react';
+import { Cpu, CheckCircle2, RefreshCw, HardDrive, MemoryStick, ChevronRight, Cloud, Plus, Trash2, Lock, Shield } from 'lucide-react';
 
 /** Subset of Ollama's /api/tags model entry we actually render. */
 interface OllamaModel {
@@ -12,6 +12,23 @@ interface OllamaModel {
   modified_at?: string;
   details?: { parameter_size?: string; quantization_level?: string; family?: string };
 }
+
+/** A saved model row (local or cloud) from `llm_models`. */
+interface ConfiguredModel {
+  model_id: string;
+  name: string;
+  ollama_name: string;
+  base_url: string;
+  provider: string;
+  is_active: number;
+}
+
+/** Provider presets for the BYOK form. base_url is OpenAI-compatible for all. */
+const CLOUD_PROVIDERS: Record<string, { label: string; baseUrl: string; modelHint: string }> = {
+  openai: { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', modelHint: 'gpt-4o-mini' },
+  anthropic: { label: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', modelHint: 'claude-sonnet-4-6' },
+  custom: { label: 'Custom (OpenAI-compatible)', baseUrl: '', modelHint: 'model-name' },
+};
 
 /** Result of `llm:detectHardware` — feeds the "Recommended" hint. */
 interface HardwareInfo {
@@ -61,11 +78,24 @@ export default function ModelsPanel() {
   const [switching, setSwitching] = useState<string | null>(null);
   const [ollamaOnline, setOllamaOnline] = useState(true);
 
+  // ── BYOK cloud state ──────────────────────────────────────────────────────
+  const [configured, setConfigured] = useState<ConfiguredModel[]>([]);
+  const [showCloudForm, setShowCloudForm] = useState(false);
+  const [cloudProvider, setCloudProvider] = useState<keyof typeof CLOUD_PROVIDERS>('openai');
+  const [cloudModel, setCloudModel] = useState('');
+  const [cloudBaseUrl, setCloudBaseUrl] = useState(CLOUD_PROVIDERS.openai.baseUrl);
+  const [cloudKey, setCloudKey] = useState('');
+  const [savingCloud, setSavingCloud] = useState(false);
+  const [cloudError, setCloudError] = useState('');
+
   /** Pull model list + hardware info + active model in parallel. Falls back to
    *  "Ollama offline" on any failure so the user sees an actionable empty state
    *  instead of a stuck spinner. */
   const load = async () => {
     setLoading(true);
+    // Configured (saved) models load independently of Ollama — cloud BYOK models
+    // must still show even when the local runtime is offline.
+    window.artha.llm.listConfigured().then(c => setConfigured(c as ConfiguredModel[])).catch(() => {});
     try {
       const [modelList, hw, active] = await Promise.all([
         window.artha.llm.listModels() as Promise<OllamaModel[]>,
@@ -92,6 +122,51 @@ export default function ModelsPanel() {
   };
 
   useEffect(() => { load(); }, []);
+
+  /** Cloud models live in the same table but with a non-local base_url. */
+  const cloudModels = configured.filter(m => !m.base_url.includes('localhost') && !m.base_url.includes('127.0.0.1'));
+
+  const pickProvider = (p: keyof typeof CLOUD_PROVIDERS) => {
+    setCloudProvider(p);
+    setCloudBaseUrl(CLOUD_PROVIDERS[p].baseUrl);
+  };
+
+  const saveCloudModel = async () => {
+    if (!cloudModel.trim()) { setCloudError('Model name is required'); return; }
+    if (!cloudBaseUrl.trim()) { setCloudError('Base URL is required'); return; }
+    if (!cloudKey.trim()) { setCloudError('API key is required'); return; }
+    setSavingCloud(true);
+    setCloudError('');
+    try {
+      await window.artha.llm.addCloudModel({
+        provider: cloudProvider,
+        label: `${CLOUD_PROVIDERS[cloudProvider].label}: ${cloudModel.trim()}`,
+        model: cloudModel.trim(),
+        baseUrl: cloudBaseUrl.trim(),
+        apiKey: cloudKey.trim(),
+        activate: true,
+      });
+      setShowCloudForm(false);
+      setCloudModel(''); setCloudKey('');
+      setActiveModelState(cloudModel.trim());
+      await load();
+    } catch (err) {
+      setCloudError(err instanceof Error ? err.message : 'Failed to save cloud model');
+    } finally {
+      setSavingCloud(false);
+    }
+  };
+
+  const activateCloud = async (m: ConfiguredModel) => {
+    await window.artha.llm.setActiveModelById(m.model_id);
+    setActiveModelState(m.ollama_name);
+    await load();
+  };
+
+  const removeCloud = async (m: ConfiguredModel) => {
+    await window.artha.llm.removeModel(m.model_id);
+    await load();
+  };
 
   /** Persist the new active model and reflect it in local state. Guards against
    *  double-click races via the `switching` flag. */
@@ -227,6 +302,120 @@ export default function ModelsPanel() {
       <p className="text-xs text-artha-muted text-center mt-8">
         Pull new models via terminal: <code className="bg-white/5 px-1.5 py-0.5 rounded font-mono">ollama pull &lt;model-name&gt;</code>
       </p>
+
+      {/* ── Cloud models (BYOK) ── */}
+      <section className="mt-10 pt-6 border-t border-artha-border">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Cloud size={14} className="text-artha-accent" />
+            <h2 className="text-xs font-semibold text-artha-muted uppercase tracking-wide">Cloud Models (BYOK)</h2>
+          </div>
+          {!showCloudForm && (
+            <button onClick={() => { setCloudError(''); setShowCloudForm(true); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent/15 hover:bg-artha-accent/25 text-artha-accent text-xs font-medium transition-colors">
+              <Plus size={12} /> Add cloud model
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-start gap-2 mb-4 text-xs text-artha-muted bg-artha-s2 border border-artha-border rounded-lg px-3 py-2.5">
+          <Shield size={13} className="text-artha-accent shrink-0 mt-0.5" />
+          <p className="leading-relaxed">
+            Optional. Local Ollama stays the default — Artha is private by design. A cloud model is only used when you
+            activate it, and your API key is stored locally and sent only to the provider you choose.
+          </p>
+        </div>
+
+        {/* Configured cloud models */}
+        {cloudModels.length > 0 && (
+          <div className="space-y-2 mb-4">
+            {cloudModels.map(m => {
+              const isActive = !!m.is_active;
+              return (
+                <div key={m.model_id}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl border ${
+                    isActive ? 'bg-artha-accent/10 border-artha-accent/40' : 'bg-artha-s2 border-artha-border'
+                  }`}>
+                  <Cloud size={15} className="text-artha-accent shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-white truncate">{m.name}</p>
+                    <code className="text-[11px] text-artha-muted font-mono truncate block">{m.base_url}</code>
+                  </div>
+                  {isActive ? (
+                    <span className="flex items-center gap-1 text-xs text-artha-accent font-medium">
+                      <CheckCircle2 size={14} /> Active
+                    </span>
+                  ) : (
+                    <button onClick={() => activateCloud(m)}
+                      className="px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors">
+                      Activate
+                    </button>
+                  )}
+                  <button onClick={() => removeCloud(m)} title="Remove"
+                    className="text-artha-muted hover:text-red-400 transition-colors">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Add-cloud form */}
+        {showCloudForm && (
+          <div className="bg-artha-s2 border border-artha-border rounded-xl p-4 space-y-3">
+            <div className="flex gap-1.5">
+              {(Object.keys(CLOUD_PROVIDERS) as (keyof typeof CLOUD_PROVIDERS)[]).map(p => (
+                <button key={p} onClick={() => pickProvider(p)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    cloudProvider === p ? 'bg-artha-accent/20 text-white border border-artha-accent/30' : 'bg-artha-surface border border-artha-border text-artha-muted hover:text-white'
+                  }`}>
+                  {CLOUD_PROVIDERS[p].label}
+                </button>
+              ))}
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-artha-muted mb-1">Model name</label>
+              <input value={cloudModel} onChange={e => setCloudModel(e.target.value)}
+                placeholder={CLOUD_PROVIDERS[cloudProvider].modelHint}
+                className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
+            </div>
+
+            {cloudProvider === 'custom' && (
+              <div>
+                <label className="block text-xs font-medium text-artha-muted mb-1">Base URL (OpenAI-compatible)</label>
+                <input value={cloudBaseUrl} onChange={e => setCloudBaseUrl(e.target.value)}
+                  placeholder="https://your-endpoint/v1"
+                  className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-medium text-artha-muted mb-1 flex items-center gap-1.5">
+                <Lock size={11} /> API key
+              </label>
+              <input type="password" value={cloudKey} onChange={e => setCloudKey(e.target.value)}
+                placeholder="sk-…"
+                className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
+            </div>
+
+            {cloudError && <p className="text-xs text-red-400">{cloudError}</p>}
+
+            <div className="flex gap-2">
+              <button onClick={saveCloudModel} disabled={savingCloud}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-40 text-sm font-medium transition-colors">
+                {savingCloud ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+                Save & activate
+              </button>
+              <button onClick={() => { setShowCloudForm(false); setCloudError(''); }}
+                className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-white hover:bg-white/5 transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

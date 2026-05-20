@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Bot, Zap, Copy, Check, Globe } from 'lucide-react';
+import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -80,19 +80,50 @@ const mdComponents = {
   },
 };
 
+/** Minimal shape of an enabled skill, for the composer slash-menu. */
+interface SkillOption {
+  skill_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  icon: string;
+}
+
 export default function ChatWindow() {
   const {
     messages, streamingContent, isStreaming, activeSessionId,
-    addUserMessage, activeWorkflowId, setStreaming, pendingCitations,
+    addUserMessage, activeWorkflowId, setStreaming, pendingCitations, activeSkill,
   } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
   const [input, setInput] = useState('');
+  const [skills, setSkills] = useState<SkillOption[]>([]);
+  const [slashIndex, setSlashIndex] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
+
+  // Load enabled skills once for the "/" slash-menu in the composer.
+  useEffect(() => {
+    window.artha.skills.listEnabled().then((s) => setSkills(s as SkillOption[]));
+  }, []);
+
+  // The slash-menu is open when the input is a bare "/partial-slug" with no
+  // space yet. We filter the enabled skills by that partial slug/name.
+  const slashMatch = input.match(/^\/([a-z0-9-]*)$/i);
+  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null;
+  const slashResults = slashQuery !== null
+    ? skills.filter(s => s.slug.includes(slashQuery) || s.name.toLowerCase().includes(slashQuery))
+    : [];
+  const showSlash = slashQuery !== null && slashResults.length > 0;
+
+  const pickSkill = (s: SkillOption) => {
+    setInput(`/${s.slug} `);
+    setSlashIndex(0);
+    textareaRef.current?.focus();
+  };
 
   const autoResize = (el: HTMLTextAreaElement) => {
     el.style.height = 'auto';
@@ -121,6 +152,20 @@ export default function ChatWindow() {
    *  when the orchestrator emits its cancellation token. */
   const stop = () => {
     if (activeWorkflowId) window.artha.agent.cancelTask(activeWorkflowId);
+  };
+
+  /** Composer keydown — when the slash-menu is open, arrows/enter/tab drive it;
+   *  otherwise Enter (without shift) sends the message. */
+  const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showSlash) {
+      const max = slashResults.length - 1;
+      const idx = Math.min(slashIndex, max);
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex(i => Math.min(i + 1, max)); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex(i => Math.max(i - 1, 0)); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickSkill(slashResults[idx]); return; }
+      if (e.key === 'Escape') { e.preventDefault(); setInput(''); return; }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   };
 
   const sessionMessages = messages.filter(m => m.sessionId === activeSessionId);
@@ -232,14 +277,49 @@ export default function ChatWindow() {
 
       {/* Input */}
       <div className="px-6 pb-5 pt-2">
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-3xl mx-auto relative">
+
+          {/* Slash-command menu — lists enabled skills as the user types "/…" */}
+          {showSlash && (
+            <div className="absolute bottom-full mb-2 left-0 right-0 bg-artha-s2 border border-artha-border rounded-xl shadow-xl overflow-hidden z-20">
+              <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-artha-muted border-b border-artha-border flex items-center gap-1.5">
+                <Sparkles size={10} /> Skills
+              </div>
+              {slashResults.map((s, i) => (
+                <button key={s.skill_id}
+                  onMouseEnter={() => setSlashIndex(i)}
+                  onClick={() => pickSkill(s)}
+                  className={`w-full flex items-start gap-3 px-3 py-2 text-left transition-colors ${
+                    i === Math.min(slashIndex, slashResults.length - 1) ? 'bg-artha-accent/15' : 'hover:bg-white/5'
+                  }`}>
+                  <span className="text-base leading-none mt-0.5 shrink-0">{s.icon}</span>
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-2">
+                      <span className="text-sm text-white">{s.name}</span>
+                      <code className="text-[10px] text-artha-accent font-mono">/{s.slug}</code>
+                    </span>
+                    <span className="block text-xs text-artha-muted truncate">{s.description}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Active-skill badge — shown while a skill drives the current run */}
+          {activeSkill && (
+            <div className="flex items-center gap-1.5 mb-2 w-fit px-2.5 py-1 rounded-full bg-artha-accent/15 border border-artha-accent/30 text-xs text-artha-accent">
+              <span className="leading-none">{activeSkill.icon}</span>
+              <span className="font-medium">Skill: {activeSkill.name}</span>
+            </div>
+          )}
+
           <div className="flex items-end gap-3 bg-artha-s2 border border-artha-border rounded-2xl px-4 py-3 focus-within:border-artha-accent/40 transition-colors shadow-lg">
             <textarea
               ref={textareaRef}
               value={input}
               onChange={handleInput}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder="Ask Artha to do something…"
+              onKeyDown={onComposerKeyDown}
+              placeholder="Ask Artha to do something…  (type / for skills)"
               rows={1}
               className="flex-1 bg-transparent text-sm resize-none outline-none text-artha-text placeholder-artha-muted leading-relaxed"
               style={{ minHeight: '1.5rem', maxHeight: '10rem' }}

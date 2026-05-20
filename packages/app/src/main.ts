@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
 import { registerIpcHandlers } from './ipc/handlers';
 import { initDatabase } from './db/schema';
@@ -58,6 +59,18 @@ async function createWindow(): Promise<void> {
     shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  // Check for updates from GitHub Releases (production only).
+  // Notification-only in v0.1 — user is prompted to download; no silent install.
+  if (!isDev) {
+    autoUpdater.autoDownload = false;
+    autoUpdater.on('error', (err) => {
+      console.error('[Artha] Auto-update check failed:', err);
+    });
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.error('[Artha] checkForUpdatesAndNotify rejected:', err);
+    });
+  }
 }
 
 // ── Single-instance lock ───────────────────────────────────────────────────

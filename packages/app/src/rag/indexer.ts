@@ -6,7 +6,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { app } from 'electron';
 import { getDb } from '../db/schema';
+
+/** A retrieved chunk with its originating file — used to cite real sources in
+ *  generated documents (not just anonymous context). */
+export interface RetrievedChunk {
+  id: string;
+  filePath: string;
+  text: string;
+  score: number;
+}
 
 /** File extensions we attempt to embed. Binary/proprietary types like .docx
  *  and .pdf go through `readFileSync('utf-8')` today — Phase 2 will swap in
@@ -91,6 +101,26 @@ export class RAGIndexer {
     return scored.slice(0, topK).map(s => s.text);
   }
 
+  /** Like `query()` but returns the originating file + score for each hit, so
+   *  callers can attach real provenance. `[]` if the index doesn't exist yet. */
+  async queryWithSources(indexId: string, query: string, topK = 5): Promise<RetrievedChunk[]> {
+    const indexPath = path.join(this.indexDir, `${indexId}.json`);
+    if (!fs.existsSync(indexPath)) return [];
+
+    const chunks: Chunk[] = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+    const queryEmbedding = await this.embed(query);
+
+    return chunks
+      .map(chunk => ({
+        id: chunk.id,
+        filePath: chunk.filePath,
+        text: chunk.text,
+        score: cosineSimilarity(queryEmbedding, chunk.embedding),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
   private collectFiles(dir: string): string[] {
     const results: string[] = [];
     const walk = (d: string) => {
@@ -136,6 +166,36 @@ export class RAGIndexer {
       return new Array(768).fill(0);
     }
   }
+}
+
+// ── Shared instance + cross-index search ─────────────────────────────────────
+
+let defaultIndexer: RAGIndexer | null = null;
+
+/** The app-wide indexer, rooted at <userData>/rag-indexes. Used by both the IPC
+ *  layer and the docs_generate tool so they share one on-disk index set. */
+export function getDefaultRagIndexer(): RAGIndexer {
+  if (!defaultIndexer) {
+    defaultIndexer = new RAGIndexer(path.join(app.getPath('userData'), 'rag-indexes'));
+  }
+  return defaultIndexer;
+}
+
+/** Search every configured RAG index and return the globally top-k chunks by
+ *  similarity. Used to ground generated documents in the user's own files.
+ *  Failures (Ollama down, missing index files) degrade to fewer/no results. */
+export async function searchAllIndexes(query: string, topK = 6): Promise<RetrievedChunk[]> {
+  const indexer = getDefaultRagIndexer();
+  const indexes = getDb().prepare(`SELECT index_id FROM rag_indexes`).all() as { index_id: string }[];
+  const all: RetrievedChunk[] = [];
+  for (const { index_id } of indexes) {
+    try {
+      all.push(...await indexer.queryWithSources(index_id, query, topK));
+    } catch {
+      /* skip a bad index */
+    }
+  }
+  return all.sort((a, b) => b.score - a.score).slice(0, topK);
 }
 
 /** Standard cosine similarity. Returns 0 when either vector is empty/zero so

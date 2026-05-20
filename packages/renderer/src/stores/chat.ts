@@ -54,7 +54,15 @@ export interface Session {
 
 /** Top-level view selector. Each value maps to a panel mounted under <main>
  *  in App.tsx. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'settings';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'settings';
+
+/** The skill the orchestrator matched/loaded for the in-flight workflow.
+ *  Drives the small "Skill: …" badge in the composer. Cleared on stream end. */
+export interface ActiveSkillBadge {
+  slug: string;
+  name: string;
+  icon: string;
+}
 
 /** Single source of truth for the chat surface. `pendingToolEvents` and
  *  `pendingCitations` accumulate during a streaming response and are folded
@@ -71,6 +79,7 @@ interface ChatState {
   pendingCitations: Citation[];
   activeView: ActiveView;
   activeWorkflowId: string | null;
+  activeSkill: ActiveSkillBadge | null;
 
   // Actions
   setSessions: (s: Session[]) => void;
@@ -85,6 +94,7 @@ interface ChatState {
   setActiveView: (view: ActiveView) => void;
   setStreaming: (streaming: boolean) => void;
   setActiveWorkflowId: (id: string | null) => void;
+  setActiveSkill: (skill: ActiveSkillBadge | null) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -99,6 +109,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingCitations: [],
   activeView: 'chat',
   activeWorkflowId: null,
+  activeSkill: null,
 
   setSessions: (sessions) => set({ sessions }),
   // Switching sessions clears any in-flight stream and execution log — the
@@ -131,7 +142,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const hasCitations = s.pendingCitations.length > 0;
       // Only skip if there's truly nothing to show and no session
       if ((!hasContent && !hasToolEvents) || !s.activeSessionId) {
-        return { streamingContent: '', isStreaming: false, pendingToolEvents: [], pendingCitations: [], activeWorkflowId: null };
+        return { streamingContent: '', isStreaming: false, pendingToolEvents: [], pendingCitations: [], activeWorkflowId: null, activeSkill: null };
       }
       return {
         messages: [...s.messages, {
@@ -146,6 +157,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         pendingToolEvents: [],
         pendingCitations: [],
         activeWorkflowId: null,
+        activeSkill: null,
       };
     }),
 
@@ -170,4 +182,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setActiveView: (view) => set({ activeView: view }),
   setStreaming: (streaming) => set({ isStreaming: streaming }),
   setActiveWorkflowId: (id) => set({ activeWorkflowId: id }),
+  setActiveSkill: (skill) => set({ activeSkill: skill }),
 }));

@@ -18,6 +18,7 @@ import { BrowserWindow } from 'electron';
 import * as os from 'os';
 import { getActiveLLMClient } from '../llm/client';
 import { MCPRegistry } from '../mcp/registry';
+import { SkillRegistry, type ActiveSkill } from '../skills/registry';
 import { getDb } from '../db/schema';
 import OpenAI from 'openai';
 import {
@@ -49,6 +50,9 @@ export interface AgentPlan {
   goal: string;
   steps: WorkflowStep[];
   requiresApproval: boolean;
+  /** Skill active for this run, if one was matched/invoked. Threaded through
+   *  approval so its instructions + tool scope survive a pause-for-approval. */
+  skill?: ActiveSkill | null;
 }
 
 // ── Anti-hallucination tracker ───────────────────────────────────────────────
@@ -80,6 +84,7 @@ const MUTATION_TOOLS = new Set([
 export class AgentOrchestrator {
   private window: BrowserWindow;
   private registry: MCPRegistry;
+  private skills: SkillRegistry;
   /** Plans awaiting user approval, keyed by workflowId. */
   private activePlans = new Map<string, AgentPlan>();
   /** Set of workflow IDs the user has hit Stop on; consulted each loop tick. */
@@ -88,6 +93,7 @@ export class AgentOrchestrator {
   constructor(window: BrowserWindow) {
     this.window = window;
     this.registry = MCPRegistry.getInstance();
+    this.skills = SkillRegistry.getInstance();
   }
 
   /** Entry point: receive a user message and start the ReAct loop. */
@@ -95,14 +101,22 @@ export class AgentOrchestrator {
     const db = getDb();
     const workflowId = crypto.randomUUID();
 
+    // Resolve a skill (explicit "/slug" or auto-match). `goal` has any leading
+    // "/slug" stripped, so the rest of the loop never sees the invocation prefix.
+    const { skill, goal } = await this.skills.resolve(userContent);
+    if (skill) {
+      this.emit('agent:skillActive', { slug: skill.slug, name: skill.name, icon: skill.icon });
+    }
+
     db.prepare(`
       INSERT INTO agent_states (workflow_id, session_id, status, context_json)
       VALUES (?, ?, 'pending', ?)
-    `).run(workflowId, sessionId, JSON.stringify({ goal: userContent }));
+    `).run(workflowId, sessionId, JSON.stringify({ goal, skill: skill?.slug ?? null }));
 
     const history = this.getSessionHistory(sessionId);
 
-    const plan = await this.generatePlan(workflowId, sessionId, userContent, history);
+    const plan = await this.generatePlan(workflowId, sessionId, goal, history, skill);
+    plan.skill = skill;
     this.activePlans.set(workflowId, plan);
 
     if (plan.requiresApproval) {
@@ -177,17 +191,22 @@ export class AgentOrchestrator {
     workflowId: string,
     sessionId: string,
     goal: string,
-    history: OpenAI.ChatCompletionMessageParam[]
+    history: OpenAI.ChatCompletionMessageParam[],
+    skill?: ActiveSkill | null
   ): Promise<AgentPlan> {
     const llm = getActiveLLMClient(undefined, 'plan');
-    const tools = this.registry.getToolSchemas();
+    const tools = this.skills.filterTools(this.registry.getToolSchemas(), skill ?? null);
+
+    const skillBlock = skill
+      ? `\nActive skill — "${skill.name}". Follow its playbook when planning:\n${skill.instructions}\n`
+      : '';
 
     const planningPrompt: OpenAI.ChatCompletionMessageParam = {
       role: 'system',
       content: `You are Artha, a local-first AI productivity agent running on the user's Mac.
 
 Available tools: ${tools.map(t => t.function.name).join(', ')}
-
+${skillBlock}
 Decompose the user's request into a clear, minimal step-by-step plan.
 
 Respond ONLY with a valid JSON object (no markdown, no explanation):
@@ -248,11 +267,17 @@ Rules:
 
     const history = this.getSessionHistory(plan.sessionId);
     const destHint = this.extractDestination(plan.goal, homeDir);
+    const skill = plan.skill ?? null;
+    const skillBlock = skill
+      ? `ACTIVE SKILL — "${skill.name}". This is your operating playbook for this task; follow it:\n${skill.instructions}\n\n`
+      : '';
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
         role: 'system',
         content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools.
+
+${skillBlock}
 
 Home:      ${homeDir}
 Desktop:   ${homeDir}/Desktop
@@ -272,7 +297,8 @@ RULES — follow exactly, no exceptions:
 9. When you used web_fetch or web_search, weave the source URL into your answer (e.g. "according to example.com/foo") — the UI renders citations from those URLs.
 10. Browser tools (browser_navigate, browser_click, browser_type, browser_read_dom, browser_screenshot) open a real, visible browser pane the user can watch.
     - Prefer web_fetch for plain article reads. Use the browser only when the page needs interaction (logins, SPAs, dynamic content, form submission).
-    - If the page needs a login, captcha, 2FA, or anything you cannot do safely, call browser_request_user with a short reason. The user will complete it and resume you — the call returns "resumed" or "cancelled".`,
+    - If the page needs a login, captcha, 2FA, or anything you cannot do safely, call browser_request_user with a short reason. The user will complete it and resume you — the call returns "resumed" or "cancelled".
+11. When the user asks for a report, proposal, summary document, presentation, or spreadsheet AS A FILE, call docs_generate (type docx/pptx/xlsx/pdf). Gather facts first with web_fetch/web_search when needed and pass them in the "context" argument so the document is sourced. Do not paste a long document into chat when the user wanted a file.`,
       },
       ...history,
       { role: 'user', content: plan.goal },
@@ -284,6 +310,7 @@ RULES — follow exactly, no exceptions:
       sessionId: plan.sessionId,
       goal: plan.goal,
       messages,
+      skill,
     });
   }
 
@@ -303,10 +330,11 @@ RULES — follow exactly, no exceptions:
     goal: string;
     messages: OpenAI.ChatCompletionMessageParam[];
     modelOverride?: string;
+    skill?: ActiveSkill | null;
   }): Promise<void> {
     const db = getDb();
     const llm = getActiveLLMClient(args.modelOverride);
-    const tools = this.registry.getToolSchemas();
+    const tools = this.skills.filterTools(this.registry.getToolSchemas(), args.skill ?? null);
 
     const messages = args.messages;
     const mutations: TrackedMutation[] = [];

@@ -129,6 +129,27 @@ export async function initDatabase(): Promise<void> {
       created_at         INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- ── Skills ──────────────────────────────────────────────────────────────
+    -- A Skill is a named, described playbook the agent loads when it matches the
+    -- user's intent (auto-match by description) or when explicitly invoked with
+    -- "/slug" in chat. The instructions column is injected into the ReAct system
+    -- prompt; allowed_tools_json optionally scopes which tools the agent may use
+    -- while the skill is active (entries ending in "_" are treated as prefixes,
+    -- e.g. "fs_" allows every filesystem tool). Empty allowlist = all tools.
+    CREATE TABLE IF NOT EXISTS skills (
+      skill_id           TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      slug               TEXT NOT NULL UNIQUE,
+      name               TEXT NOT NULL,
+      description        TEXT NOT NULL DEFAULT '',
+      instructions       TEXT NOT NULL DEFAULT '',
+      allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+      icon               TEXT NOT NULL DEFAULT '✨',
+      is_enabled         INTEGER NOT NULL DEFAULT 1,
+      is_builtin         INTEGER NOT NULL DEFAULT 0,
+      created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at         INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     -- Tool invocation audit log
     CREATE TABLE IF NOT EXISTS tool_audit_log (
       id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
@@ -232,6 +253,67 @@ export async function initDatabase(): Promise<void> {
 
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
+
+    -- Seed built-in skills (idempotent — keyed by slug). These ship enabled and
+    -- can be edited or disabled by the user, but not deleted (is_builtin=1).
+    INSERT OR IGNORE INTO skills (slug, name, description, instructions, allowed_tools_json, icon, is_builtin)
+    VALUES
+      (
+        'research',
+        'Web Research',
+        'Research a topic on the web and write a sourced, well-structured summary. Use when the user asks to research, look up, find out about, or gather information on something.',
+        'You are operating as the Web Research skill.' || char(10) ||
+        '1. Break the question into 2-4 concrete search queries.' || char(10) ||
+        '2. Use web_search to find authoritative sources, then web_fetch to read the most relevant ones.' || char(10) ||
+        '3. Prefer primary/official sources over aggregators. Cross-check any surprising claim against a second source.' || char(10) ||
+        '4. Write a structured answer with short sections and bullet points. Weave the source URL into the prose for every non-obvious fact so citations render.' || char(10) ||
+        '5. Never state a fact you did not read from a fetched page.',
+        '["web_","browser_navigate","browser_read_dom"]',
+        '🔎',
+        1
+      ),
+      (
+        'organize',
+        'File Organizer',
+        'Tidy and reorganize folders — sort by type, archive old files, rename for consistency. Use when the user asks to organize, clean up, sort, or declutter files or folders.',
+        'You are operating as the File Organizer skill.' || char(10) ||
+        '1. ALWAYS call fs_list_directory on the target folder first to see what exists. Never assume contents.' || char(10) ||
+        '2. Propose a clear scheme (e.g. by type, by date) and create destination folders with fs_create_directory.' || char(10) ||
+        '3. Move files one at a time with fs_move_file; the destination path MUST include the filename.' || char(10) ||
+        '4. After moving, re-list both source and destination to verify the result.' || char(10) ||
+        '5. Never delete a file unless the user explicitly asked you to.',
+        '["fs_"]',
+        '🗂️',
+        1
+      ),
+      (
+        'summarize',
+        'Document Summarizer',
+        'Read one or more local files and produce a concise summary or set of key points. Use when the user asks to summarize, condense, or extract key points from local documents.',
+        'You are operating as the Document Summarizer skill.' || char(10) ||
+        '1. Use fs_list_directory / fs_search_files to locate the file(s) if a path was not given.' || char(10) ||
+        '2. Read each file with fs_read_file before summarizing — never summarize a file you have not read.' || char(10) ||
+        '3. Produce a tight summary: a one-line gist, then 3-6 key points as bullets.' || char(10) ||
+        '4. Quote sparingly and attribute which file each point came from when summarizing multiple files.',
+        '["fs_list_directory","fs_search_files","fs_read_file","fs_get_file_info"]',
+        '📝',
+        1
+      ),
+      (
+        'report',
+        'Report Writer',
+        'Research a topic on the web and produce a finished, sourced document (Word, PDF, slides, or spreadsheet). Use when the user asks to write, draft, or produce a report, proposal, brief, or presentation about a topic.',
+        'You are operating as the Report Writer skill — your job ends with a real file, not just chat.' || char(10) ||
+        '1. If the topic needs current facts, use web_search then web_fetch to gather 2-4 solid sources first.' || char(10) ||
+        '2. Decide the best format from the request: docx (prose report/proposal), pdf (shareable report), pptx (presentation), xlsx (data/tables).' || char(10) ||
+        '3. Call docs_generate with a detailed "prompt" brief (topic, audience, the sections you want) and a clear "filename".' || char(10) ||
+        '4. Pass the facts you gathered into docs_generate "context" so the document is grounded and the sources are cited.' || char(10) ||
+        '5. If the request refers to the user''s own files or notes, set use_rag=true on docs_generate to ground and cite their indexed documents.' || char(10) ||
+        '6. After the file is created, tell the user the file name and where it was saved. Never claim a document exists unless docs_generate returned success.',
+        '["web_","browser_navigate","browser_read_dom","docs_generate","fs_read_file","fs_list_directory"]',
+        '📊',
+        1
+      );
   `);
 
   // Best-effort migration for existing DBs that pre-date citations_json.
