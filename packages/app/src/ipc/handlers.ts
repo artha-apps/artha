@@ -321,6 +321,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('skills:remove', (_e, skillId: string) => skills.remove(skillId));
 
   // ── RAG ────────────────────────────────────────────────────────────────
+  // Native folder picker for choosing a directory to index.
+  ipcMain.handle('dialog:selectDirectory', async () => {
+    const result = await dialog.showOpenDialog(window, {
+      properties: ['openDirectory'],
+      title: 'Choose a folder to index',
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return result.filePaths[0];
+  });
+
   ipcMain.handle('rag:listIndexes', () => {
     return getDb().prepare(`SELECT * FROM rag_indexes ORDER BY created_at DESC`).all();
   });

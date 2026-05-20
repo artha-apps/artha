@@ -238,6 +238,12 @@ from the user's indexed files in any conversation and cite the source filenames.
 The built-in `ask` skill (`/ask`) scopes the agent to these. Result formatting
 lives in the pure, unit-tested `tools/ragFormat.ts`.
 
+Indexes are created and managed in **Settings → RAG Index** (`RAGPanel.tsx`):
+pick a folder (native picker via `dialog:selectDirectory`), name it, and Artha
+embeds every supported file locally. Rebuild re-embeds after the folder changes.
+Both `rag_search` and `docs_generate use_rag` are inert until at least one index
+exists — the panel is the on-ramp for that whole capability.
+
 ## Cloud Models (BYOK, opt-in)
 
 Local Ollama is the default and the privacy promise. Because `LLMClient` is

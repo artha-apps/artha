@@ -12,6 +12,7 @@ import PlanApproval from './components/Chat/PlanApproval';
 import ModelsPanel from './components/Settings/ModelsPanel';
 import MCPToolsPanel from './components/Settings/MCPToolsPanel';
 import SkillsPanel from './components/Settings/SkillsPanel';
+import RAGPanel from './components/Settings/RAGPanel';
 import WebPanel from './components/Settings/WebPanel';
 import BrowserPane from './components/Browser/BrowserPane';
 import { useBrowserStore } from './stores/browser';
@@ -105,11 +106,7 @@ export default function App() {
         {activeView === 'timetravel' && <TimeTravelPanel />}
         {activeView === 'provenance' && <ProvenancePanel />}
         {activeView === 'bundles' && <BundlesPanel />}
-        {activeView === 'rag' && (
-          <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
-            RAG Index — coming soon
-          </div>
-        )}
+        {activeView === 'rag' && <RAGPanel />}
         {activeView === 'settings' && (
           <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
             Settings — coming soon

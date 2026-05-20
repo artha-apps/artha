@@ -115,6 +115,7 @@ const api = {
       ipcRenderer.invoke('rag:createIndex', name, dirPath),
     deleteIndex: (id: string) => ipcRenderer.invoke('rag:deleteIndex', id),
     rebuildIndex: (id: string) => ipcRenderer.invoke('rag:rebuildIndex', id),
+    selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory') as Promise<string | null>,
   },
 
   // ── Document Generation ──────────────────────────────────────────────────
