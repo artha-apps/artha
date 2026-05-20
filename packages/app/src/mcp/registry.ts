@@ -11,6 +11,7 @@ import { FILESYSTEM_TOOL_SCHEMAS, invokeFilesystemTool, isFilesystemTool } from 
 import { WEB_TOOL_SCHEMAS, invokeWebTool, isWebTool } from '../tools/web';
 import { BROWSER_TOOL_SCHEMAS, invokeBrowserTool, isBrowserTool } from '../tools/browser';
 import { DOCS_TOOL_SCHEMAS, invokeDocsTool, isDocsTool } from '../tools/docs';
+import { RAG_TOOL_SCHEMAS, invokeRagTool, isRagTool } from '../tools/rag';
 
 interface MCPServerConnection {
   id: string;
@@ -69,7 +70,7 @@ export class MCPRegistry {
   /** Get all tool schemas — built-in tools first, then any connected MCP servers. */
   getToolSchemas(): OpenAI.ChatCompletionTool[] {
     const mcpTools = Array.from(this.connections.values()).flatMap(c => c.tools);
-    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...mcpTools];
+    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...mcpTools];
   }
 
   /** Invoke a named tool — built-in tools first, then MCP servers.
@@ -87,6 +88,9 @@ export class MCPRegistry {
     }
     if (isDocsTool(toolName)) {
       return invokeDocsTool(toolName, args);
+    }
+    if (isRagTool(toolName)) {
+      return invokeRagTool(toolName, args);
     }
     for (const conn of this.connections.values()) {
       const hasTool = conn.tools.some(t => t.function.name === toolName);

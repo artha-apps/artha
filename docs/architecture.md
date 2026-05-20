@@ -232,6 +232,12 @@ configured RAG index and passes the top passages as `SourceChunk`s carrying the
 originating filename, so each cited section's provenance points at a real local
 document. IPC and the docs tool share one `getDefaultRagIndexer()` instance.
 
+Beyond documents, `rag_search` / `rag_list_indexes` (`tools/rag.ts`) expose the
+same retrieval as **general agent tools**, so the agent can answer questions
+from the user's indexed files in any conversation and cite the source filenames.
+The built-in `ask` skill (`/ask`) scopes the agent to these. Result formatting
+lives in the pure, unit-tested `tools/ragFormat.ts`.
+
 ## Cloud Models (BYOK, opt-in)
 
 Local Ollama is the default and the privacy promise. Because `LLMClient` is

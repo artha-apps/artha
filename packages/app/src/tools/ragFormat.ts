@@ -1,0 +1,36 @@
+/**
+ * Pure formatting helpers for the rag_search tool — no DB/Electron, so they're
+ * unit-testable. Turn raw retrieval hits into the compact, source-labelled text
+ * the agent reads back in the ReAct loop.
+ */
+import * as path from 'path';
+
+export interface RagHit {
+  filePath: string;
+  text: string;
+  score: number;
+}
+
+const SNIPPET_CHARS = 320;
+
+/** Render retrieval hits as a numbered, source-labelled list. Empty hits get an
+ *  actionable message so the model doesn't fabricate file contents. */
+export function formatRagResults(query: string, hits: RagHit[]): string {
+  if (hits.length === 0) {
+    return `No matching passages found in your indexed files for "${query}". The user may need to add an index in the RAG panel.`;
+  }
+  const lines = hits.map((h, i) => {
+    const name = path.basename(h.filePath);
+    const snippet = h.text.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_CHARS);
+    return `${i + 1}. [${name}] (relevance ${h.score.toFixed(2)})\n${snippet}`;
+  });
+  return `Found ${hits.length} passage(s) for "${query}":\n\n${lines.join('\n\n')}`;
+}
+
+/** Render the list of configured indexes for rag_list_indexes. */
+export function formatIndexList(indexes: { name: string; doc_count: number }[]): string {
+  if (indexes.length === 0) {
+    return 'No RAG indexes configured. The user can create one in the RAG panel to make their files searchable.';
+  }
+  return 'Available indexes:\n' + indexes.map(i => `- ${i.name} (${i.doc_count} chunks)`).join('\n');
+}
