@@ -16,7 +16,7 @@
  */
 import { BrowserWindow } from 'electron';
 import * as os from 'os';
-import { getActiveLLMClient } from '../llm/client';
+import { getActiveLLMClient, type StreamedMessage } from '../llm/client';
 import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type ActiveSkill } from '../skills/registry';
 import { getDb } from '../db/schema';
@@ -367,19 +367,28 @@ RULES — follow exactly, no exceptions:
         break;
       }
 
-      let response: OpenAI.ChatCompletion;
+      // Stream the turn. Text deltas are emitted live; if the turn turns out to
+      // be a tool step (or its text gets replaced by a verified summary), we
+      // emit `agent:streamReset` to clear the live preamble.
+      let msg: StreamedMessage;
+      let streamedLive = false;
       try {
-        response = await llm.complete(messages, tools);
+        msg = await llm.streamComplete(
+          messages,
+          tools,
+          (tok) => { this.emit('agent:token', tok); streamedLive = true; },
+          () => this.cancelledWorkflows.has(args.workflowId),
+        );
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.emit('agent:token', `\n\n⚠️ Error: ${msg}`);
-        recordStep(stepIdx++, 'final', { error: msg });
+        const m = err instanceof Error ? err.message : String(err);
+        this.emit('agent:token', `\n\n⚠️ Error: ${m}`);
+        recordStep(stepIdx++, 'final', { error: m });
         db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
         break;
       }
 
-      const msg = response.choices[0]?.message;
-      if (!msg) break;
+      // Aborted mid-stream — bounce to the top so the cancel handler finalises.
+      if (this.cancelledWorkflows.has(args.workflowId)) continue;
 
       messages.push({
         role: 'assistant',
@@ -392,6 +401,8 @@ RULES — follow exactly, no exceptions:
       }, messages);
 
       if (msg.tool_calls?.length) {
+        // Intermediate step — suppress any preamble text shown live.
+        if (streamedLive) this.emit('agent:streamReset');
         for (const toolCall of msg.tool_calls) {
           this.emit('agent:toolCall', {
             type: 'tool_invoke',
@@ -495,12 +506,14 @@ RULES — follow exactly, no exceptions:
 
       } else if (msg.content?.trim()) {
         // ── Final response branch ──────────────────────────────────────────
+        const rawContent = msg.content;
         let finalText: string;
 
         if (mutations.length > 0) {
+          // The user-facing text is a verified summary, not the model's prose.
           finalText = await this.generateVerifiedSummary(args.goal, mutations);
         } else {
-          finalText = msg.content
+          finalText = rawContent
             .replace(/\{[\s\S]*?"name":\s*"fs_[^}]*\}/g, '')
             .replace(/^\s*\{[\s\S]*?\}\s*$/gm, '')
             .replace(/^\s*[a-z]+\s*$/gim, '')
@@ -516,7 +529,15 @@ RULES — follow exactly, no exceptions:
           }
         }
 
-        if (finalText) this.emit('agent:token', finalText);
+        // The raw content was already streamed live. Only re-emit if the final
+        // text differs (verified summary, or cleaning changed it) — otherwise
+        // what the user already saw stands as-is.
+        if (finalText !== rawContent.trim()) {
+          if (streamedLive) this.emit('agent:streamReset');
+          if (finalText) this.emit('agent:token', finalText);
+        } else if (!streamedLive && finalText) {
+          this.emit('agent:token', finalText);
+        }
 
         // Persist the assistant message so the next session load shows it.
         try {

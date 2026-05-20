@@ -67,6 +67,16 @@ requiresApproval? ──yes──▶ Emit planReady → UI shows PlanApproval mo
     └─▶ all steps done ──▶ mark workflow completed
 ```
 
+**Streaming.** The loop uses `LLMClient.streamComplete()` (tool-call deltas are
+reassembled by the pure `llm/streamMerge.ts`). Text deltas are emitted live to
+the renderer as they generate. Because intermediate (tool-step) text is
+suppressed and a mutation run's final text is a *verified summary* (not the
+model's prose), the orchestrator emits `agent:streamReset` to clear the live
+preamble whenever a turn resolves to a tool call or its text is replaced — so
+the user sees true token streaming on plain answers without losing the
+anti-hallucination guarantees. `shouldAbort` is polled between chunks so Stop
+interrupts mid-generation.
+
 ## MCP Tool System
 
 MCP (Model Context Protocol) is the first-class tool protocol. The `MCPRegistry` class:

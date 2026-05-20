@@ -28,7 +28,7 @@ declare global {
 }
 
 export default function App() {
-  const { appendToken, finaliseStream, addToolEvent, addCitations, setPendingPlan, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId, setActiveSkill } = useChatStore();
+  const { appendToken, resetStream, finaliseStream, addToolEvent, addCitations, setPendingPlan, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId, setActiveSkill } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
 
   // First-run onboarding gate. `null` = still loading the flag; show nothing
@@ -53,6 +53,7 @@ export default function App() {
     // agent:streamEnd fires when the orchestrator is fully done — authoritative
     // signal to flush the message, even for tool-only responses with no tokens.
     const offEnd = window.artha.agent.onStreamEnd(finaliseStream);
+    const offReset = window.artha.agent.onStreamReset(resetStream);
     const offWorkflow = window.artha.agent.onWorkflowStart((id) => {
       setStreaming(true);
       setActiveWorkflowId(id);
@@ -79,7 +80,7 @@ export default function App() {
     // Load sessions
     window.artha.sessions.list().then(setSessions);
 
-    return () => { offToken(); offTool(); offPlan(); offEnd(); offWorkflow(); offCitations(); offSkill(); offTitle(); offAutoOpen(); };
+    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offTitle(); offAutoOpen(); };
   }, []);
 
   return (

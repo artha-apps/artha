@@ -7,6 +7,14 @@
  */
 import OpenAI from 'openai';
 import { getDb } from '../db/schema';
+import { applyToolCallDeltas, toToolCalls, type PartialToolCall } from './streamMerge';
+
+/** Assembled result of a streamed completion — mirrors the bits of a
+ *  ChatCompletionMessage the ReAct loop consumes. */
+export interface StreamedMessage {
+  content: string | null;
+  tool_calls?: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[];
+}
 
 export interface LLMConfig {
   baseUrl: string;        // e.g. http://localhost:11434/v1
@@ -76,6 +84,47 @@ export class LLMClient {
       temperature: this.config.temperature ?? 0.3,
       stream: false,
     });
+  }
+
+  /** Streaming completion for the ReAct loop. Forwards text deltas via
+   *  `onToken` and assembles any tool calls. `shouldAbort` is polled between
+   *  chunks so the Stop button can interrupt a long generation mid-stream. */
+  async streamComplete(
+    messages: OpenAI.ChatCompletionMessageParam[],
+    tools: OpenAI.ChatCompletionTool[] | undefined,
+    onToken: (token: string) => void,
+    shouldAbort?: () => boolean
+  ): Promise<StreamedMessage> {
+    const stream = await this.client.chat.completions.create({
+      model: this.config.model,
+      messages,
+      tools,
+      tool_choice: tools?.length ? 'auto' : undefined,
+      max_tokens: this.config.maxTokens ?? 4096,
+      temperature: this.config.temperature ?? 0.3,
+      stream: true,
+    });
+
+    let content = '';
+    let partials: PartialToolCall[] = [];
+    for await (const chunk of stream) {
+      if (shouldAbort?.()) {
+        stream.controller.abort();
+        break;
+      }
+      const delta = chunk.choices[0]?.delta;
+      if (!delta) continue;
+      if (delta.content) {
+        content += delta.content;
+        onToken(delta.content);
+      }
+      if (delta.tool_calls?.length) {
+        partials = applyToolCallDeltas(partials, delta.tool_calls);
+      }
+    }
+
+    const tool_calls = toToolCalls(partials);
+    return { content: content || null, tool_calls: tool_calls.length ? tool_calls : undefined };
   }
 }
 

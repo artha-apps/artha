@@ -29,6 +29,10 @@ const api = {
       ipcRenderer.on('agent:streamEnd', () => cb());
       return () => ipcRenderer.removeAllListeners('agent:streamEnd');
     },
+    onStreamReset: (cb: () => void) => {
+      ipcRenderer.on('agent:streamReset', () => cb());
+      return () => ipcRenderer.removeAllListeners('agent:streamReset');
+    },
     onWorkflowStart: (cb: (workflowId: string) => void) => {
       ipcRenderer.on('agent:workflowStart', (_e, id) => cb(id));
       return () => ipcRenderer.removeAllListeners('agent:workflowStart');

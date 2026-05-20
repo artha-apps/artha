@@ -87,6 +87,7 @@ interface ChatState {
   setMessages: (msgs: Message[]) => void;
   addUserMessage: (sessionId: string, content: string) => void;
   appendToken: (token: string) => void;
+  resetStream: () => void;
   finaliseStream: () => void;
   addToolEvent: (ev: ToolCallEvent) => void;
   addCitations: (citations: Citation[]) => void;
@@ -131,6 +132,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // into the streaming state via the first token they do emit.
   appendToken: (token) =>
     set((s) => ({ streamingContent: s.streamingContent + token, isStreaming: true })),
+
+  // Clear the in-flight streamed text without ending the stream. Used when the
+  // orchestrator decides a turn's live preamble should be suppressed (a tool
+  // step) or replaced (a verified summary).
+  resetStream: () => set({ streamingContent: '' }),
 
   // Called once on agent:streamEnd. Folds pending content + tool events +
   // citations into a single assistant message and resets the streaming state.
