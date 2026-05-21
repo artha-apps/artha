@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "description": "Artha — Local-first AI productivity agent. Document workflows, MCP tools, zero cloud.",
+  "author": "Noopur Trivedi <trivedi.noopur@gmail.com>",
+  "main": "packages/app/dist/main.js",
   "workspaces": [
     "packages/app",
     "packages/renderer"
@@ -49,7 +51,6 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "assets/icon.icns",
       "target": [
         {
           "target": "dmg",
@@ -61,7 +62,6 @@
       ]
     },
     "win": {
-      "icon": "assets/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -72,7 +72,6 @@
       ]
     },
     "linux": {
-      "icon": "assets/icon.png",
       "target": [
         {
           "target": "deb",
