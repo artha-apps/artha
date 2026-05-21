@@ -97,6 +97,7 @@ export default function ChatWindow() {
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
   const [input, setInput] = useState('');
   const [skills, setSkills] = useState<SkillOption[]>([]);
+  const [ragIndexes, setRagIndexes] = useState<{ name: string; doc_count: number }[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -109,6 +110,17 @@ export default function ChatWindow() {
   useEffect(() => {
     window.artha.skills.listEnabled().then((s) => setSkills(s as SkillOption[]));
   }, []);
+
+  // Load RAG index status so the composer can tell the user whether /ask has
+  // anything to search. Refreshes when a run finishes (indexes may have changed
+  // via the RAG panel between turns).
+  useEffect(() => {
+    window.artha.rag
+      .listIndexes()
+      .then((r) => setRagIndexes(r as { name: string; doc_count: number }[]))
+      .catch(() => setRagIndexes([]));
+  }, [isStreaming]);
+  const ragChunks = ragIndexes.reduce((n, i) => n + (i.doc_count ?? 0), 0);
 
   // The slash-menu is open when the input is a bare "/partial-slug" with no
   // space yet. We filter the enabled skills by that partial slug/name.
@@ -302,6 +314,20 @@ export default function ChatWindow() {
                   </span>
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* RAG index status — tells the user whether /ask has files to search */}
+          {ragIndexes.length > 0 && (
+            <div
+              className="flex items-center gap-1.5 mb-2 w-fit px-2.5 py-1 rounded-full bg-artha-s2 border border-artha-border text-xs text-artha-muted"
+              title={ragIndexes.map((i) => `${i.name} — ${i.doc_count ?? 0} chunks`).join('\n')}
+            >
+              <span className="leading-none">📚</span>
+              <span>
+                {ragIndexes.length} index{ragIndexes.length > 1 ? 'es' : ''} · {ragChunks} chunks —
+                type <span className="text-artha-accent font-medium">/ask</span> to search
+              </span>
             </div>
           )}
 

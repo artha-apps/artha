@@ -10,6 +10,7 @@ import { app } from 'electron';
 import { getDb } from '../db/schema';
 import { extractText } from './extract';
 import { parseIndexFile, type Chunk, type IndexFile } from './indexFormat';
+import { chunkOnBoundaries } from './chunk';
 
 /** A retrieved chunk with its originating file — used to cite real sources in
  *  generated documents (not just anonymous context). */
@@ -158,17 +159,13 @@ export class RAGIndexer {
   }
 
   private chunkText(text: string, filePath: string): Omit<Chunk, 'embedding'>[] {
-    const chunks: Omit<Chunk, 'embedding'>[] = [];
-    for (let i = 0; i < text.length; i += CHUNK_SIZE - CHUNK_OVERLAP) {
-      const slice = text.slice(i, i + CHUNK_SIZE);
-      if (slice.trim().length < 20) continue;
-      chunks.push({
-        id: crypto.createHash('md5').update(`${filePath}:${i}`).digest('hex'),
-        filePath,
-        text: slice,
-      });
-    }
-    return chunks;
+    // Break on sentence/word boundaries (see rag/chunk.ts) so embeddings see
+    // whole words/sentences instead of arbitrary 512-char slices.
+    return chunkOnBoundaries(text, CHUNK_SIZE, CHUNK_OVERLAP).map(({ text: slice, offset }) => ({
+      id: crypto.createHash('md5').update(`${filePath}:${offset}`).digest('hex'),
+      filePath,
+      text: slice,
+    }));
   }
 
   /** Call Ollama's /api/embeddings. On failure (Ollama down, model not
