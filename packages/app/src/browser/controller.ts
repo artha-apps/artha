@@ -13,6 +13,7 @@
  */
 import { BrowserView, BrowserWindow } from 'electron';
 import { EventEmitter } from 'events';
+import { decideCrashAction, recoveryTarget } from './recovery';
 
 /** Pixel rect (in renderer-window coordinates) where the BrowserView should
  *  be positioned. The renderer measures its pane and pushes these via IPC. */
@@ -141,14 +142,14 @@ export class BrowserController extends EventEmitter {
       if (details?.reason === 'clean-exit') return;
       const reason = details?.reason ?? 'crashed';
       const now = Date.now();
-      if (now - this.lastAutoRecoverAt > 10_000) {
+      if (decideCrashAction(now, this.lastAutoRecoverAt) === 'auto-reload') {
         this.lastAutoRecoverAt = now;
         this.crashed = null;
         this.reloadLast();
         this.emitState();
         return;
       }
-      // Crashed again within 10s of an auto-reload → don't crashloop.
+      // Crashed again within the window of an auto-reload → don't crashloop.
       this.crashed = { reason, since: now };
       this.emitState();
     });
@@ -266,11 +267,8 @@ export class BrowserController extends EventEmitter {
   private reloadLast(): void {
     const wc = this.view?.webContents;
     if (!wc) return;
-    const target =
-      this.lastUrl && this.lastUrl !== ABOUT_BLANK
-        ? this.lastUrl
-        : `data:text/html;charset=utf-8,${encodeURIComponent(HOME_HTML)}`;
-    void wc.loadURL(target);
+    const home = `data:text/html;charset=utf-8,${encodeURIComponent(HOME_HTML)}`;
+    void wc.loadURL(recoveryTarget(this.lastUrl, ABOUT_BLANK, home));
   }
 
   /** Called from the renderer's recovery overlay. Clears the crashed latch and

@@ -67,6 +67,12 @@ async function createWindow(): Promise<void> {
     autoUpdater.on('error', (err) => {
       console.error('[Artha] Auto-update check failed:', err);
     });
+    autoUpdater.on('update-available', (info) => {
+      console.log(`[Artha] Update available: ${info.version} (current ${app.getVersion()})`);
+    });
+    autoUpdater.on('update-not-available', () => {
+      console.log(`[Artha] Up to date (${app.getVersion()})`);
+    });
     autoUpdater.checkForUpdatesAndNotify().catch((err) => {
       console.error('[Artha] checkForUpdatesAndNotify rejected:', err);
     });
