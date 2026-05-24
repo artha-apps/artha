@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  ::selection {
+    background-color: #6366f1;
+    color: #fff;
+  }
+}
+
+@layer utilities {
+  .gradient-text {
+    @apply bg-gradient-to-r from-artha-400 to-purple-400 bg-clip-text text-transparent;
+  }
+  .glow {
+    box-shadow: 0 0 60px -15px rgba(99, 102, 241, 0.5);
+  }
+}
