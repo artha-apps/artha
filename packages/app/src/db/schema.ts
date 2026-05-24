@@ -269,6 +269,21 @@ export async function initDatabase(): Promise<void> {
       created_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- ── Persistent Artifacts ──────────────────────────────────────────────
+    -- Every file the agent generates (docx, pptx, xlsx, pdf, image) is logged
+    -- here so the user can browse, re-open, and delete them from one panel.
+    CREATE TABLE IF NOT EXISTS artifacts (
+      artifact_id  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      session_id   TEXT REFERENCES chat_sessions(session_id) ON DELETE SET NULL,
+      name         TEXT NOT NULL,
+      file_path    TEXT NOT NULL,
+      file_type    TEXT NOT NULL DEFAULT 'file',
+      size_bytes   INTEGER,
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at DESC);
+
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
 

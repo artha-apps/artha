@@ -41,6 +41,14 @@ export interface WorkflowStep {
   error?: string;
 }
 
+/** Image or file attachment the user added before sending a message. The
+ *  base64 data is passed directly to the LLM in the OpenAI vision format. */
+export interface Attachment {
+  name: string;
+  mime: string;  // e.g. 'image/png'
+  data: string;  // base64-encoded bytes
+}
+
 /** A planning-mode plan handed to the renderer for explicit approval. When
  *  `requiresApproval=true` the orchestrator pauses until `approvePlan()` is
  *  called via IPC. */
@@ -53,6 +61,9 @@ export interface AgentPlan {
   /** Skill active for this run, if one was matched/invoked. Threaded through
    *  approval so its instructions + tool scope survive a pause-for-approval. */
   skill?: ActiveSkill | null;
+  /** Images/files attached to the triggering user message. Threaded through to
+   *  the first LLM turn in vision format so the model can see them. */
+  attachments?: Attachment[];
 }
 
 // ── Anti-hallucination tracker ───────────────────────────────────────────────
@@ -115,7 +126,7 @@ export class AgentOrchestrator {
    *   3. Generate plan (with enriched goal if answers were provided).
    *   4. Execute or pause for approval.
    */
-  async handleMessage(sessionId: string, userContent: string): Promise<void> {
+  async handleMessage(sessionId: string, userContent: string, attachments?: Attachment[]): Promise<void> {
     const db = getDb();
     const workflowId = crypto.randomUUID();
 
@@ -166,6 +177,7 @@ export class AgentOrchestrator {
 
     const plan = await this.generatePlan(workflowId, sessionId, enrichedGoal, history, skill);
     plan.skill = skill;
+    plan.attachments = attachments;
     this.activePlans.set(workflowId, plan);
 
     if (plan.requiresApproval) {
@@ -274,6 +286,22 @@ or
   }
 
   // ── Private ───────────────────────────────────────────────────────────────
+
+  /** Build the user-turn content. If image attachments are present, returns an
+   *  OpenAI vision content array; otherwise returns a plain string. */
+  private buildUserContent(
+    text: string,
+    attachments?: Attachment[]
+  ): OpenAI.ChatCompletionUserMessageParam['content'] {
+    if (!attachments?.length) return text;
+    return [
+      { type: 'text', text },
+      ...attachments.map(a => ({
+        type: 'image_url' as const,
+        image_url: { url: `data:${a.mime};base64,${a.data}` },
+      })),
+    ];
+  }
 
   private async generatePlan(
     workflowId: string,
@@ -390,7 +418,7 @@ RULES — follow exactly, no exceptions:
 12. When the user asks about THEIR OWN files, notes, or documents, call rag_search to retrieve relevant passages from their indexed files, then answer from those passages and cite the source filenames. Do not fabricate file contents.`,
       },
       ...history,
-      { role: 'user', content: plan.goal },
+      { role: 'user', content: this.buildUserContent(plan.goal, plan.attachments) },
     ];
 
     await this.runReactLoop({

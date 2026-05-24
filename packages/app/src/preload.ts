@@ -9,8 +9,12 @@ export type ArthaAPI = typeof api;
 const api = {
   // ── Agent ────────────────────────────────────────────────────────────────
   agent: {
-    sendMessage: (sessionId: string, content: string) =>
-      ipcRenderer.invoke('agent:sendMessage', sessionId, content),
+    sendMessage: (sessionId: string, content: string, attachments?: { name: string; mime: string; data: string }[]) =>
+      ipcRenderer.invoke('agent:sendMessage', sessionId, content, attachments),
+    pickImage: () =>
+      ipcRenderer.invoke('dialog:pickImage') as Promise<{ name: string; mime: string; data: string; path: string } | null>,
+    pickPdf: () =>
+      ipcRenderer.invoke('dialog:pickPdf') as Promise<{ pdfName: string; pages: { name: string; mime: string; data: string }[] } | null>,
     cancelTask: (workflowId: string) =>
       ipcRenderer.invoke('agent:cancelTask', workflowId),
     onToken: (cb: (token: string) => void) => {
@@ -155,6 +159,17 @@ const api = {
       ipcRenderer.invoke('bundles:export', runId, docId),
     import: () => ipcRenderer.invoke('bundles:import'),
     openExtracted: (dir: string) => ipcRenderer.invoke('bundles:openExtracted', dir),
+  },
+
+  // ── Artifacts ────────────────────────────────────────────────────────────
+  // Persistent log of every file the agent has generated. ArtifactsPanel reads
+  // the list; docs generator and tools write via `log`; user can open or delete.
+  artifacts: {
+    list: () => ipcRenderer.invoke('artifacts:list') as Promise<{ artifact_id: string; session_id: string | null; name: string; file_path: string; file_type: string; size_bytes: number | null; created_at: number }[]>,
+    log: (entry: { sessionId?: string; name: string; filePath: string; fileType: string; sizeBytes?: number }) =>
+      ipcRenderer.invoke('artifacts:log', entry) as Promise<string | null>,
+    delete: (artifactId: string) => ipcRenderer.invoke('artifacts:delete', artifactId) as Promise<boolean>,
+    open: (filePath: string) => ipcRenderer.invoke('artifacts:open', filePath) as Promise<boolean>,
   },
 
   // ── Router ───────────────────────────────────────────────────────────────

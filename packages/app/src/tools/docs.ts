@@ -9,11 +9,13 @@
  */
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
 import { shell } from 'electron';
 import OpenAI from 'openai';
 import { generateDocument, type DocType, type SourceChunk } from '../docs/generator';
 import { searchAllIndexes } from '../rag/indexer';
 import { resolveDocOutPath } from './docPath';
+import { getDb } from '../db/schema';
 
 const HOME = os.homedir();
 const DOC_TYPES: DocType[] = ['docx', 'pptx', 'xlsx', 'pdf'];
@@ -124,6 +126,15 @@ export async function invokeDocsTool(name: string, args: Record<string, unknown>
 
   // Open the finished file in its native app — the payoff moment.
   shell.openPath(result.filePath).catch(() => { /* non-fatal */ });
+
+  // Persist to artifacts table so ArtifactsPanel can list this file.
+  try {
+    const sizeBytes = fs.statSync(result.filePath).size;
+    getDb().prepare(
+      `INSERT INTO artifacts (name, file_path, file_type, size_bytes)
+       VALUES (?, ?, ?, ?)`
+    ).run(path.basename(result.filePath), result.filePath, type, sizeBytes);
+  } catch { /* non-fatal — artifact log is best-effort */ }
 
   return [
     `Created ${path.basename(result.filePath)} (${type.toUpperCase()}) at ${result.filePath}.`,

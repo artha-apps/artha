@@ -12,6 +12,14 @@ export interface Citation {
   fetched_at: number;
 }
 
+/** Image/file attachment on a user message — stored as base64 for in-memory
+ *  display; never persisted to SQLite (too large). */
+export interface MessageAttachment {
+  name: string;
+  mime: string;
+  data: string; // base64
+}
+
 /** Chat bubble. `senderType='tool'` is reserved — current code stores tool
  *  output on the assistant message via `toolEvents` rather than a separate
  *  bubble, which keeps the visual thread tidy. */
@@ -25,6 +33,7 @@ export interface Message {
   toolOutputs?: unknown[];
   toolEvents?: ToolCallEvent[];
   citations?: Citation[];
+  attachments?: MessageAttachment[];
 }
 
 /** One entry in the live execution log. Mirrors the orchestrator's
@@ -62,7 +71,7 @@ export interface Session {
 
 /** Top-level view selector. Each value maps to a panel mounted under <main>
  *  in App.tsx. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'settings';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'settings';
 
 /** The skill the orchestrator matched/loaded for the in-flight workflow.
  *  Drives the small "Skill: …" badge in the composer. Cleared on stream end. */
@@ -89,12 +98,14 @@ interface ChatState {
   activeView: ActiveView;
   activeWorkflowId: string | null;
   activeSkill: ActiveSkillBadge | null;
+  pendingAttachments: MessageAttachment[];
 
   // Actions
   setSessions: (s: Session[]) => void;
   setActiveSession: (id: string) => void;
   setMessages: (msgs: Message[]) => void;
-  addUserMessage: (sessionId: string, content: string) => void;
+  addUserMessage: (sessionId: string, content: string, attachments?: MessageAttachment[]) => void;
+  setPendingAttachments: (a: MessageAttachment[]) => void;
   appendToken: (token: string) => void;
   resetStream: () => void;
   finaliseStream: () => void;
@@ -122,6 +133,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeView: 'chat',
   activeWorkflowId: null,
   activeSkill: null,
+  pendingAttachments: [],
 
   setSessions: (sessions) => set({ sessions }),
   // Switching sessions clears any in-flight stream and execution log — the
@@ -130,13 +142,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setActiveSession: (id) => set({ activeSessionId: id, messages: [], streamingContent: '', executionLog: [], pendingToolEvents: [], pendingCitations: [] }),
   setMessages: (messages) => set({ messages }),
 
-  addUserMessage: (sessionId, content) =>
+  addUserMessage: (sessionId, content, attachments) =>
     set((s) => ({
       messages: [...s.messages, {
         id: crypto.randomUUID(), sessionId, senderType: 'user', content,
         timestamp: Date.now(),
+        attachments: attachments?.length ? attachments : undefined,
       }],
     })),
+
+  setPendingAttachments: (a) => set({ pendingAttachments: a }),
 
   // Streaming token from the orchestrator. We set isStreaming here too so
   // tool-only responses (no text emitted before tools) still flip the UI

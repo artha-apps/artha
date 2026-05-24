@@ -21,6 +21,8 @@ import RouterPanel from './components/Settings/RouterPanel';
 import TimeTravelPanel from './components/Settings/TimeTravelPanel';
 import ProvenancePanel from './components/Settings/ProvenancePanel';
 import BundlesPanel from './components/Settings/BundlesPanel';
+import ArtifactsPanel from './components/Settings/ArtifactsPanel';
+import MarketplacePanel from './components/Settings/MarketplacePanel';
 
 declare global {
   interface Window {
@@ -114,6 +116,8 @@ export default function App() {
         {activeView === 'timetravel' && <TimeTravelPanel />}
         {activeView === 'provenance' && <ProvenancePanel />}
         {activeView === 'bundles' && <BundlesPanel />}
+        {activeView === 'artifacts' && <ArtifactsPanel />}
+        {activeView === 'marketplace' && <MarketplacePanel />}
         {activeView === 'rag' && <RAGPanel />}
         {activeView === 'settings' && (
           <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">

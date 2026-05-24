@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles } from 'lucide-react';
+import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -93,6 +93,7 @@ export default function ChatWindow() {
   const {
     messages, streamingContent, isStreaming, activeSessionId,
     addUserMessage, activeWorkflowId, setStreaming, pendingCitations, activeSkill,
+    pendingAttachments, setPendingAttachments,
   } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
   const [input, setInput] = useState('');
@@ -153,11 +154,30 @@ export default function ChatWindow() {
   const send = async (text?: string) => {
     const msg = (text ?? input).trim();
     if (!msg || !activeSessionId || isStreaming) return;
+    const attachments = pendingAttachments.length ? [...pendingAttachments] : undefined;
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    setPendingAttachments([]);
     setStreaming(true);
-    addUserMessage(activeSessionId, msg);
-    await window.artha.agent.sendMessage(activeSessionId, msg);
+    addUserMessage(activeSessionId, msg, attachments);
+    await window.artha.agent.sendMessage(activeSessionId, msg, attachments);
+  };
+
+  const attachImage = async () => {
+    const result = await window.artha.agent.pickImage();
+    if (!result) return;
+    setPendingAttachments([...pendingAttachments, { name: result.name, mime: result.mime, data: result.data }]);
+  };
+
+  const attachPdf = async () => {
+    const result = await window.artha.agent.pickPdf();
+    if (!result) return;
+    // Each rendered PDF page becomes a separate image attachment
+    setPendingAttachments([...pendingAttachments, ...result.pages]);
+  };
+
+  const removeAttachment = (idx: number) => {
+    setPendingAttachments(pendingAttachments.filter((_, i) => i !== idx));
   };
 
   /** Signal the orchestrator to abort the in-flight workflow. The UI updates
@@ -253,7 +273,22 @@ export default function ChatWindow() {
                     )}
                   </>
                 ) : (
-                  <span className="whitespace-pre-wrap">{msg.content}</span>
+                  <>
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {msg.attachments.map((a, i) => (
+                          <img
+                            key={i}
+                            src={`data:${a.mime};base64,${a.data}`}
+                            alt={a.name}
+                            title={a.name}
+                            className="max-h-40 max-w-xs rounded-lg border border-white/20 object-cover"
+                          />
+                        ))}
+                      </div>
+                    )}
+                    <span className="whitespace-pre-wrap">{msg.content}</span>
+                  </>
                 )}
               </div>
             </div>
@@ -339,6 +374,27 @@ export default function ChatWindow() {
             </div>
           )}
 
+          {/* Pending image attachments — shown above composer */}
+          {pendingAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2 px-1">
+              {pendingAttachments.map((a, i) => (
+                <div key={i} className="relative group">
+                  <img
+                    src={`data:${a.mime};base64,${a.data}`}
+                    alt={a.name}
+                    className="h-16 w-16 object-cover rounded-lg border border-white/20"
+                  />
+                  <button
+                    onClick={() => removeAttachment(i)}
+                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-artha-surface border border-white/20 flex items-center justify-center text-artha-muted hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X size={9} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="flex items-end gap-3 bg-artha-s2 border border-artha-border rounded-2xl px-4 py-3 focus-within:border-artha-accent/40 transition-colors shadow-lg">
             <textarea
               ref={textareaRef}
@@ -350,6 +406,23 @@ export default function ChatWindow() {
               className="flex-1 bg-transparent text-sm resize-none outline-none text-artha-text placeholder-artha-muted leading-relaxed"
               style={{ minHeight: '1.5rem', maxHeight: '10rem' }}
             />
+            {/* Attach an image — opens native file dialog, adds to pendingAttachments */}
+            <button
+              onClick={attachImage}
+              title="Attach image"
+              className="p-2 rounded-xl border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 transition-colors shrink-0"
+            >
+              <Paperclip size={14} />
+            </button>
+            {/* Attach a PDF — renders each page to an image via pdftoppm, then
+                feeds the pages through the same multimodal pipeline */}
+            <button
+              onClick={attachPdf}
+              title="Attach PDF (renders pages for vision)"
+              className="p-2 rounded-xl border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 transition-colors shrink-0"
+            >
+              <FileText size={14} />
+            </button>
             {/* Toggle the BrowserPane. Browser tools auto-open the pane via
                 the `browser:autoOpen` IPC event the tool emitter pushes;
                 this button is for the user-initiated case. */}

@@ -55,7 +55,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Side-effect: the *first* message of a session also sets the session title
   // (truncated to 40 chars) and pushes a `session:titleUpdated` event so the
   // sidebar updates without a full reload.
-  ipcMain.handle('agent:sendMessage', async (_e, sessionId: string, content: string) => {
+  ipcMain.handle('agent:sendMessage', async (_e, sessionId: string, content: string, attachments?: { name: string; mime: string; data: string }[]) => {
     const db = getDb();
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, content);
 
@@ -69,7 +69,68 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(sessionId);
     }
 
-    await orchestrator.handleMessage(sessionId, content);
+    await orchestrator.handleMessage(sessionId, content, attachments);
+  });
+
+  ipcMain.handle('dialog:pickImage', async () => {
+    const result = await dialog.showOpenDialog(window, {
+      title: 'Attach image',
+      properties: ['openFile'],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const fs = await import('fs');
+    const filePath = result.filePaths[0];
+    const ext = filePath.split('.').pop()?.toLowerCase() ?? 'png';
+    const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+    const mime = mimeMap[ext] ?? 'image/png';
+    const data = fs.readFileSync(filePath).toString('base64');
+    const name = filePath.split('/').pop() ?? 'image';
+    return { name, mime, data, path: filePath };
+  });
+
+  // PDF → image pages using `pdftoppm` (Poppler). Renders each page at 150 DPI
+  // as a PNG, returns them as base64 image attachments ready for the vision
+  // pipeline. Caps at 20 pages to avoid flooding the context window.
+  ipcMain.handle('dialog:pickPdf', async () => {
+    const result = await dialog.showOpenDialog(window, {
+      title: 'Attach PDF',
+      properties: ['openFile'],
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const fs = await import('fs');
+    const os = await import('os');
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+
+    const pdfPath = result.filePaths[0];
+    const pdfName = pdfPath.split('/').pop()?.replace(/\.pdf$/i, '') ?? 'document';
+    const tmpDir = fs.mkdtempSync(`${os.tmpdir()}/artha-pdf-`);
+    const outPrefix = `${tmpDir}/page`;
+
+    try {
+      // -r 150: 150 DPI  -png: PNG output  -l 20: max 20 pages
+      await execFileAsync('pdftoppm', ['-r', '150', '-png', '-l', '20', pdfPath, outPrefix]);
+    } catch (err) {
+      console.warn('[Artha] pdftoppm failed:', err);
+      return null;
+    }
+
+    const pages = fs.readdirSync(tmpDir)
+      .filter(f => f.endsWith('.png'))
+      .sort()
+      .map(f => {
+        const data = fs.readFileSync(`${tmpDir}/${f}`).toString('base64');
+        const pageNum = f.match(/(\d+)\.png$/)?.[1] ?? '?';
+        return { name: `${pdfName}-page${pageNum}.png`, mime: 'image/png', data };
+      });
+
+    // Cleanup temp files
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+    return pages.length > 0 ? { pdfName, pages } : null;
   });
 
   // Update the DB *before* signalling the orchestrator so that even if the
@@ -652,6 +713,35 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('scheduler:remove', (_e, taskId: string) => {
     sched.remove(taskId);
+    return true;
+  });
+
+  // ── Artifacts ─────────────────────────────────────────────────────────────
+  // Log and browse files the agent has generated. Callers (docs generator, any
+  // tool that creates a file) write a row; the ArtifactsPanel reads them back.
+  ipcMain.handle('artifacts:list', () => {
+    return getDb().prepare(
+      `SELECT artifact_id, session_id, name, file_path, file_type, size_bytes, created_at
+       FROM artifacts ORDER BY created_at DESC LIMIT 500`
+    ).all();
+  });
+
+  ipcMain.handle('artifacts:log', (_e, entry: { sessionId?: string; name: string; filePath: string; fileType: string; sizeBytes?: number }) => {
+    const db = getDb();
+    const id = db.prepare(
+      `INSERT INTO artifacts (session_id, name, file_path, file_type, size_bytes)
+       VALUES (?, ?, ?, ?, ?) RETURNING artifact_id`
+    ).get(entry.sessionId ?? null, entry.name, entry.filePath, entry.fileType, entry.sizeBytes ?? null) as { artifact_id: string };
+    return id?.artifact_id ?? null;
+  });
+
+  ipcMain.handle('artifacts:delete', (_e, artifactId: string) => {
+    getDb().prepare(`DELETE FROM artifacts WHERE artifact_id=?`).run(artifactId);
+    return true;
+  });
+
+  ipcMain.handle('artifacts:open', async (_e, filePath: string) => {
+    await shell.openPath(filePath);
     return true;
   });
 }
