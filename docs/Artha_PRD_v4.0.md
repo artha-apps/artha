@@ -3,14 +3,18 @@
 | | |
 |---|---|
 | **Document** | Artha Master PRD |
-| **Version** | v4.0 |
+| **Version** | v4.1 |
 | **Status** | Draft for owner approval |
 | **Owner** | Noopur Trivedi |
 | **Business Analyst** | Claude (BA engagement) |
 | **Date** | 2026-05-24 |
-| **Supersedes** | `Artha_PRD_v3.0.docx`, and complements `REQUIREMENTS.md` (launch infra) |
+| **Supersedes** | `Artha_PRD_v3.0.docx`; complements `REQUIREMENTS.md` (launch infra) and `Artha_Features_vs_Cowork.docx` |
 | **Related docs** | `docs/architecture.md`, `docs/PROGRESS.md`, `REQUIREMENTS.md` |
-| **Current product version** | v0.1.1 (Electron desktop, shipped & public) |
+| **Current product version** | v0.1.1 + unreleased Step 1–3 feature waves on `main` |
+
+> **Revision history**
+> - **v4.0 (2026-05-24):** Initial master PRD — vision, two-plane architecture, three-phase roadmap.
+> - **v4.1 (2026-05-24):** Updated for (a) three shipped feature waves (scheduled tasks, clarification UI, web search, multimodal + PDF vision, artifacts, plugin marketplace, voice input, agent memory, native notifications, IDE integration, CI) and (b) strategy changes: domain **artha.space** (Cloudflare), **app repo going private** + separate public marketing repo, landing on **Cloudflare Pages** (waitlist), licensing direction **AGPL/BSL (not MIT)**.
 
 > **How to read this document.** §1–§6 define *what* Artha is and *why*. §7 defines the **two-plane architecture** that is the backbone of the whole strategy. §8 is the **three-phase roadmap**. §9–§16 are the supporting detail (features, model strategy, enterprise/multi-tenancy, security, monetization, risks). §17 closes every open decision so there are no gaps. A glossary is in §19.
 
@@ -18,7 +22,7 @@
 
 ## 1. Executive Summary
 
-**Artha** (Sanskrit *अर्थ* — purpose, livelihood, work) is a **local-first AI agent desktop application** that lets a person describe any task in plain English and have it planned, executed, and delivered **entirely on their own machine** — with no data leaving the device by default. It produces real, editable work artifacts (DOCX, PPTX, XLSX, PDF), automates workflows through **MCP tools and IDE integration**, and runs on **local LLMs (Ollama)** out of the box.
+**Artha** (Sanskrit *अर्थ* — purpose, livelihood, work) is a **local-first AI agent desktop application** that lets a person describe any task in plain English and have it planned, executed, and delivered **entirely on their own machine** — with no data leaving the device by default. It produces real, editable work artifacts (DOCX, PPTX, XLSX, PDF), automates workflows through **MCP tools and IDE integration**, runs on **local LLMs (Ollama)** out of the box, and now supports **multimodal input (images, PDF vision, voice), scheduled tasks, agent memory, and a plugin marketplace**.
 
 Artha's defining promise is **data sovereignty**: *"Your work, done. Locally. Nothing leaves your machine. Ever."* Its second promise is **optionality**: when a user *needs* the cloud — a stronger model, cross-device sync, team features — they can connect to it **from inside Artha**, without abandoning the product or its privacy guarantees for everything else.
 
@@ -42,7 +46,7 @@ Give individuals and organisations a **private, ownable AI co-worker** that is p
 3. **Zero telemetry by default.** Any analytics/crash reporting is opt-in and clearly labelled.
 4. **No vendor lock-in.** The LLM layer stays a single OpenAI-compatible abstraction; users can point Artha at any model/endpoint.
 5. **No mandatory accounts** for local functionality.
-6. **Open-core.** The local-first core stays MIT/open-source; commercial value accrues in a separately-licensed Cloud/Enterprise module.
+6. **Source-protected core, optional source-availability.** The application repo is **private**; the marketing site lives in a **separate public repo** exposing no app code. If the core is ever opened, it will use a **protective licence (AGPL or BSL), not permissive MIT**, so commercial value is preserved. Commercial Cloud/Enterprise capabilities remain a separately-licensed module.
 
 ---
 
@@ -71,7 +75,7 @@ A desktop AI agent that runs locally, produces finished documents, automates via
 | # | Persona | Plane | Need | Why Artha |
 |---|---|---|---|---|
 | P1 | **Privacy-conscious individual** (consultant, lawyer, writer) | Local | Draft & produce documents without leaking client data | Fully local, free, real DOCX/PDF output |
-| P2 | **Developer / power user** | Local | Automate file/IDE/MCP workflows on their machine | MCP-native, IDE integration, scriptable skills |
+| P2 | **Developer / power user** | Local | Automate file/IDE/MCP workflows on their machine | MCP-native, IDE integration, scriptable skills, scheduled tasks |
 | P3 | **SMB / small team** | Local + light Cloud | Shared skills/templates, occasional stronger model | Local default + BYOK cloud + (later) light sync |
 | P4 | **Regulated enterprise** (legal/health/finance) | Cloud Plane (self-hosted / air-gapped) | Org-wide private AI, compliance, central control | On-prem control plane + private model endpoint |
 | P5 | **Defence / air-gapped org** | Cloud Plane (air-gapped LAN) | AI with zero public-internet exposure | Air-gapped multi-department deployment |
@@ -87,8 +91,9 @@ A desktop AI agent that runs locally, produces finished documents, automates via
 - **Privacy / sovereignty** — nothing leaves the device by default; works offline/air-gapped.
 - **Cost** — $0 to run on local models; no subscription required.
 - **Real output** — editable DOCX/PPTX/XLSX/PDF with provenance and citations.
-- **Automation** — MCP tools + IDE integration + embedded browser automate real tasks.
-- **Ownership** — open-source core, bring-your-own-model, no lock-in.
+- **Automation** — MCP tools + IDE integration + embedded browser + scheduled tasks automate real work.
+- **Multimodal** — text, images, PDF vision, and voice input.
+- **Ownership** — bring-your-own-model, no lock-in.
 - **Optionality** — connect to cloud models/services from inside Artha when a task demands it.
 
 ---
@@ -102,20 +107,21 @@ A desktop AI agent that runs locally, produces finished documents, automates via
 | Data privacy / sovereignty | Nothing leaves the machine; offline/air-gapped capable | Cloud SaaS; DeepSeek routes data offshore |
 | Cost | $0 on local models, no subscription | $20+/seat/mo + usage |
 | Output artifacts | Editable DOCX/PPTX/XLSX/PDF, locally | Mostly text/canvas; Genspark cloud-only |
-| Ownership / lock-in | MIT core, swap your own model | Closed, account-bound |
-| Extensibility | MCP-native + portable skills + IDE | Walled or limited plugin stores |
+| Ownership / lock-in | Swap your own model; no account required | Closed, account-bound |
+| Extensibility | MCP-native + plugin marketplace + portable skills + IDE | Walled or limited plugin stores |
 | Offline | Full functionality offline | None |
 
-### 6.2 Where competitors are ahead (gaps Artha must manage honestly)
+### 6.2 Where competitors are still ahead (gaps to manage honestly)
 
 | Gap | Impact | Artha's mitigation |
 |---|---|---|
 | **Frontier model intelligence** | A local 7B model is far weaker than GPT/Claude/DeepSeek-V3 at reasoning/long-context/tool use | Scale to 70B-class on better hardware; BYOK / in-VPC frontier when quality is required |
 | **Hardware burden** | Needs Ollama + capable machine; rough first-run if absent | First-run detection, RAM-aware model recommendation, clear install guidance |
-| **Multimodal & live web** | No native image/voice/real-time web research | Roadmap item; MCP web tools partially close the gap |
-| **Polish / ecosystem / mobile** | Single-dev, desktop-only, no mobile/sync | Focus the moat; phased investment; community + open-core contributors |
+| **Polish / ecosystem / mobile** | Single-dev, desktop-only, no mobile/sync | Focus the moat; phased investment; demand-gate Phase 3 |
 | **Collaboration** | Single-user/local today | Cloud Plane (Phase 2/3) adds teams, sharing, sync |
 | **Install trust** | Unsigned installers trigger OS warnings | Code signing in Phase 2 |
+
+> **Note (v4.1):** **Multimodal, voice, and IDE integration are no longer gaps** — they shipped in the Step 1–3 waves (§9.1). Live web research is now partially covered via Brave/DuckDuckGo web-search tools.
 
 ### 6.3 Strategic posture
 **Do not chase feature parity with cloud incumbents.** Win the segment they cannot serve. Treat model-quality gaps as a *configuration* problem (point Artha at a bigger/private model) rather than a product weakness.
@@ -129,10 +135,14 @@ This is the backbone of the entire strategy. Artha is **two decoupled planes** t
 ```
 ┌─ LOCAL PLANE — offline, default, the moat ───────────────────────┐
 │  Electron desktop app (TypeScript: main process + React renderer) │
-│   • Ollama (local LLM)     • MCP tools      • IDE integration     │
+│   • Ollama (local LLM)     • MCP tools + marketplace              │
+│   • IDE integration        • Scheduled tasks (cron)               │
 │   • File/workflow automation • Embedded browser (BrowserView)     │
 │   • Local RAG + vector store • Document generation (DOCX/…)       │
-│   • SQLite (chat, skills, indexes)   • Zero telemetry             │
+│   • Multimodal: image / PDF vision / voice                        │
+│   • Agent memory           • Web search (Brave / DuckDuckGo)      │
+│   • SQLite (chat, skills, indexes, tasks, memory, artifacts)      │
+│   • Zero telemetry                                                │
 │  → Runs with the network cable unplugged. No backend required.    │
 └───────────────────────────────────────────────────────────────────┘
                   │  OPT-IN ONLY (feature-flagged)
@@ -149,7 +159,7 @@ This is the backbone of the entire strategy. Artha is **two decoupled planes** t
 ```
 
 ### 7.1 Local Plane (always present)
-- The shipped desktop app. Self-contained; all sensitive data (documents, chat history, RAG indexes) **stays on the device**.
+- The shipped desktop app. Self-contained; all sensitive data (documents, chat history, RAG indexes, scheduled tasks, agent memory) **stays on the device**.
 - **No server is deployed for the Local Plane.** It installs on the user's machine. Django/Railway have **no role here**.
 
 ### 7.2 Cloud Plane (optional, three escalating tiers)
@@ -165,15 +175,18 @@ This is the backbone of the entire strategy. Artha is **two decoupled planes** t
 ### 7.4 Why Django is *not* in the Local Plane
 The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IPC" (`docs/architecture.md`). Adding Python/Django to the desktop app would break that and add complexity. **Django belongs only in the Cloud Plane**, where the desktop app talks to it over REST — so the language boundary never leaks into the client. (Django is a pragmatic choice given existing team familiarity; a Node/TS backend is an acceptable alternative.)
 
+### 7.5 Marketing-site plane (public, separate)
+Distinct from both product planes: the **public marketing site** (`artha.space`) is a **separate public repo** (`~/Projects/artha-site`) — static HTML/CSS + a Cloudflare Pages Function (`functions/api/subscribe.js`) storing waitlist emails in a Cloudflare **KV namespace** (`WAITLIST`). It deploys to **Cloudflare Pages** and contains **no application code**, allowing the app repo to remain private.
+
 ---
 
 ## 8. Roadmap — The Three Phases
 
 ### Phase 1 — Local-First Desktop (CURRENT, largely shipped)
 
-**Goal:** A free, private, fully-local desktop AI agent, distributed at $0/month.
+**Goal:** A free, private, fully-local desktop AI agent.
 
-**Status:** v0.1.0 shipped & public; v0.1.1 polish on `main`. Landing page live on Vercel. 51 tests passing, typecheck clean.
+**Status:** v0.1.1 + three feature waves (Step 1–3) on `main` (unreleased); typecheck clean, CI added. Marketing site repositioned to a waitlist on `artha.space`.
 
 | Item | Status |
 |---|---|
@@ -182,19 +195,29 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 | Local RAG (index folders, real PDF/DOCX/XLSX extraction, incremental, `/ask`, `/report`, citations) | ✅ |
 | Skills system (built-ins + `/slug` + auto-match + import/export) | ✅ |
 | MCP-native tool system | ✅ |
-| Ollama first-class (detect, RAM-aware pull, switch, onboarding) | ✅ |
+| **Plugin marketplace** (14-entry MCP registry catalog, search/filter/install) | ✅ |
+| Ollama first-class (detect, RAM-aware pull, switch, onboarding, context-window config) | ✅ |
 | BYOK cloud fallback (OpenAI/Anthropic/OpenAI-compat, opt-in) | ✅ |
 | Embedded browser + crash recovery | ✅ |
+| **Web search tools** (Brave + DuckDuckGo) | ✅ |
+| **Scheduled tasks** (cron + one-shot, SchedulerService) | ✅ |
+| **Interactive clarification UI** (agent asks before planning) | ✅ |
+| **Multimodal input** (images + PDF vision via pdftoppm) | ✅ |
+| **Voice input** (speech recognition mic) | ✅ |
+| **Agent memory** (store / recall / forget, MemoryPanel) | ✅ |
+| **Native notifications** (workflow completion, scheduled tasks) | ✅ |
+| **IDE integration** (MCP config generation, IDE picker) | ✅ |
+| **Artifacts panel** (auto-log generated documents) | ✅ |
+| **CI workflow** (typecheck + lint + test) | ✅ |
 | Docker-sandboxed tool execution | 🚧 |
-| Cross-platform installers (mac/win/linux) + auto-update (notify-only) | ✅ |
-| Free distribution: GitHub Releases + Vercel landing | ✅ |
+| Cross-platform installers (mac/win/linux) + auto-update (notify-only) | ✅ (built; distribution under review — see D-15) |
 
 **Phase 1 closeout (remaining, free):**
-- [ ] Manual smoke test on real hardware (Ollama running) — streaming flicker, skills, RAG citations.
+- [ ] Manual smoke test on real hardware (Ollama running) — streaming flicker, skills, RAG citations, new features (scheduler, memory, multimodal, voice, IDE config).
 - [ ] Manual confirmation of BrowserView crash-recovery overlay (`chrome://crash`).
-- [ ] Finalise IDE integration scope (see §17 D-09).
+- [ ] **Resolve binary distribution under a private repo (D-15)** before re-attaching downloads to the waitlist site.
 
-**Phase 1 cost: $0/month.**
+**Phase 1 cost: $0/month** (Cloudflare Pages free tier + KV; domain ~$ per `artha.space` registration).
 
 ---
 
@@ -204,7 +227,8 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 
 **2A — Trust & distribution polish**
 - **Code signing & notarization:** Apple Developer Program ($99/yr) + notarization; Windows code signing (Azure Trusted Signing ~$10/mo or OV cert). Removes Gatekeeper/SmartScreen warnings. *(Owner decision pending — see §17 D-01.)*
-- **Custom domain** (optional; owner chose to defer — keep `artha-zeta-five.vercel.app` for now).
+- **Domain live:** `artha.space` (Cloudflare) — marketing site on Cloudflare Pages.
+- **Binary distribution under a private repo (D-15):** decide where release `.dmg`/`.exe`/`.AppImage` are hosted (separate public "releases" repo, Cloudflare R2, or GitHub Releases on the public marketing repo) so auto-update still works. Switch waitlist buttons to downloads once builds exist.
 - **Distribution channels:** Homebrew Cask + winget (free, high power-user reach); Flathub/Snap later.
 - **Opt-in telemetry/crash reporting** (Sentry free tier, default OFF, Settings toggle).
 
@@ -213,7 +237,7 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 - **Cloud-Plane MVP (Django on Railway):** optional account, **encrypted cross-device sync** of settings/skills/templates (NOT raw documents by default), and a thin **gateway** for managed model access. All opt-in, feature-flagged.
 - Define the **opt-in data contract**: exactly what (if anything) syncs to the cloud, encrypted, user-controlled.
 
-**Phase 2 indicative cost:** ~$229/yr signing+domain + minimal Railway/Postgres (~$5–20/mo only if the hosted Cloud-Plane MVP is enabled).
+**Phase 2 indicative cost:** ~$229/yr signing + minimal Railway/Postgres (~$5–20/mo only if the hosted Cloud-Plane MVP is enabled). Domain already covered.
 
 ---
 
@@ -249,26 +273,37 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 - **FR-3 Local RAG:** create/rebuild/delete indexes (native folder picker); real PDF/DOCX/XLSX text extraction; boundary-aware chunking; incremental re-index via per-file MD5 manifest; `/ask` Q&A; index-status badge.
 - **FR-4 Skills:** `skills` registry; explicit `/slug` or LLM auto-match; instruction injection; optional tool allowlist; built-ins (research, organize, summarize, report, ask); import/export `.artha-skill.json`.
 - **FR-5 MCP tools:** any MCP server registered as a tool/skill.
-- **FR-6 LLM layer:** single OpenAI-compatible client; Ollama default; switch models; streaming.
+- **FR-6 LLM layer:** single OpenAI-compatible client; Ollama default; switch models; streaming; **context-window configuration**.
 - **FR-7 BYOK cloud:** cloud models as `llm_models` rows (OpenAI/Anthropic/custom); opt-in; keys stored locally.
 - **FR-8 Onboarding:** detect Ollama; recommend + pull model by RAM with progress; pick installed model.
 - **FR-9 Embedded browser:** BrowserView with crash recovery (silent reload → overlay → `browser:recover` IPC).
-- **FR-10 Storage:** SQLite (chat history, skills, indexes, models); idempotent migrations/seeds.
+- **FR-10 Storage:** SQLite (chat history, skills, indexes, models, scheduled tasks, memory entities, artifacts); idempotent migrations/seeds.
 - **FR-11 Updates:** `electron-updater` notification-only against GitHub Releases.
+- **FR-12 IDE integration** *(shipped, Step 3D):* generate MCP config for a chosen IDE/port; IDE picker; project picker; config preview (`IDEIntegrationPanel`).
+- **FR-13 Scheduled tasks** *(shipped, Step 1A):* `SchedulerService` with cron + one-shot; SQLite CRUD; cron presets / custom expressions / datetime picker (`SchedulerPanel`); fires native notification on completion.
+- **FR-14 Interactive clarification** *(shipped, Step 1B):* `detectClarificationNeeded()` LLM pre-check; pauses to ask the user before planning (`ClarificationModal`).
+- **FR-15 Web search** *(shipped, Step 1):* Brave + DuckDuckGo search tools; web-fetch; search-quality settings (`WebPanel`).
+- **FR-16 Multimodal input** *(shipped, Step 2A/2B):* image attachments (vision content format) and **PDF vision** via `pdftoppm`; attachment thumbnails.
+- **FR-17 Plugin marketplace** *(shipped, Step 2D):* `registry-catalog.ts` (14 MCP entries); search/filter/install UI (`MarketplacePanel`).
+- **FR-18 Artifacts panel** *(shipped, Step 2C):* `artifacts` table; auto-log on `docs_generate`; browse generated documents (`ArtifactsPanel`).
+- **FR-19 Voice input** *(shipped, Step 3A):* speech-recognition mic with live interim transcription.
+- **FR-20 Agent memory** *(shipped, Step 3B):* `memory_store` / `memory_recall` / `memory_forget` tools; `memory_entities` table; injected into system prompt; browse/delete UI (`MemoryPanel`).
+- **FR-21 Native notifications** *(shipped, Step 3C):* on workflow completion (>10s) and after scheduled-task runs; settings-gated.
+- **FR-22 CI:** GitHub Actions workflow — typecheck + lint + test.
 
 ### 9.2 Vision capabilities to confirm/expand (gap-closing)
-- **FR-12 IDE integration** (vision item): define supported IDEs (e.g., VS Code) and mechanism (MCP server / extension / local socket). **Scope decision required — §17 D-09.**
-- **FR-13 "Automate anything" via MCP/IDE:** curated catalog of first-party MCP integrations (filesystem, git/GitHub, calendar, browser, shell-in-sandbox). **Prioritisation required — §17 D-10.**
-- **FR-14 Multimodal** (image/voice) — backlog; not committed.
+- **FR-23 "Automate anything" depth:** continue expanding the first-party MCP catalog beyond the initial 14 entries (filesystem, git/GitHub, calendar, shell-in-sandbox). **Prioritisation — §17 D-10.**
+- **FR-24 Multimodal output / advanced vision:** image generation and richer document-from-image flows — backlog.
+- **FR-25 Docker-sandboxed execution:** complete the sandboxed tool-execution path (🚧).
 
 ### 9.3 Cloud-Plane functional requirements (Phase 2/3)
-- **FR-15 Account & SSO** (opt-in): email/OIDC/SAML; never required for local features.
-- **FR-16 Encrypted sync:** settings/skills/templates; raw documents excluded by default; user-controlled scope.
-- **FR-17 Org/RBAC:** org → team → user; roles; per-tenant config.
-- **FR-18 Central model config:** endpoint URL + allowlist pushed to clients.
-- **FR-19 Audit log:** record agent actions/tool calls per policy; exportable.
-- **FR-20 Policy/DLP:** restrict tools, models, data egress per org policy.
-- **FR-21 Billing/metering:** usage tracking for paid tiers.
+- **FR-26 Account & SSO** (opt-in): email/OIDC/SAML; never required for local features.
+- **FR-27 Encrypted sync:** settings/skills/templates; raw documents excluded by default; user-controlled scope.
+- **FR-28 Org/RBAC:** org → team → user; roles; per-tenant config.
+- **FR-29 Central model config:** endpoint URL + allowlist pushed to clients.
+- **FR-30 Audit log:** record agent actions/tool calls per policy; exportable.
+- **FR-31 Policy/DLP:** restrict tools, models, data egress per org policy.
+- **FR-32 Billing/metering:** usage tracking for paid tiers.
 
 ---
 
@@ -277,14 +312,14 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 | ID | Category | Requirement |
 |---|---|---|
 | NFR-1 | **Privacy** | No data leaves the device unless the user explicitly opts into a cloud feature. Zero telemetry by default. |
-| NFR-2 | **Offline** | All Local-Plane features function with no network connectivity. |
-| NFR-3 | **Security** | Secure IPC (contextBridge); local key storage; no secrets in repo; signed builds (Phase 2); RBAC + audit (Phase 3). |
-| NFR-4 | **Portability** | macOS (arm64+x64), Windows (x64), Linux (deb). OpenAI-compatible model layer for backend portability. |
+| NFR-2 | **Offline** | All Local-Plane features function with no network connectivity (web search & cloud models degrade gracefully when offline). |
+| NFR-3 | **Security** | Secure IPC (contextBridge); local key storage; no secrets in repo; signed builds (Phase 2); RBAC + audit (Phase 3). Private app repo. |
+| NFR-4 | **Portability** | macOS (arm64+x64), Windows (x64), Linux (deb/AppImage). OpenAI-compatible model layer for backend portability. |
 | NFR-5 | **Performance** | Default to smallest viable model for first-run; streaming UX; high-concurrency via vLLM at enterprise. |
-| NFR-6 | **Reliability** | Crash recovery for BrowserView; idempotent DB migrations; release smoke-tests on clean VMs. |
-| NFR-7 | **Maintainability** | One runtime in Local Plane; decoupled Cloud Plane; open-core separation. |
+| NFR-6 | **Reliability** | Crash recovery for BrowserView; idempotent DB migrations; release smoke-tests on clean VMs; CI gate (typecheck/lint/test). |
+| NFR-7 | **Maintainability** | One runtime in Local Plane; decoupled Cloud Plane; private core + separate public marketing repo. |
 | NFR-8 | **Compliance** (Phase 3) | Support air-gapped deployment; audit logs; data-residency via self-hosting; path to SOC 2 for hosted multi-tenant. |
-| NFR-9 | **Accessibility/UX** | Clear first-run guidance when Ollama is absent; actionable error states. |
+| NFR-9 | **Accessibility/UX** | Clear first-run guidance when Ollama is absent; actionable error states; voice input as an accessibility aid. |
 
 ---
 
@@ -332,37 +367,40 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 
 ## 13. Technical Stack & Deployment Summary
 
-| Component | Plane | Tech | Deployment |
-|---|---|---|---|
-| Desktop app | Local | Electron, TypeScript, React 19, Vite, Tailwind, shadcn, SQLite | Installed per-machine (GitHub Releases) |
-| Local inference | Local | Ollama / LM Studio / llama.cpp (OpenAI-compat) | User's machine |
-| Landing page | Cloud | Next.js | Vercel (free) |
-| Auto-update | Cloud | electron-updater | GitHub Releases |
-| Control plane | Cloud | **Django + DRF + Postgres** (recommended) | **Railway** (hosted) **or** self-hosted/on-prem (air-gapped) |
-| Enterprise inference | Cloud | vLLM / TGI / NIM (OpenAI-compat) or in-VPC frontier | Org GPU server / org cloud tenant |
+| Component | Plane | Tech | Deployment | Repo |
+|---|---|---|---|---|
+| Desktop app | Local | Electron, TypeScript, React 19, Vite 6, Tailwind, shadcn, SQLite | Installed per-machine | **Private** (`Noopurtrivedi/artha`) |
+| Local inference | Local | Ollama / LM Studio / llama.cpp (OpenAI-compat) | User's machine | — |
+| Marketing site | Marketing | Static HTML/CSS + Cloudflare Pages Function (KV waitlist) | **Cloudflare Pages**, domain `artha.space` | **Public** (`artha-site`) |
+| Auto-update / binaries | Local | electron-updater | **Under review (D-15)** — public releases repo / R2 / GitHub Releases | — |
+| Control plane | Cloud | **Django + DRF + Postgres** (recommended) | **Railway** (hosted) **or** self-hosted/on-prem (air-gapped) | Private module |
+| Enterprise inference | Cloud | vLLM / TGI / NIM (OpenAI-compat) or in-VPC frontier | Org GPU server / org cloud tenant | — |
 
 ---
 
 ## 14. Security, Privacy & Compliance
 
 - **Default posture:** zero egress, zero telemetry, local key storage, secure IPC.
-- **Distribution trust:** code signing + notarization (Phase 2) to remove OS warnings.
+- **Repo posture:** app repo **private**; marketing repo public with no app code. Security scan (2026-05-24): clean — no secrets in tree or full history; only `.env.example` tracked.
+- **Distribution trust:** code signing + notarization (Phase 2) to remove OS warnings; resolve private-repo binary distribution (D-15).
 - **Enterprise (Phase 3):** SSO/SAML, RBAC, audit logging, policy/DLP, data residency via self-hosting, air-gapped support.
 - **Hosted multi-tenant (future):** tenant isolation (RLS), encryption in transit/at rest, path to SOC 2.
-- **Open-source hygiene:** secret scanning + push protection + Dependabot enabled; verify all upstream licences (open-cowork, OpenHands, Jan) remain MIT/Apache-compatible before any relicensing.
+- **Licensing:** core repo private today; **if ever open-sourced, use AGPL or BSL (not MIT)** to preserve commercial value. Verify upstream licences (open-cowork, OpenHands, Jan) remain compatible with any chosen licence before relicensing.
 
 ---
 
-## 15. Business Model & Monetization (open-core)
+## 15. Business Model & Monetization
+
+> Strategy shift (v4.1): moved from *open-core/MIT* to **source-protected core** (private repo) with optional **protective open-sourcing (AGPL/BSL)** later. Commercial value concentrates in the Cloud/Enterprise module and paid tiers.
 
 | Tier | Audience | Price posture | Hosting cost to Artha |
 |---|---|---|---|
-| **Community (Local Plane)** | Individuals/devs | Free, MIT | $0 |
+| **Free (Local Plane)** | Individuals/devs | Free desktop app | $0 |
 | **Pro (Cloud Plane light)** | Prosumers/SMB | Subscription (sync, gateway, support) | Low (Railway + Postgres) |
 | **Enterprise (self-hosted)** | Regulated/air-gapped orgs | Per-seat or site licence | $0 infra (customer-hosted) |
 | **Enterprise (managed multi-tenant)** | Multiple orgs | SaaS per-seat | Scales with adoption |
 
-**Guardrails:** core stays MIT and local-first by default; commercial features live in a **separate, separately-licensed Cloud/Enterprise module** (open-core). No mandatory account for local use.
+**Guardrails:** local-first stays default and free; no mandatory account for local use; commercial features live in a **separately-licensed Cloud/Enterprise module**. The current **waitlist** on `artha.space` captures demand ahead of public release builds.
 
 ---
 
@@ -372,38 +410,42 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 |---|---|---|---|
 | Local model quality disappoints serious users | High | High | Model tiering (§11); BYOK / in-VPC frontier; set expectations |
 | Unsigned installers deter adoption | High | Medium | Phase 2 signing; "right-click → Open" FAQ meanwhile |
+| **Private repo breaks public auto-update / downloads** | High | High | **D-15:** host binaries in a public releases repo / Cloudflare R2 / public marketing repo; keep app source private. Currently mitigated by waitlist (no public builds yet). |
 | Adding Django to Local Plane creates complexity | Medium | High | **Decision: Django stays Cloud-Plane only** (§7.4) |
 | Cloud features erode local-first trust | Medium | High | Strict opt-in + feature flags + explicit data contract (NFR-1) |
 | Ollama wrong runtime at scale | High (enterprise) | High | Swap to vLLM/TGI; base-URL change only |
-| Going repo-private breaks live auto-update/downloads | Medium | High | **Decision: stay public; use open-core** (§17 D-02) |
-| Native binding (`better-sqlite3`) breaks on install | Medium | High | Clean-VM release tests; electron-rebuild guidance |
-| Single-developer bandwidth | High | Medium | Phase gating; community/open-core contributors; demand-gate Phase 3 |
+| Native binding (`better-sqlite3`) breaks on install | Medium | High | Clean-VM release tests; electron-rebuild guidance; CI gate |
+| Single-developer bandwidth | High | Medium | Phase gating; demand-gate Phase 3 |
 | Multi-tenant security/compliance burden | Medium | High | Ship single-tenant first; RLS + SOC 2 path before hosted multi-tenant |
-| Upstream licence incompatibility | Low | High | Verify licences before relicensing/open-core split |
+| Licence incompatibility on any future open-sourcing | Low | High | Verify upstream licences before adopting AGPL/BSL |
+| Feature breadth outpaces verification | Medium | Medium | CI gate added; manual smoke test on real hardware before release |
 
 ---
 
 ## 17. Decisions Log — Gaps Closed
 
-> This section exists to make the document "spill-proof": every previously-open question is resolved or explicitly owner-pending.
+> This section exists to make the document "spill-proof": every previously-open question is resolved or explicitly owner-pending. **★ = changed in v4.1.**
 
 | ID | Decision | Resolution |
 |---|---|---|
 | D-01 | Code signing | **Owner-pending.** Recommended: macOS ($99/yr) in Phase 2; Windows when adoption justifies. Mandatory for enterprise. |
-| D-02 | Repo visibility | **Stay public** (free CI/Releases bandwidth; live auto-update depends on it). Protect value via **open-core**, not privatisation. |
-| D-03 | Custom domain | **Deferred** (owner choice): keep `artha-zeta-five.vercel.app`. |
+| D-02 ★ | Repo visibility | **Reversed → app repo PRIVATE.** Marketing site in a **separate public repo**. (Trade-off: must solve binary distribution — see D-15.) |
+| D-03 ★ | Custom domain | **Resolved → `artha.space`** purchased on Cloudflare; name chosen over "Sutra". |
 | D-04 | Backend framework | **Django + DRF + Postgres** for the Cloud Plane only (team familiarity). Node/TS acceptable alternative. |
 | D-05 | "Railway offline" contradiction | Resolved: **Railway = hosted; air-gapped = self-hosted on-prem.** Same artifact, two targets. |
 | D-06 | Does Local Plane need a server? | **No.** Desktop app runs offline; no fly.io/Railway/VPS for Local Plane. |
 | D-07 | Is Ollama enough for enterprise? | **No, not as-is.** Use vLLM/TGI + 70B-class or in-VPC frontier; Ollama stays SMB default. |
 | D-08 | Multi-tenant + offline | **Yes, air-gapped on LAN.** Single-tenant self-hosted first; multi-tenant hosted later. |
-| D-09 | IDE integration scope | **Owner-pending.** Define target IDE(s) + mechanism (MCP/extension). Proposed: VS Code via MCP first. |
-| D-10 | First-party MCP catalog priority | **Owner-pending.** Proposed order: filesystem, git/GitHub, browser, shell-in-sandbox, calendar. |
+| D-09 ★ | IDE integration | **DONE (Step 3D).** Shipped: MCP-config generation + IDE picker (`IDEIntegrationPanel`). Future: deepen per-IDE support. |
+| D-10 ★ | First-party MCP catalog | **Started (Step 2D)** — 14-entry marketplace shipped. **Owner-pending:** prioritise the next integrations (filesystem, git/GitHub, calendar, shell-in-sandbox). |
 | D-11 | GitHub org migration | **Deferred** but must precede any future ownership change; auto-update URLs are baked per repo. |
 | D-12 | Telemetry | **None by default**; opt-in Sentry (default OFF) in Phase 2. |
 | D-13 | Sync data contract | **Phase 2 deliverable:** settings/skills/templates only by default; raw documents excluded unless explicitly enabled. |
+| D-14 ★ | Hosting / landing platform | **Cloudflare Pages** (not Vercel) for `artha.space`; KV-backed waitlist; switch to downloads when builds exist. |
+| D-15 ★ | Binary distribution under a private repo | **Owner-pending (new).** Choose: separate **public releases repo**, **Cloudflare R2**, or GitHub Releases on the public marketing repo — so `electron-updater` and public downloads still work. **Blocks public download launch.** |
+| D-16 ★ | Licensing | If ever open-sourced, use **AGPL or BSL (not MIT)**. Core stays **private** for now. |
 
-**Owner action items before committing Phase 2/3:** resolve D-01, D-09, D-10.
+**Owner action items before committing Phase 2/3:** resolve **D-01** (signing), **D-10** (MCP priorities), **D-15** (binary distribution). 
 
 ---
 
@@ -411,9 +453,10 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 
 | Phase | Metric | Target (initial) |
 |---|---|---|
-| 1 | Installs / downloads | Track via GitHub Releases counts |
+| 1 | Waitlist signups (`artha.space`) | Track via KV; baseline + grow |
+| 1 | Installs / downloads (post-D-15) | Track via releases host |
 | 1 | Activation (first successful agent task) | ≥ 50% of first-run users |
-| 1 | RAG/doc-gen usage | ≥ 30% of active users try a skill |
+| 1 | Feature adoption (skills / RAG / scheduler / memory) | ≥ 30% of active users try a skill |
 | 2 | Install conversion lift after signing | Measure warning-related drop-off reduction |
 | 2 | Cloud opt-in rate (BYOK/sync) | Baseline + grow |
 | 3 | Enterprise pilots / design partners | ≥ 1–3 signed |
@@ -436,19 +479,20 @@ The Local Plane is TypeScript/Electron with "one runtime, zero cross-language IP
 - **Air-gapped** — no public-internet connectivity; may still operate on an internal LAN.
 - **RLS** — Row-Level Security (Postgres tenant isolation).
 - **vLLM / TGI / NIM** — high-throughput inference servers for production model serving.
-- **Open-core** — open-source core + separately-licensed commercial modules.
+- **AGPL / BSL** — protective licences (copyleft / source-available) that preserve commercial value vs. permissive MIT.
+- **Cloudflare Pages / KV** — static-site hosting + key-value store used by the marketing site/waitlist.
 
 ---
 
 ## 20. Approval
 
-Approval authorises Phase 1 closeout and planning of Phase 2. Phase 2/3 spend and the open decisions (D-01, D-09, D-10) require explicit owner sign-off.
+Approval authorises Phase 1 closeout and planning of Phase 2. Phase 2/3 spend and the open decisions (D-01, D-10, D-15) require explicit owner sign-off.
 
 | Role | Name | Decision | Date |
 |---|---|---|---|
 | Owner | Noopur Trivedi | ☐ Approve  ☐ Revise | __________ |
-| Business Analyst | Claude | Prepared | 2026-05-24 |
+| Business Analyst | Claude | Prepared (v4.1) | 2026-05-24 |
 
 ---
 
-*End of document — Artha PRD v4.0.*
+*End of document — Artha PRD v4.1.*
