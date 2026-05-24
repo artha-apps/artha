@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X } from 'lucide-react';
+import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -100,8 +100,11 @@ export default function ChatWindow() {
   const [skills, setSkills] = useState<SkillOption[]>([]);
   const [ragIndexes, setRagIndexes] = useState<{ name: string; doc_count: number }[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [isListening, setIsListening] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -154,6 +157,8 @@ export default function ChatWindow() {
   const send = async (text?: string) => {
     const msg = (text ?? input).trim();
     if (!msg || !activeSessionId || isStreaming) return;
+    // Stop any active voice recognition before sending.
+    if (isListening) { recognitionRef.current?.stop(); setIsListening(false); }
     const attachments = pendingAttachments.length ? [...pendingAttachments] : undefined;
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
@@ -178,6 +183,60 @@ export default function ChatWindow() {
 
   const removeAttachment = (idx: number) => {
     setPendingAttachments(pendingAttachments.filter((_, i) => i !== idx));
+  };
+
+  /** Toggle the microphone. Uses the browser's built-in SpeechRecognition API
+   *  (Chromium — works on macOS fully on-device via Apple's speech engine).
+   *  Interim results append live to the textarea; final results replace them. */
+  const toggleVoice = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    const SR: { new(): {
+      lang: string; continuous: boolean; interimResults: boolean;
+      start(): void; stop(): void;
+      onresult: ((e: { resultIndex: number; results: { isFinal: boolean; [i: number]: { transcript: string } }[] }) => void) | null;
+      onerror: (() => void) | null; onend: (() => void) | null;
+    } } | undefined = w.webkitSpeechRecognition ?? w.SpeechRecognition;
+
+    if (!SR) {
+      console.warn('[Artha] SpeechRecognition not available in this environment');
+      return;
+    }
+    const rec = new SR();
+    rec.lang = 'en-US';
+    rec.continuous = true;
+    rec.interimResults = true;
+    let baseText = input;
+
+    rec.onresult = (e) => {
+      let interim = '';
+      let final = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t;
+        else interim += t;
+      }
+      if (final) { baseText = (baseText + ' ' + final).trimStart(); }
+      const display = (baseText + (interim ? ' ' + interim : '')).trimStart();
+      setInput(display);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 160) + 'px';
+      }
+    };
+    rec.onerror = () => { setIsListening(false); };
+    rec.onend   = () => { setIsListening(false); };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognitionRef.current = rec as any;
+    rec.start();
+    setIsListening(true);
   };
 
   /** Signal the orchestrator to abort the in-flight workflow. The UI updates
@@ -422,6 +481,18 @@ export default function ChatWindow() {
               className="p-2 rounded-xl border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 transition-colors shrink-0"
             >
               <FileText size={14} />
+            </button>
+            {/* Voice input — mic button toggles speech recognition */}
+            <button
+              onClick={toggleVoice}
+              title={isListening ? 'Stop recording' : 'Voice input'}
+              className={`p-2 rounded-xl border transition-colors shrink-0 ${
+                isListening
+                  ? 'bg-red-500/20 border-red-500/40 text-red-400 animate-pulse'
+                  : 'border-artha-border text-artha-muted hover:text-white hover:bg-white/5'
+              }`}
+            >
+              {isListening ? <MicOff size={14} /> : <Mic size={14} />}
             </button>
             {/* Toggle the BrowserPane. Browser tools auto-open the pane via
                 the `browser:autoOpen` IPC event the tool emitter pushes;

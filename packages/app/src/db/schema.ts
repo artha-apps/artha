@@ -269,6 +269,23 @@ export async function initDatabase(): Promise<void> {
       created_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- ── Agent Memory ──────────────────────────────────────────────────────
+    -- Persistent facts the agent accumulates across sessions.
+    -- Injected into the system prompt so the agent "remembers" the user.
+    CREATE TABLE IF NOT EXISTS memory_entities (
+      entity_id   TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name        TEXT NOT NULL,
+      entity_type TEXT NOT NULL DEFAULT 'fact',
+      content     TEXT NOT NULL,
+      tags_json   TEXT NOT NULL DEFAULT '[]',
+      source_session_id TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_name ON memory_entities(name);
+    CREATE INDEX IF NOT EXISTS idx_memory_updated ON memory_entities(updated_at DESC);
+
     -- ── Persistent Artifacts ──────────────────────────────────────────────
     -- Every file the agent generates (docx, pptx, xlsx, pdf, image) is logged
     -- here so the user can browse, re-open, and delete them from one panel.

@@ -16,6 +16,7 @@
  */
 import { BrowserWindow } from 'electron';
 import * as os from 'os';
+import { sendNotification } from '../notify';
 import { getActiveLLMClient, type StreamedMessage } from '../llm/client';
 import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type ActiveSkill } from '../skills/registry';
@@ -26,6 +27,12 @@ import {
   drainCitations,
   setActiveCitationToken,
 } from '../tools/web';
+import {
+  MEMORY_TOOL_SCHEMAS,
+  isMemoryTool,
+  invokeMemoryTool,
+  getMemoryContext,
+} from '../tools/memory';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -371,6 +378,7 @@ Rules:
     const homeDir = os.homedir();
     const runId = crypto.randomUUID();
     const model = this.activeModelName();
+    const planStartMs = Date.now();
 
     db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`)
       .run(plan.workflowId);
@@ -387,13 +395,14 @@ Rules:
     const skillBlock = skill
       ? `ACTIVE SKILL — "${skill.name}". This is your operating playbook for this task; follow it:\n${skill.instructions}\n\n`
       : '';
+    const memoryBlock = getMemoryContext();
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
         role: 'system',
         content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools.
 
-${skillBlock}
+${memoryBlock}${skillBlock}
 
 Home:      ${homeDir}
 Desktop:   ${homeDir}/Desktop
@@ -415,7 +424,8 @@ RULES — follow exactly, no exceptions:
     - Prefer web_fetch for plain article reads. Use the browser only when the page needs interaction (logins, SPAs, dynamic content, form submission).
     - If the page needs a login, captcha, 2FA, or anything you cannot do safely, call browser_request_user with a short reason. The user will complete it and resume you — the call returns "resumed" or "cancelled".
 11. When the user asks for a report, proposal, summary document, presentation, or spreadsheet AS A FILE, call docs_generate (type docx/pptx/xlsx/pdf). Gather facts first with web_fetch/web_search when needed and pass them in the "context" argument so the document is sourced. Do not paste a long document into chat when the user wanted a file.
-12. When the user asks about THEIR OWN files, notes, or documents, call rag_search to retrieve relevant passages from their indexed files, then answer from those passages and cite the source filenames. Do not fabricate file contents.`,
+12. When the user asks about THEIR OWN files, notes, or documents, call rag_search to retrieve relevant passages from their indexed files, then answer from those passages and cite the source filenames. Do not fabricate file contents.
+13. Use memory_store to persist important facts about the user or their work for future sessions (preferences, project names, contacts, decisions). Use memory_recall before answering questions about things the user has told you before. Use memory_forget if a memory is outdated.`,
       },
       ...history,
       { role: 'user', content: this.buildUserContent(plan.goal, plan.attachments) },
@@ -428,6 +438,7 @@ RULES — follow exactly, no exceptions:
       goal: plan.goal,
       messages,
       skill,
+      startMs: planStartMs,
     });
   }
 
@@ -448,10 +459,14 @@ RULES — follow exactly, no exceptions:
     messages: OpenAI.ChatCompletionMessageParam[];
     modelOverride?: string;
     skill?: ActiveSkill | null;
+    startMs?: number;
   }): Promise<void> {
     const db = getDb();
     const llm = getActiveLLMClient(args.modelOverride);
-    const tools = this.skills.filterTools(this.registry.getToolSchemas(), args.skill ?? null);
+    const tools = [
+      ...this.skills.filterTools(this.registry.getToolSchemas(), args.skill ?? null),
+      ...MEMORY_TOOL_SCHEMAS,
+    ];
 
     const messages = args.messages;
     const mutations: TrackedMutation[] = [];
@@ -538,7 +553,11 @@ RULES — follow exactly, no exceptions:
           try { parsedArgs = JSON.parse(toolCall.function.arguments); } catch { /* ignore */ }
 
           try {
-            toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs);
+            if (isMemoryTool(toolCall.function.name)) {
+              toolResult = invokeMemoryTool(toolCall.function.name, parsedArgs, args.sessionId);
+            } else {
+              toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs);
+            }
 
             // Self-correction: small models often pass a bare folder name
             // ("ss26") instead of a full path. When fs_list_directory fails
@@ -690,6 +709,15 @@ RULES — follow exactly, no exceptions:
     }
 
     setActiveCitationToken(null);
+
+    // Fire a native notification when a long-running task finishes (> 10 s)
+    // so the user knows the agent is done even if they switched apps.
+    if (args.startMs && Date.now() - args.startMs > 10_000) {
+      const g = args.goal;
+      const goalSnippet = g.length > 60 ? g.slice(0, 57) + '…' : g;
+      sendNotification('Artha — task complete', goalSnippet);
+    }
+
     this.emit('agent:streamEnd');
   }
 

@@ -172,6 +172,28 @@ const api = {
     open: (filePath: string) => ipcRenderer.invoke('artifacts:open', filePath) as Promise<boolean>,
   },
 
+  // ── Memory ───────────────────────────────────────────────────────────────
+  // Long-term agent memory stored in SQLite memory_entities table. MemoryPanel
+  // lists entries; user can delete individual rows or clear all.
+  memory: {
+    list: () => ipcRenderer.invoke('memory:list') as Promise<{
+      entity_id: string; name: string; entity_type: string;
+      content: string; tags_json: string; created_at: number; updated_at: number;
+    }[]>,
+    delete: (entityId: string) => ipcRenderer.invoke('memory:delete', entityId) as Promise<boolean>,
+    clear: () => ipcRenderer.invoke('memory:clear') as Promise<boolean>,
+  },
+
+  // ── IDE Integration ───────────────────────────────────────────────────────
+  // Generate MCP config files (.vscode/mcp.json or .cursor/mcp.json) so the
+  // user can connect VS Code / Cursor to Artha's local tool server.
+  ide: {
+    generateMcpConfig: (opts: { projectPath: string; ide: 'vscode' | 'cursor'; port?: number }) =>
+      ipcRenderer.invoke('ide:generateMcpConfig', opts) as Promise<string>,
+    pickProjectAndGenerate: (ide: 'vscode' | 'cursor', port: number) =>
+      ipcRenderer.invoke('ide:pickProjectAndGenerate', ide, port) as Promise<string | null>,
+  },
+
   // ── Router ───────────────────────────────────────────────────────────────
   // Adaptive per-task-type model selection. `benchmark` probes every installed
   // Ollama model on the three canonical tasks (plan / tool_args / synthesis)

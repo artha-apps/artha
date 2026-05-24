@@ -744,4 +744,87 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     await shell.openPath(filePath);
     return true;
   });
+
+  // ── Memory ────────────────────────────────────────────────────────────────
+  ipcMain.handle('memory:list', () => {
+    const db = getDb();
+    return db.prepare(
+      `SELECT entity_id, name, entity_type, content, tags_json, created_at, updated_at
+       FROM memory_entities ORDER BY updated_at DESC`
+    ).all();
+  });
+
+  ipcMain.handle('memory:delete', (_e, entityId: string) => {
+    const db = getDb();
+    const info = db.prepare(`DELETE FROM memory_entities WHERE entity_id=?`).run(entityId);
+    return info.changes > 0;
+  });
+
+  ipcMain.handle('memory:clear', () => {
+    const db = getDb();
+    db.prepare(`DELETE FROM memory_entities`).run();
+    return true;
+  });
+
+  // ── IDE Integration ───────────────────────────────────────────────────────
+  // Generate and write an MCP server config for VS Code (.vscode/mcp.json) or
+  // Cursor (.cursor/mcp.json) so the user can talk to Artha's tools from their
+  // editor. The caller passes the project folder; we pick / create the right
+  // config subdirectory and write the file, then reveal it in Finder.
+  ipcMain.handle('ide:generateMcpConfig', async (_e, opts: {
+    projectPath: string;
+    ide: 'vscode' | 'cursor';
+    port?: number;
+  }) => {
+    const fs = await import('fs');
+    const { projectPath, ide, port = 3847 } = opts;
+
+    const subdir   = ide === 'vscode' ? '.vscode' : '.cursor';
+    const confDir  = path.join(projectPath, subdir);
+    const confFile = path.join(confDir, 'mcp.json');
+
+    if (!fs.existsSync(confDir)) fs.mkdirSync(confDir, { recursive: true });
+
+    const config = {
+      mcpServers: {
+        artha: {
+          url: `http://localhost:${port}/mcp`,
+          description: 'Artha local AI agent — filesystem, web, docs, RAG, memory tools',
+        },
+      },
+    };
+
+    fs.writeFileSync(confFile, JSON.stringify(config, null, 2), 'utf8');
+    await shell.showItemInFolder(confFile);
+    return confFile;
+  });
+
+  // Pick a project folder then generate config — convenience wrapper used by
+  // the IDE Integration panel's "Browse…" flow.
+  ipcMain.handle('ide:pickProjectAndGenerate', async (_e, ide: 'vscode' | 'cursor', port: number) => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory'],
+      title: 'Select your project folder',
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    const projectPath = result.filePaths[0];
+
+    // Re-use the generate handler logic inline.
+    const fs = await import('fs');
+    const subdir   = ide === 'vscode' ? '.vscode' : '.cursor';
+    const confDir  = path.join(projectPath, subdir);
+    const confFile = path.join(confDir, 'mcp.json');
+    if (!fs.existsSync(confDir)) fs.mkdirSync(confDir, { recursive: true });
+    const config = {
+      mcpServers: {
+        artha: {
+          url: `http://localhost:${port}/mcp`,
+          description: 'Artha local AI agent — filesystem, web, docs, RAG, memory tools',
+        },
+      },
+    };
+    fs.writeFileSync(confFile, JSON.stringify(config, null, 2), 'utf8');
+    await shell.showItemInFolder(confFile);
+    return confFile;
+  });
 }

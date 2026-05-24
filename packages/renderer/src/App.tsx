@@ -23,6 +23,9 @@ import ProvenancePanel from './components/Settings/ProvenancePanel';
 import BundlesPanel from './components/Settings/BundlesPanel';
 import ArtifactsPanel from './components/Settings/ArtifactsPanel';
 import MarketplacePanel from './components/Settings/MarketplacePanel';
+import MemoryPanel from './components/Settings/MemoryPanel';
+import IDEIntegrationPanel from './components/Settings/IDEIntegrationPanel';
+import SettingsPanel from './components/Settings/SettingsPanel';
 
 declare global {
   interface Window {
@@ -118,12 +121,10 @@ export default function App() {
         {activeView === 'bundles' && <BundlesPanel />}
         {activeView === 'artifacts' && <ArtifactsPanel />}
         {activeView === 'marketplace' && <MarketplacePanel />}
+        {activeView === 'memory' && <MemoryPanel />}
+        {activeView === 'ide' && <IDEIntegrationPanel />}
         {activeView === 'rag' && <RAGPanel />}
-        {activeView === 'settings' && (
-          <div className="flex-1 flex items-center justify-center text-artha-muted text-sm">
-            Settings — coming soon
-          </div>
-        )}
+        {activeView === 'settings' && <SettingsPanel />}
       </main>
 
       <PlanApproval />

@@ -15,6 +15,7 @@
  */
 import * as schedule from 'node-schedule';
 import { getDb } from '../db/schema';
+import { sendNotification } from '../notify';
 
 /** Shape of a row from the scheduled_tasks table. */
 export interface ScheduledTask {
@@ -184,8 +185,10 @@ export class SchedulerService {
         .run(now, taskId);
 
       try {
+        const taskRow = db.prepare(`SELECT name FROM scheduled_tasks WHERE task_id=?`).get(taskId) as { name: string } | undefined;
         await this.runTask!(prompt);
         db.prepare(`UPDATE scheduled_tasks SET last_status='ok' WHERE task_id=?`).run(taskId);
+        sendNotification('Artha — scheduled task complete', taskRow?.name ?? prompt.slice(0, 60));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Artha] Scheduled task ${taskId} failed:`, msg);
