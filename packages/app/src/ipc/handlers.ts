@@ -17,6 +17,7 @@ import { getDb } from '../db/schema';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
+import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 
 let orchestrator: AgentOrchestrator;
 const ragIndexer = getDefaultRagIndexer();
@@ -85,6 +86,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('agent:approvePlan', async (_e, workflowId: string, approved: boolean) => {
     await orchestrator.approvePlan(workflowId, approved);
+  });
+
+  ipcMain.handle('agent:clarifyRespond', (_e, workflowId: string, answers: string[] | null) => {
+    orchestrator.clarifyRespond(workflowId, answers);
   });
 
   // ── Sessions ───────────────────────────────────────────────────────────
@@ -236,7 +241,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // nothing here is enabled unless the user adds and activates a cloud model.
   ipcMain.handle('llm:listConfigured', () => {
     return getDb().prepare(
-      `SELECT model_id, name, ollama_name, base_url, provider, is_active
+      `SELECT model_id, name, ollama_name, base_url, provider, context_window, is_active
        FROM llm_models ORDER BY added_at DESC`
     ).all();
   });
@@ -260,6 +265,12 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(id);
     }
     return { model_id: id };
+  });
+
+  ipcMain.handle('llm:setContextWindow', (_e, modelId: string, tokens: number) => {
+    const clamped = Math.max(512, Math.min(128_000, Math.round(tokens)));
+    getDb().prepare(`UPDATE llm_models SET context_window=? WHERE model_id=?`).run(clamped, modelId);
+    return clamped;
   });
 
   ipcMain.handle('llm:setActiveModelById', (_e, modelId: string) => {
@@ -623,4 +634,24 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   });
 
   ipcMain.handle('browser:getState', () => browser.getState());
+
+  // ── Scheduler ─────────────────────────────────────────────────────────────
+  // CRUD for scheduled_tasks. The SchedulerService instance is a singleton;
+  // these handlers are thin wrappers that delegate to it.
+  const sched = SchedulerService.getInstance();
+
+  ipcMain.handle('scheduler:list', () => sched.list());
+
+  ipcMain.handle('scheduler:create', (_e, input: TaskInput) => sched.create(input));
+
+  ipcMain.handle('scheduler:update', (_e, taskId: string, patch: Partial<TaskInput>) =>
+    sched.update(taskId, patch));
+
+  ipcMain.handle('scheduler:toggle', (_e, taskId: string, enabled: boolean) =>
+    sched.toggle(taskId, enabled));
+
+  ipcMain.handle('scheduler:remove', (_e, taskId: string) => {
+    sched.remove(taskId);
+    return true;
+  });
 }

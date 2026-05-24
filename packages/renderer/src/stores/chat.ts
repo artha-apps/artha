@@ -45,6 +45,14 @@ export interface AgentPlan {
   requiresApproval: boolean;
 }
 
+/** A clarification request the orchestrator paused on — drives the ClarificationModal. */
+export interface ClarifyRequest {
+  workflowId: string;
+  sessionId: string;
+  goal: string;
+  questions: string[];
+}
+
 /** Sidebar row shape. Mirrors `chat_sessions` columns we actually render. */
 export interface Session {
   session_id: string;
@@ -75,6 +83,7 @@ interface ChatState {
   isStreaming: boolean;
   executionLog: ToolCallEvent[];
   pendingPlan: AgentPlan | null;
+  pendingClarify: ClarifyRequest | null;
   pendingToolEvents: ToolCallEvent[];
   pendingCitations: Citation[];
   activeView: ActiveView;
@@ -92,6 +101,7 @@ interface ChatState {
   addToolEvent: (ev: ToolCallEvent) => void;
   addCitations: (citations: Citation[]) => void;
   setPendingPlan: (plan: AgentPlan | null) => void;
+  setPendingClarify: (req: ClarifyRequest | null) => void;
   setActiveView: (view: ActiveView) => void;
   setStreaming: (streaming: boolean) => void;
   setActiveWorkflowId: (id: string | null) => void;
@@ -106,6 +116,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   executionLog: [],
   pendingPlan: null,
+  pendingClarify: null,
   pendingToolEvents: [],
   pendingCitations: [],
   activeView: 'chat',
@@ -185,6 +196,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }),
 
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
+  setPendingClarify: (req) => set({ pendingClarify: req }),
   setActiveView: (view) => set({ activeView: view }),
   setStreaming: (streaming) => set({ isStreaming: streaming }),
   setActiveWorkflowId: (id) => set({ activeWorkflowId: id }),

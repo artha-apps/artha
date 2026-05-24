@@ -169,9 +169,10 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
     .prepare(`SELECT * FROM llm_models WHERE is_active = 1 LIMIT 1`)
     .get() as Record<string, unknown> | undefined;
 
-  const baseUrl = (row?.base_url as string) ?? 'http://localhost:11434/v1';
-  const apiKey  = (row?.api_key as string)  ?? 'ollama';
-  const fallbackModel = (row?.ollama_name as string) ?? 'llama3.2:3b-instruct-q4_K_M';
+  const baseUrl       = (row?.base_url as string)        ?? 'http://localhost:11434/v1';
+  const apiKey        = (row?.api_key as string)          ?? 'ollama';
+  const fallbackModel = (row?.ollama_name as string)      ?? 'llama3.2:3b-instruct-q4_K_M';
+  const contextWindow = (row?.context_window as number)   ?? 4096;
 
   const routed = resolveModelName(modelOverride, taskType);
 
@@ -179,5 +180,6 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
     baseUrl,
     apiKey,
     model: routed ?? fallbackModel,
+    maxTokens: contextWindow,
   });
 }

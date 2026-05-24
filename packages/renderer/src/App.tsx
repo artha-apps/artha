@@ -9,6 +9,7 @@ import Sidebar from './components/Sidebar/Sidebar';
 import ChatWindow from './components/Chat/ChatWindow';
 import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
+import ClarificationModal from './components/Chat/ClarificationModal';
 import ModelsPanel from './components/Settings/ModelsPanel';
 import MCPToolsPanel from './components/Settings/MCPToolsPanel';
 import SkillsPanel from './components/Settings/SkillsPanel';
@@ -28,7 +29,7 @@ declare global {
 }
 
 export default function App() {
-  const { appendToken, resetStream, finaliseStream, addToolEvent, addCitations, setPendingPlan, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId, setActiveSkill } = useChatStore();
+  const { appendToken, resetStream, finaliseStream, addToolEvent, addCitations, setPendingPlan, setPendingClarify, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId, setActiveSkill } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
 
   // First-run onboarding gate. `null` = still loading the flag; show nothing
@@ -64,6 +65,12 @@ export default function App() {
     // surfaced as a badge in the composer until the stream ends.
     const offSkill = window.artha.agent.onSkillActive((s) => setActiveSkill(s));
 
+    // Clarification request — orchestrator paused before planning; show modal.
+    const offClarify = window.artha.agent.onClarifyRequest((req) => {
+      setStreaming(false); // not streaming yet — waiting for user answers
+      setPendingClarify(req);
+    });
+
     // Live session title updates — main auto-titles a session from its first
     // user message; this keeps the sidebar in sync without a manual reload.
     const offTitle = window.artha.sessions.onTitleUpdated(({ sessionId, title }) => {
@@ -80,7 +87,7 @@ export default function App() {
     // Load sessions
     window.artha.sessions.list().then(setSessions);
 
-    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offTitle(); offAutoOpen(); };
+    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offClarify(); offTitle(); offAutoOpen(); };
   }, []);
 
   return (
@@ -116,6 +123,7 @@ export default function App() {
       </main>
 
       <PlanApproval />
+      <ClarificationModal />
 
       {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
     </div>

@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(grep -E \"^\\(tar|adm-zip|jszip\\)$\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git show *)",
+      "Read(//tmp/**)",
+      "Bash(tmutil listbackups *)",
+      "Bash(tmutil destinationinfo *)",
+      "Bash(git rm *)",
+      "Bash(git reset *)",
+      "Bash(gh repo *)",
+      "Bash(awk '{print $2\" \"$3}')"
+    ]
+  }
+}

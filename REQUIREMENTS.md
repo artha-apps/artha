@@ -1,9 +1,9 @@
 # Artha — Production Launch Requirements
 
-**Status:** Draft v1
+**Status:** Draft v2
 **Owner:** Noopur Trivedi
 **Target Phase 1 launch:** Within 2 weeks of approval
-**Last updated:** 2026-05-18
+**Last updated:** 2026-05-24
 
 ---
 
@@ -233,7 +233,42 @@ Documented here so the architecture decisions today don't block it later. **Not 
 
 ---
 
-## 9. Approval
+## 9. Feature Implementation Log
+
+### Step 1 — Quick Wins (implemented 2026-05-24, all TypeScript clean)
+
+#### 1A — Scheduled Tasks
+- **New file:** `packages/app/src/scheduler/scheduler.ts` — `SchedulerService` singleton; `node-schedule` for cron, `Date` object for one-shot; auto-disables one-shot tasks after firing; full CRUD wired to SQLite.
+- **DB:** `scheduled_tasks` table added to `schema.ts` (task_id, name, prompt, cron, fire_at, is_enabled, last_run_at, last_status, run_count, created_at).
+- **IPC:** `scheduler:{list,create,update,toggle,remove}` channels in `handlers.ts`.
+- **Preload:** `window.artha.scheduler.*` bridge in `preload.ts`.
+- **UI:** `packages/renderer/src/components/Settings/SchedulerPanel.tsx` — create form (cron presets + custom + one-time datetime picker), task list with enable/disable/delete, last-run + run-count display.
+- **main.ts:** Scheduler initialised after IPC handlers; each task fires a fresh `AgentOrchestrator` session; `shutdown()` called on `window-all-closed`.
+
+#### 1B — Interactive Clarification UI
+- **Orchestrator:** `handleMessage()` now runs `detectClarificationNeeded()` (LLM call returning ≤3 questions) for goals >6 words that are not `/slug` invocations. On questions: emits `agent:clarifyRequest`, pauses via deferred Promise (90s timeout), enriches the goal with Q&A before planning.
+- **IPC:** `agent:clarifyRespond` handler calls `orchestrator.clarifyRespond(workflowId, answers)`.
+- **Preload:** `agent.onClarifyRequest` event listener + `agent.clarifyRespond()` invoke.
+- **Store:** `ClarifyRequest` interface + `pendingClarify` state + `setPendingClarify` action added to `chat.ts`.
+- **UI:** `packages/renderer/src/components/Chat/ClarificationModal.tsx` — floating modal with Q&A fields, Continue + Skip buttons, keyboard navigation (Enter advances, Escape skips).
+- **App.tsx:** Wired `onClarifyRequest` → `setPendingClarify`; `<ClarificationModal />` rendered alongside `<PlanApproval />`.
+
+#### 1C — Context Window Config
+- **DB:** `context_window INTEGER NOT NULL DEFAULT 4096` added to `llm_models` schema; live `ALTER TABLE` migration for existing DBs.
+- **LLM client:** `getActiveLLMClient()` reads `context_window` from the active model row and passes it as `maxTokens` to every completion call (stream, non-stream, tool).
+- **IPC:** `llm:setContextWindow(modelId, tokens)` clamps to 512–128,000 and persists. `llm:listConfigured` now returns `context_window` column.
+- **Preload:** `llm.setContextWindow(modelId, tokens)` bridge.
+- **UI:** `ModelsPanel.tsx` — active model card now includes a dual-control (slider + number input) for context window; auto-saves on blur/Enter/mouse-up; synced when switching models.
+
+#### 1D — Web Search Quality
+- **New file:** `packages/app/src/tools/brave.ts` — Brave Search API client (free tier: 2,000 queries/month).
+- **New file:** `packages/app/src/tools/duckduckgo.ts` — DuckDuckGo HTML scraper; zero-config fallback.
+- **`web.ts`:** `WebConfig` extended with optional `brave_api_key`. `webSearchImpl` now uses a three-tier priority chain: Brave (if key set) → SearXNG instances → DuckDuckGo HTML. Result JSON includes `provider` field so the agent knows which backend was used.
+- **UI:** `WebPanel.tsx` — new provider priority status card (shows which backends are active/inactive); Brave API key input field (password masked, clear button).
+
+---
+
+## 10. Approval
 
 Approval of this document authorizes Phase 1 deliverables D1–D6. Phase 2 and Phase 3 require separate approval before any spend is incurred.
 

@@ -81,6 +81,14 @@ const MUTATION_TOOLS = new Set([
  *  resume (plans + cancel flags) lives in instance Maps; everything else
  *  (runs, steps, tool audit) is persisted to SQLite so a crash mid-loop
  *  doesn't lose the trace. */
+/** A clarification request the orchestrator paused on. */
+export interface ClarifyRequest {
+  workflowId: string;
+  sessionId: string;
+  goal: string;
+  questions: string[];
+}
+
 export class AgentOrchestrator {
   private window: BrowserWindow;
   private registry: MCPRegistry;
@@ -89,6 +97,8 @@ export class AgentOrchestrator {
   private activePlans = new Map<string, AgentPlan>();
   /** Set of workflow IDs the user has hit Stop on; consulted each loop tick. */
   private cancelledWorkflows = new Set<string>();
+  /** Pending clarification requests, keyed by workflowId. */
+  private clarifyResolvers = new Map<string, (answers: string[] | null) => void>();
 
   constructor(window: BrowserWindow) {
     this.window = window;
@@ -96,7 +106,15 @@ export class AgentOrchestrator {
     this.skills = SkillRegistry.getInstance();
   }
 
-  /** Entry point: receive a user message and start the ReAct loop. */
+  /** Entry point: receive a user message and start the ReAct loop.
+   *
+   *  Flow:
+   *   1. Resolve skill.
+   *   2. Ask the LLM whether the request is ambiguous (clarification detection).
+   *      If yes, emit agent:clarifyRequest and pause until the user answers or skips.
+   *   3. Generate plan (with enriched goal if answers were provided).
+   *   4. Execute or pause for approval.
+   */
   async handleMessage(sessionId: string, userContent: string): Promise<void> {
     const db = getDb();
     const workflowId = crypto.randomUUID();
@@ -113,9 +131,40 @@ export class AgentOrchestrator {
       VALUES (?, ?, 'pending', ?)
     `).run(workflowId, sessionId, JSON.stringify({ goal, skill: skill?.slug ?? null }));
 
+    // ── Clarification check ──────────────────────────────────────────────────
+    // Ask the LLM whether the goal needs clarification before planning.
+    // Short messages (≤6 words) and "/slug" invocations skip this to avoid
+    // annoying interruptions on simple commands.
+    const wordCount = goal.trim().split(/\s+/).length;
+    let enrichedGoal = goal;
+
+    if (wordCount > 6 && !userContent.startsWith('/')) {
+      const questions = await this.detectClarificationNeeded(goal);
+      if (questions.length > 0) {
+        db.prepare(`UPDATE agent_states SET status='awaiting_approval' WHERE workflow_id=?`).run(workflowId);
+        this.emit('agent:clarifyRequest', { workflowId, sessionId, goal, questions } satisfies ClarifyRequest);
+
+        // Pause until the renderer calls clarifyRespond() or times out (90s).
+        const answers = await Promise.race([
+          new Promise<string[] | null>(resolve => { this.clarifyResolvers.set(workflowId, resolve); }),
+          new Promise<null>(resolve => setTimeout(() => resolve(null), 90_000)),
+        ]);
+        this.clarifyResolvers.delete(workflowId);
+
+        if (answers && answers.some(a => a.trim())) {
+          // Weave Q&A into the goal so the planner has full context.
+          const qa = questions.map((q, i) => `Q: ${q}\nA: ${answers[i] ?? '(not answered)'}`).join('\n');
+          enrichedGoal = `${goal}\n\nAdditional context from user:\n${qa}`;
+        }
+        // If answers is null (timeout or skip), proceed with original goal.
+        db.prepare(`UPDATE agent_states SET status='pending' WHERE workflow_id=?`).run(workflowId);
+      }
+    }
+    // ── End clarification ────────────────────────────────────────────────────
+
     const history = this.getSessionHistory(sessionId);
 
-    const plan = await this.generatePlan(workflowId, sessionId, goal, history, skill);
+    const plan = await this.generatePlan(workflowId, sessionId, enrichedGoal, history, skill);
     plan.skill = skill;
     this.activePlans.set(workflowId, plan);
 
@@ -127,6 +176,45 @@ export class AgentOrchestrator {
     }
 
     await this.executePlan(plan);
+  }
+
+  /** Called by the IPC handler when the user submits clarification answers.
+   *  `answers` is a parallel array to the emitted `questions`. Pass null to skip. */
+  clarifyRespond(workflowId: string, answers: string[] | null): void {
+    const resolve = this.clarifyResolvers.get(workflowId);
+    if (resolve) resolve(answers);
+  }
+
+  /** Ask the LLM whether a goal needs clarification.
+   *  Returns up to 3 short questions, or [] if the goal is clear enough. */
+  private async detectClarificationNeeded(goal: string): Promise<string[]> {
+    try {
+      const llm = getActiveLLMClient(undefined, 'plan');
+      const resp = await llm.complete([
+        {
+          role: 'system',
+          content: `You are a pre-flight clarification detector for an AI agent.
+Given a user's task description, decide if any SHORT clarifying questions would materially improve the outcome.
+Only ask if the answer would change what files are touched, what format to use, or what scope to cover.
+Do NOT ask about things the agent can infer or look up itself.
+
+Respond ONLY with a JSON array of up to 3 short questions, or an empty array if the goal is clear:
+["Question 1?", "Question 2?"]
+or
+[]`,
+        },
+        { role: 'user', content: goal },
+      ]);
+
+      const raw = (resp.choices[0]?.message?.content ?? '[]').trim();
+      const parsed = JSON.parse(raw.replace(/```json\n?|\n?```/g, '')) as unknown;
+      if (Array.isArray(parsed) && parsed.every(q => typeof q === 'string')) {
+        return (parsed as string[]).slice(0, 3);
+      }
+    } catch {
+      // Non-critical — if detection fails, proceed without clarification.
+    }
+    return [];
   }
 
   // ── Time-travel: fork a prior run from a specific step ───────────────────

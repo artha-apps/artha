@@ -47,6 +47,12 @@ const api = {
       ipcRenderer.on('agent:skillActive', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:skillActive');
     },
+    onClarifyRequest: (cb: (payload: { workflowId: string; sessionId: string; goal: string; questions: string[] }) => void) => {
+      ipcRenderer.on('agent:clarifyRequest', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:clarifyRequest');
+    },
+    clarifyRespond: (workflowId: string, answers: string[] | null) =>
+      ipcRenderer.invoke('agent:clarifyRespond', workflowId, answers),
   },
 
   // ── Sessions & History ───────────────────────────────────────────────────
@@ -83,6 +89,8 @@ const api = {
       ipcRenderer.invoke('llm:addCloudModel', m),
     setActiveModelById: (modelId: string) =>
       ipcRenderer.invoke('llm:setActiveModelById', modelId),
+    setContextWindow: (modelId: string, tokens: number) =>
+      ipcRenderer.invoke('llm:setContextWindow', modelId, tokens),
     removeModel: (modelId: string) => ipcRenderer.invoke('llm:removeModel', modelId),
   },
 
@@ -193,6 +201,20 @@ const api = {
   web: {
     clearCache: () => ipcRenderer.invoke('web:clearCache') as Promise<number>,
     getCacheStats: () => ipcRenderer.invoke('web:getCacheStats') as Promise<{ count: number; bytes: number }>,
+  },
+
+  // ── Scheduler ────────────────────────────────────────────────────────────
+  // Cron-based and one-shot task scheduling. Each task fires the agent
+  // orchestrator with its stored prompt in an isolated session.
+  scheduler: {
+    list: () => ipcRenderer.invoke('scheduler:list'),
+    create: (input: { name: string; prompt: string; cron?: string; fire_at?: number }) =>
+      ipcRenderer.invoke('scheduler:create', input),
+    update: (taskId: string, patch: { name?: string; prompt?: string; cron?: string; fire_at?: number }) =>
+      ipcRenderer.invoke('scheduler:update', taskId, patch),
+    toggle: (taskId: string, enabled: boolean) =>
+      ipcRenderer.invoke('scheduler:toggle', taskId, enabled),
+    remove: (taskId: string) => ipcRenderer.invoke('scheduler:remove', taskId),
   },
 
   // ── Browser (co-piloted BrowserView) ─────────────────────────────────────

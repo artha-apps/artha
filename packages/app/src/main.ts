@@ -4,6 +4,7 @@ import * as path from 'path';
 import { registerIpcHandlers } from './ipc/handlers';
 import { initDatabase } from './db/schema';
 import { BrowserController } from './browser/controller';
+import { SchedulerService } from './scheduler/scheduler';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -40,8 +41,21 @@ async function createWindow(): Promise<void> {
   // window before any IPC handler that might reach for it.
   BrowserController.getInstance().bindWindow(mainWindow);
 
-  // Register all IPC handlers (agent, LLM, MCP, docs, RAG, web, browser)
+  // Register all IPC handlers (agent, LLM, MCP, docs, RAG, web, browser, scheduler)
   registerIpcHandlers(mainWindow);
+
+  // Initialise the scheduler after IPC handlers are ready (orchestrator is live).
+  // The runner creates a fresh session per task so scheduled runs are isolated.
+  SchedulerService.getInstance().init(async (prompt: string) => {
+    const { getDb } = await import('./db/schema');
+    const db = getDb();
+    const sessionId = crypto.randomUUID();
+    db.prepare(`INSERT INTO chat_sessions (session_id, title) VALUES (?, ?)`).run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
+    // Dynamically import to avoid circular deps — orchestrator is already constructed by registerIpcHandlers.
+    const { AgentOrchestrator } = await import('./agent/orchestrator');
+    const orch = new AgentOrchestrator(mainWindow!);
+    await orch.handleMessage(sessionId, prompt);
+  }).catch(err => console.error('[Artha] Scheduler init failed:', err));
 
   // Load renderer
   if (isDev) {
@@ -99,6 +113,7 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(createWindow);
 
   app.on('window-all-closed', () => {
+    SchedulerService.getInstance().shutdown();
     if (process.platform !== 'darwin') app.quit();
   });
 
