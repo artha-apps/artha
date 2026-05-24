@@ -198,6 +198,7 @@ Documented here so the architecture decisions today don't block it later. **Not 
 | Auto-update fails silently | Medium | Low | Log update-check results to user-visible diagnostics panel |
 | Large model downloads make first-run UX painful | High | Medium | Default to smallest viable model (`llama3.2:3b-instruct-q4_K_M`); show download progress in app |
 | License compatibility with `OpenCoworkAI/open-cowork`, `OpenHands`, `Jan AI` | Low | High if missed | Verify all upstream licenses are MIT-compatible; include attributions in `LICENSE` / About panel |
+| `xlsx` (SheetJS CE) prototype pollution + ReDoS — GHSA-4r6h-8v6p-xvw6, GHSA-5pgg-2g8v-p4x9 | Low | Low (local-only threat model) | **Accepted risk for v0.1.** No patched release exists for SheetJS CE. Artha only *generates* xlsx (not parsing untrusted input); RAG indexer reads user's own local files. Blast radius = local machine already under user control. **Action:** migrate `rag/extract.ts` and `docs/generator.ts` from `xlsx` to `exceljs` (maintained, no known CVEs) before any multi-user or server-side deployment. Track as tech debt issue. |
 
 ---
 
