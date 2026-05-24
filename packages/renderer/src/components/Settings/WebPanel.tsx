@@ -24,6 +24,7 @@ interface WebConfig {
   robots_override_hosts: string[];
   timeout_ms: number;
   max_bytes: number;
+  brave_api_key?: string;
 }
 
 /** Cache size summary from the backend — shown next to the "Clear cache" button. */
@@ -158,16 +159,68 @@ export default function WebPanel() {
         </p>
       </div>
 
+      {/* Search provider status summary */}
+      <div className="rounded-xl bg-artha-s2 border border-artha-border p-4 mb-6">
+        <p className="text-xs font-semibold text-white mb-2">Search provider priority</p>
+        <div className="space-y-1.5">
+          {[
+            { label: '1. Brave Search API', active: !!config.brave_api_key?.trim(), note: config.brave_api_key?.trim() ? 'Active — fastest, real-time' : 'No key — skipped' },
+            { label: '2. SearXNG', active: config.searxng_instances.length > 0, note: config.searxng_instances.length > 0 ? `${config.searxng_instances.length} instance(s) configured` : 'No instances — skipped' },
+            { label: '3. DuckDuckGo HTML', active: true, note: 'Always available as fallback' },
+          ].map(({ label, active, note }) => (
+            <div key={label} className="flex items-center gap-2">
+              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${active ? 'bg-green-400' : 'bg-artha-muted/40'}`} />
+              <span className={`text-xs ${active ? 'text-white' : 'text-artha-muted'}`}>{label}</span>
+              <span className="text-[10px] text-artha-muted ml-auto">{note}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Brave Search API key */}
+      <section className="mb-8">
+        <div className="flex items-center gap-2 mb-3">
+          <Search size={13} className="text-artha-accent" />
+          <h2 className="text-xs font-semibold text-artha-muted uppercase tracking-wide">
+            Brave Search API (optional)
+          </h2>
+        </div>
+        <p className="text-xs text-artha-muted mb-3 leading-relaxed">
+          Get higher-quality, real-time results. Free tier: 2,000 queries/month.
+          Get a key at{' '}
+          <span className="text-artha-accent font-mono">brave.com/search/api</span>.
+          Leave blank to skip Brave and use SearXNG instead.
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="password"
+            value={config.brave_api_key ?? ''}
+            onChange={e => patch({ brave_api_key: e.target.value })}
+            placeholder="BSA••••••••••••••••••••••••••••••••••••••"
+            className="flex-1 bg-artha-s2 border border-artha-border rounded-lg px-3 py-2 text-xs text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono"
+          />
+          {config.brave_api_key?.trim() && (
+            <button
+              onClick={() => patch({ brave_api_key: '' })}
+              className="px-3 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs transition-colors"
+              title="Remove API key"
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
+        </div>
+      </section>
+
       {/* SearXNG instances */}
       <section className="mb-8">
         <div className="flex items-center gap-2 mb-3">
           <Search size={13} className="text-artha-accent" />
           <h2 className="text-xs font-semibold text-artha-muted uppercase tracking-wide">
-            Search backends (SearXNG)
+            SearXNG instances
           </h2>
         </div>
         <p className="text-xs text-artha-muted mb-3 leading-relaxed">
-          SearXNG is a privacy-respecting metasearch engine. Queries fall through
+          Privacy-respecting metasearch fallback. Queries fall through
           the list in order — add your self-hosted instance at the top for fully
           local search.
         </p>

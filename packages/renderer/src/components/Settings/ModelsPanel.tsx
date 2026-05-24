@@ -20,6 +20,7 @@ interface ConfiguredModel {
   ollama_name: string;
   base_url: string;
   provider: string;
+  context_window: number;
   is_active: number;
 }
 
@@ -78,6 +79,12 @@ export default function ModelsPanel() {
   const [switching, setSwitching] = useState<string | null>(null);
   const [ollamaOnline, setOllamaOnline] = useState(true);
 
+  // ── Context window state ──────────────────────────────────────────────────
+  // Tracks the context window setting for the currently-active configured model.
+  // Saved on blur / Enter so the user doesn't have to click a separate button.
+  const [ctxWindow, setCtxWindow] = useState<number>(4096);
+  const [ctxSaving, setCtxSaving] = useState(false);
+
   // ── BYOK cloud state ──────────────────────────────────────────────────────
   const [configured, setConfigured] = useState<ConfiguredModel[]>([]);
   const [showCloudForm, setShowCloudForm] = useState(false);
@@ -95,7 +102,12 @@ export default function ModelsPanel() {
     setLoading(true);
     // Configured (saved) models load independently of Ollama — cloud BYOK models
     // must still show even when the local runtime is offline.
-    window.artha.llm.listConfigured().then(c => setConfigured(c as ConfiguredModel[])).catch(() => {});
+    window.artha.llm.listConfigured().then(c => {
+      const list = c as ConfiguredModel[];
+      setConfigured(list);
+      const activeRow = list.find(m => m.is_active);
+      if (activeRow) setCtxWindow(activeRow.context_window ?? 4096);
+    }).catch(() => {});
     try {
       const [modelList, hw, active] = await Promise.all([
         window.artha.llm.listModels() as Promise<OllamaModel[]>,
@@ -160,7 +172,21 @@ export default function ModelsPanel() {
   const activateCloud = async (m: ConfiguredModel) => {
     await window.artha.llm.setActiveModelById(m.model_id);
     setActiveModelState(m.ollama_name);
+    setCtxWindow(m.context_window ?? 4096);
     await load();
+  };
+
+  const saveContextWindow = async () => {
+    const active = configured.find(m => m.is_active);
+    if (!active) return;
+    const clamped = Math.max(512, Math.min(128_000, Math.round(ctxWindow)));
+    setCtxSaving(true);
+    try {
+      await window.artha.llm.setContextWindow(active.model_id, clamped);
+      setCtxWindow(clamped);
+    } finally {
+      setCtxSaving(false);
+    }
   };
 
   const removeCloud = async (m: ConfiguredModel) => {
@@ -176,6 +202,11 @@ export default function ModelsPanel() {
     try {
       await window.artha.llm.setActiveModel(name);
       setActiveModelState(name);
+      // Reload configured list so context_window is synced for the newly-active row.
+      const list = await window.artha.llm.listConfigured() as ConfiguredModel[];
+      setConfigured(list);
+      const nowActive = list.find(m => m.is_active);
+      if (nowActive) setCtxWindow(nowActive.context_window ?? 4096);
     } finally {
       setSwitching(null);
     }
@@ -224,12 +255,52 @@ export default function ModelsPanel() {
         </div>
       )}
 
-      {/* Active model badge */}
+      {/* Active model badge + context window config */}
       {activeModel && (
-        <div className="mb-4 flex items-center gap-2">
-          <CheckCircle2 size={14} className="text-green-400" />
-          <span className="text-xs text-artha-muted">Active: </span>
-          <code className="text-xs text-green-400 font-mono">{activeModel}</code>
+        <div className="mb-5 rounded-xl border border-white/10 bg-white/3 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={14} className="text-green-400 shrink-0" />
+            <span className="text-xs text-artha-muted">Active model: </span>
+            <code className="text-xs text-green-400 font-mono truncate">{activeModel}</code>
+          </div>
+          {/* Context window slider — controls max_tokens sent to the model */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-artha-muted">Context window</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={ctxWindow}
+                  min={512}
+                  max={128000}
+                  step={512}
+                  onChange={e => setCtxWindow(Number(e.target.value))}
+                  onBlur={saveContextWindow}
+                  onKeyDown={e => { if (e.key === 'Enter') saveContextWindow(); }}
+                  className="w-24 bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-xs text-white text-right font-mono focus:outline-none focus:border-artha-accent/50"
+                />
+                <span className="text-xs text-artha-muted">tokens</span>
+                {ctxSaving && <RefreshCw size={11} className="text-artha-muted animate-spin" />}
+              </div>
+            </div>
+            <input
+              type="range"
+              min={512}
+              max={128000}
+              step={512}
+              value={ctxWindow}
+              onChange={e => setCtxWindow(Number(e.target.value))}
+              onMouseUp={saveContextWindow}
+              onTouchEnd={saveContextWindow}
+              className="w-full h-1 rounded-full bg-white/10 accent-artha-accent cursor-pointer"
+            />
+            <div className="flex justify-between text-[10px] text-artha-muted/60">
+              <span>512</span>
+              <span>8 k</span>
+              <span>32 k</span>
+              <span>128 k</span>
+            </div>
+          </div>
         </div>
       )}
 

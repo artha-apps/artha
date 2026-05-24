@@ -14,6 +14,8 @@ import robotsParser from 'robots-parser';
 import { getDb } from '../db/schema';
 import { extractReadable } from './readability';
 import { search as searxngSearch, SearchResult } from './searxng';
+import { braveSearch } from './brave';
+import { duckduckgoSearch } from './duckduckgo';
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -39,6 +41,9 @@ export interface WebConfig {
   robots_override_hosts: string[]; // hosts allowed to bypass robots
   timeout_ms: number;
   max_bytes: number;
+  /** Optional Brave Search API key. When set, Brave is tried before SearXNG.
+   *  Free tier: 2,000 queries/month. Get a key at https://brave.com/search/api/ */
+  brave_api_key?: string;
 }
 
 export const DEFAULT_WEB_CONFIG: WebConfig = {
@@ -48,6 +53,7 @@ export const DEFAULT_WEB_CONFIG: WebConfig = {
   robots_override_hosts: [],
   timeout_ms: DEFAULT_TIMEOUT_MS,
   max_bytes: DEFAULT_MAX_BYTES,
+  brave_api_key: '',
 };
 
 // Loaded lazily so the tool module doesn't require the DB at import time.
@@ -370,7 +376,47 @@ async function webSearchImpl(args: { query: string; count?: number; freshness?: 
     ? (args.freshness as 'day' | 'week' | 'month' | 'year')
     : undefined;
 
-  const results: SearchResult[] = await searxngSearch(config.searxng_instances, query, { count, freshness });
+  // ── Search backend priority chain ────────────────────────────────────────
+  // 1. Brave Search API  — if api key configured (highest quality, real-time)
+  // 2. SearXNG instances — privacy-preserving metasearch (configured or defaults)
+  // 3. DuckDuckGo HTML   — zero-config fallback (last resort)
+  let results: SearchResult[] = [];
+  let provider = 'searxng';
+  const errors: string[] = [];
+
+  // 1 — Brave Search
+  if (config.brave_api_key?.trim()) {
+    try {
+      results = await braveSearch(config.brave_api_key.trim(), query, { count, freshness });
+      provider = 'brave';
+    } catch (err) {
+      errors.push(`Brave: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // 2 — SearXNG (if Brave not used or failed)
+  if (results.length === 0 && config.searxng_instances.length > 0) {
+    try {
+      results = await searxngSearch(config.searxng_instances, query, { count, freshness });
+      provider = 'searxng';
+    } catch (err) {
+      errors.push(`SearXNG: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // 3 — DuckDuckGo HTML fallback
+  if (results.length === 0) {
+    try {
+      results = await duckduckgoSearch(query, { count, freshness });
+      provider = 'duckduckgo';
+    } catch (err) {
+      errors.push(`DuckDuckGo: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  if (results.length === 0) {
+    throw new Error(`All search backends failed: ${errors.join('; ')}`);
+  }
 
   // Record each result as a (lightweight) citation so the chat can show them
   // even before the agent calls web_fetch on a specific link.
@@ -379,7 +425,7 @@ async function webSearchImpl(args: { query: string; count?: number; freshness?: 
     record({ url: r.url, title: r.title, fetched_at: now });
   }
 
-  return JSON.stringify({ query, count: results.length, results });
+  return JSON.stringify({ query, provider, count: results.length, results });
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

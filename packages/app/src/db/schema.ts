@@ -96,17 +96,18 @@ export async function initDatabase(): Promise<void> {
 
     -- Local LLM models
     CREATE TABLE IF NOT EXISTS llm_models (
-      model_id       TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-      name           TEXT NOT NULL,          -- Display name
-      ollama_name    TEXT NOT NULL UNIQUE,   -- e.g. llama3:8b-instruct-q4_K_M
-      base_url       TEXT NOT NULL DEFAULT 'http://localhost:11434/v1',
-      api_key        TEXT NOT NULL DEFAULT 'ollama',
-      provider       TEXT NOT NULL DEFAULT 'ollama',
-      size_gb        REAL,
-      quant_level    TEXT,   -- Q4, Q8, F16, etc.
-      hw_profile     TEXT,   -- min RAM required, e.g. '8gb'
-      is_active      INTEGER NOT NULL DEFAULT 0,
-      added_at       INTEGER NOT NULL DEFAULT (unixepoch())
+      model_id        TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name            TEXT NOT NULL,          -- Display name
+      ollama_name     TEXT NOT NULL UNIQUE,   -- e.g. llama3:8b-instruct-q4_K_M
+      base_url        TEXT NOT NULL DEFAULT 'http://localhost:11434/v1',
+      api_key         TEXT NOT NULL DEFAULT 'ollama',
+      provider        TEXT NOT NULL DEFAULT 'ollama',
+      size_gb         REAL,
+      quant_level     TEXT,   -- Q4, Q8, F16, etc.
+      hw_profile      TEXT,   -- min RAM required, e.g. '8gb'
+      context_window  INTEGER NOT NULL DEFAULT 4096, -- max tokens sent to model
+      is_active       INTEGER NOT NULL DEFAULT 0,
+      added_at        INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
     -- RAG indexes (Phase 1)
@@ -251,6 +252,23 @@ export async function initDatabase(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_web_cache_fetched ON web_cache(fetched_at);
 
+    -- ── Scheduled Tasks ────────────────────────────────────────────────────
+    -- Cron-based or one-time future tasks. Each fires by calling the agent
+    -- orchestrator with 'prompt' in a new session. status transitions:
+    --   enabled -> (fires) -> enabled (repeating) or completed (one-shot)
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      task_id      TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name         TEXT NOT NULL,
+      prompt       TEXT NOT NULL,
+      cron         TEXT,            -- cron expression, NULL for one-shot
+      fire_at      INTEGER,         -- unix epoch for one-shot tasks
+      is_enabled   INTEGER NOT NULL DEFAULT 1,
+      last_run_at  INTEGER,
+      last_status  TEXT,            -- 'ok' | 'error' | null
+      run_count    INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
 
@@ -340,6 +358,17 @@ export async function initDatabase(): Promise<void> {
     }
   } catch (err) {
     console.warn('[Artha] citations_json migration skipped:', err);
+  }
+
+  // Migration: add context_window to llm_models for DBs created before this
+  // column existed. Default 4096 keeps existing model rows unchanged.
+  try {
+    const llmCols = db.prepare(`PRAGMA table_info(llm_models)`).all() as { name: string }[];
+    if (!llmCols.some(c => c.name === 'context_window')) {
+      db.exec(`ALTER TABLE llm_models ADD COLUMN context_window INTEGER NOT NULL DEFAULT 4096`);
+    }
+  } catch (err) {
+    console.warn('[Artha] context_window migration skipped:', err);
   }
 
   console.log('[Artha] Database initialised at', dbPath);
