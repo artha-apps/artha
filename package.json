@@ -19,6 +19,9 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "overrides": {
+    "uuid": ">=11.1.1"
+  },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
