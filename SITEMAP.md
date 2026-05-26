@@ -111,8 +111,8 @@
 
 | Package | Used in | Purpose |
 |---------|---------|---------|
-| `electron` (29.x) | app | Desktop runtime |
-| `better-sqlite3` | app | Synchronous SQLite driver (native module) |
+| `electron` (41.x) | app | Desktop runtime — pinned to 41.x: it is the newest Electron whose V8 the SQLite driver compiles against (42 is not yet supported by better-sqlite3) |
+| `better-sqlite3` (12.x) | app | Synchronous SQLite driver (native module — rebuilt against Electron's ABI via the root `postinstall` hook) |
 | `@modelcontextprotocol/sdk` | app | MCP client/server protocol |
 | `openai` | app | OpenAI-compatible LLM client |
 | `node-schedule` | app | Cron + one-shot scheduling |

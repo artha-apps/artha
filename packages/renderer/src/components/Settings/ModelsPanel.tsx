@@ -273,7 +273,9 @@ export default function ModelsPanel() {
         }, 1200);
       }
     });
-    return unsub;
+    // Wrap in a void arrow — the preload unsub returns IpcRenderer, which is not
+    // a valid useEffect Destructor (must return void).
+    return () => { unsub(); };
   }, []);
 
   useEffect(() => { load(); }, []);

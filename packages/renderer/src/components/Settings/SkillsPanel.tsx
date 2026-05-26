@@ -80,8 +80,13 @@ export default function SkillsPanel() {
 
   const load = async () => {
     setLoading(true);
+    setError('');
     try {
       setSkills(await window.artha.skills.list() as Skill[]);
+    } catch (err) {
+      // Surface backend failures (e.g. the SQLite engine failed to load) rather
+      // than silently rendering the empty-state, which looks like "no skills".
+      setError(err instanceof Error ? err.message : 'Could not load skills');
     } finally {
       setLoading(false);
     }
