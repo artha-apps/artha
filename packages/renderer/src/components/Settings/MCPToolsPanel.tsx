@@ -459,7 +459,7 @@ export default function MCPToolsPanel() {
     server: MarketplaceServer,
     envVars: Record<string, string>
   ) => {
-    let cmd = server.command;
+    const cmd = server.command;
     const envParts = Object.entries(envVars)
       .filter(([, v]) => v.trim())
       .map(([k, v]) => `ENV:${k}=${v}`);

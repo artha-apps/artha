@@ -7,7 +7,7 @@
  * idle sessions get a wider chat area.
  */
 import { useState } from 'react';
-import { ChevronRight, ChevronDown, Zap, CheckCircle, XCircle, Loader } from 'lucide-react';
+import { ChevronRight, ChevronDown, Zap, CheckCircle, Loader } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
 export default function ExecutionLog() {

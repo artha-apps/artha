@@ -119,7 +119,7 @@ interface ChatState {
   setActiveSkill: (skill: ActiveSkillBadge | null) => void;
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
+export const useChatStore = create<ChatState>((set) => ({
   sessions: [],
   activeSessionId: null,
   messages: [],

@@ -7,7 +7,6 @@
  * After write, a sidecar `.artha-receipt.json` is emitted next to the file and
  * the artifact is registered in `generated_documents` + `provenance_records`.
  */
-import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import {
