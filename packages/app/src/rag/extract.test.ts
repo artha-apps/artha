@@ -32,7 +32,8 @@ describe('extractText', () => {
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([['Name', 'Role'], ['Ada', 'Engineer']]);
     XLSX.utils.book_append_sheet(wb, ws, 'People');
-    XLSX.writeFile(wb, f);
+    // Buffer write — the SheetJS CDN build is ESM and does not auto-wire fs.
+    fs.writeFileSync(f, XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer);
 
     const out = await extractText(f);
     expect(out).toContain('People');

@@ -53,7 +53,10 @@ function extractXlsx(filePath: string): string {
   // xlsx is already a dependency (used by the document generator).
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const XLSX = require('xlsx') as typeof import('xlsx');
-  const wb = XLSX.readFile(filePath);
+  // Read via a buffer: the SheetJS CDN build is ESM and does not auto-wire
+  // Node's fs, so XLSX.readFile throws. Reading the bytes ourselves is
+  // build-agnostic.
+  const wb = XLSX.read(fs.readFileSync(filePath), { type: 'buffer' });
   return wb.SheetNames
     .map(name => `# ${name}\n${XLSX.utils.sheet_to_csv(wb.Sheets[name])}`)
     .join('\n\n');

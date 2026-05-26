@@ -413,7 +413,11 @@ async function generateXlsx(content: AnchoredContent, outPath: string): Promise<
     XLSX.utils.book_append_sheet(wb, ws, safeName || 'Sheet');
   }
 
-  XLSX.writeFile(wb, outPath);
+  // Write via a buffer rather than XLSX.writeFile: the SheetJS CDN build is
+  // ESM and does not auto-wire Node's fs, so writeFile/readFile throw. Going
+  // through fs ourselves is build-agnostic and avoids the global set_fs hook.
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  fs.writeFileSync(outPath, buf);
   return outPath;
 }
 
