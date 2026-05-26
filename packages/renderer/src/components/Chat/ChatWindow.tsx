@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff } from 'lucide-react';
+import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -102,6 +102,9 @@ export default function ChatWindow() {
   const [slashIndex, setSlashIndex] = useState(0);
   const [isListening, setIsListening] = useState(false);
   const [popplerWarning, setPopplerWarning] = useState(false);
+  // Parallel sub-agent run indicator: the sub-task prompts + which have finished.
+  const [parallelTasks, setParallelTasks] = useState<string[] | null>(null);
+  const [parallelDone, setParallelDone] = useState<Set<number>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -115,6 +118,24 @@ export default function ChatWindow() {
   useEffect(() => {
     window.artha.skills.listEnabled().then((s) => setSkills(s as SkillOption[]));
   }, []);
+
+  // Parallel sub-agent run: show a row of badges that flip to checkmarks as
+  // each concurrent sub-task reports back.
+  useEffect(() => {
+    const offStart = window.artha.agent.onParallelStart(({ subTasks }) => {
+      setParallelTasks(subTasks);
+      setParallelDone(new Set());
+    });
+    const offDone = window.artha.agent.onParallelTaskDone(({ index }) => {
+      setParallelDone((prev) => new Set(prev).add(index));
+    });
+    return () => { offStart(); offDone(); };
+  }, []);
+
+  // Clear the indicator once the run is no longer streaming.
+  useEffect(() => {
+    if (!isStreaming) setParallelTasks(null);
+  }, [isStreaming]);
 
   // Load RAG index status so the composer can tell the user whether /ask has
   // anything to search. Refreshes when a run finishes (indexes may have changed
@@ -307,6 +328,29 @@ export default function ChatWindow() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto py-6">
         <div className="max-w-3xl mx-auto px-6 space-y-5">
+
+          {/* Parallel sub-task progress — spinners that flip to checkmarks */}
+          {parallelTasks && parallelTasks.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {parallelTasks.map((t, i) => {
+                const done = parallelDone.has(i);
+                return (
+                  <div
+                    key={i}
+                    title={t}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs ${
+                      done
+                        ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                        : 'bg-artha-s2 border-artha-border text-artha-muted'
+                    }`}
+                  >
+                    {done ? <CheckCircle2 size={12} /> : <Loader size={12} className="animate-spin" />}
+                    Sub-task {i + 1}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Empty session — show prompt grid */}
           {sessionMessages.length === 0 && !isStreaming && (

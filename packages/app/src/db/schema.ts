@@ -301,6 +301,19 @@ export async function initDatabase(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at DESC);
 
+    -- ── OAuth tokens ──────────────────────────────────────────────────────
+    -- Stores access/refresh tokens for connected cloud providers (Google
+    -- Workspace: Gmail/Calendar/Drive). One row per provider. Tokens live only
+    -- in the local DB and are sent only to the provider's own endpoints.
+    CREATE TABLE IF NOT EXISTS oauth_tokens (
+      provider      TEXT PRIMARY KEY,
+      access_token  TEXT,
+      refresh_token TEXT,
+      expires_at    INTEGER,
+      scope         TEXT,
+      created_at    INTEGER DEFAULT (unixepoch())
+    );
+
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
 

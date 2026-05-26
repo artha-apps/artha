@@ -25,6 +25,9 @@ import ArtifactsPanel from './components/Settings/ArtifactsPanel';
 import MarketplacePanel from './components/Settings/MarketplacePanel';
 import MemoryPanel from './components/Settings/MemoryPanel';
 import IDEIntegrationPanel from './components/Settings/IDEIntegrationPanel';
+import CloudIntegrationsPanel from './components/Settings/CloudIntegrationsPanel';
+import LANServerPanel from './components/Settings/LANServerPanel';
+import DesktopControlPanel from './components/Settings/DesktopControlPanel';
 import SettingsPanel from './components/Settings/SettingsPanel';
 
 declare global {
@@ -123,6 +126,9 @@ export default function App() {
         {activeView === 'marketplace' && <MarketplacePanel />}
         {activeView === 'memory' && <MemoryPanel />}
         {activeView === 'ide' && <IDEIntegrationPanel />}
+        {activeView === 'cloud' && <CloudIntegrationsPanel />}
+        {activeView === 'lan' && <LANServerPanel />}
+        {activeView === 'desktop' && <DesktopControlPanel />}
         {activeView === 'rag' && <RAGPanel />}
         {activeView === 'settings' && <SettingsPanel />}
       </main>

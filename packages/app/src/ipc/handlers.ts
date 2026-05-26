@@ -2,9 +2,10 @@
  * IPC Handlers — wires all Electron IPC channels to backend modules.
  * The renderer calls these via the preload bridge (window.artha.*).
  */
-import { ipcMain, BrowserWindow, dialog, shell } from 'electron';
+import { ipcMain, BrowserWindow, dialog, shell, desktopCapturer } from 'electron';
 import * as path from 'path';
 import * as http from 'http';
+import * as os from 'os';
 import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { MCPRegistry } from '../mcp/registry';
@@ -91,6 +92,119 @@ function stopIdeMcpServer(): { running: boolean } {
   return { running: false };
 }
 
+// ── LAN collaboration server ────────────────────────────────────────────────
+// Exposes Artha's skills + agent over the local network (0.0.0.0:7842) so
+// teammates can hit it from a browser/curl. Distinct from the IDE bridge
+// (loopback :3847). The orchestrator streams its reply to the desktop UI; for
+// this headless bridge we forward the persisted agent reply as NDJSON.
+const LAN_PORT = 7842;
+let lanServer: http.Server | null = null;
+let lanLocalIp: string | null = null;
+
+function detectLocalIp(): string | null {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const ni of ifaces[name] ?? []) {
+      if (ni.family === 'IPv4' && !ni.internal) return ni.address;
+    }
+  }
+  return null;
+}
+
+function lanStatus(): { running: boolean; url: string | null; localIp: string | null } {
+  const running = !!lanServer;
+  return {
+    running,
+    localIp: lanLocalIp,
+    url: running && lanLocalIp ? `http://${lanLocalIp}:${LAN_PORT}` : null,
+  };
+}
+
+function startLanServer(): { running: boolean; url: string | null; localIp: string | null } {
+  if (lanServer) return lanStatus();
+  lanLocalIp = detectLocalIp();
+
+  const server = http.createServer((req, res) => {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+    const url = new URL(req.url ?? '/', `http://localhost:${LAN_PORT}`);
+
+    if (req.method === 'GET' && url.pathname === '/health') {
+      json(200, { status: 'ok', uptime: process.uptime() });
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/') {
+      const skills = SkillRegistry.getInstance().listEnabled() as { slug: string }[];
+      json(200, { name: 'Artha', version: '0.1.1', status: 'online', skills: skills.map(s => s.slug) });
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/skills') {
+      json(200, SkillRegistry.getInstance().listEnabled());
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/chat') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        const db = getDb();
+        let sid: string;
+        try {
+          const parsed = JSON.parse(body || '{}') as { message?: string; sessionId?: string };
+          if (!parsed.message) { json(400, { error: 'Request body must include a "message" field.' }); return; }
+          sid = parsed.sessionId ?? '';
+          if (!sid) {
+            sid = crypto.randomUUID();
+            db.prepare(`INSERT INTO chat_sessions (session_id, title) VALUES (?, ?)`).run(sid, `LAN: ${parsed.message.slice(0, 40)}`);
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
+          const before = (db.prepare(`SELECT COALESCE(MAX(rowid), 0) AS m FROM messages WHERE session_id=?`).get(sid) as { m: number }).m;
+
+          await orchestrator.handleMessage(sid, parsed.message, []);
+
+          const rows = db.prepare(
+            `SELECT content FROM messages WHERE session_id=? AND sender_type='agent' AND rowid > ? ORDER BY rowid ASC`
+          ).all(sid, before) as { content: string }[];
+          for (const r of rows) res.write(JSON.stringify({ type: 'token', content: r.content }) + '\n');
+          res.write(JSON.stringify({ type: 'done', content: '' }) + '\n');
+          res.end();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!res.headersSent) res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+          res.write(JSON.stringify({ type: 'error', content: msg }) + '\n');
+          res.end();
+        }
+      });
+      return;
+    }
+
+    json(404, { error: 'Not found' });
+  });
+
+  server.on('error', (err) => {
+    console.error('[Artha] LAN server error:', err);
+    lanServer = null;
+  });
+  server.listen(LAN_PORT, '0.0.0.0', () => {
+    console.log(`[Artha] LAN server listening on http://${lanLocalIp ?? '0.0.0.0'}:${LAN_PORT}`);
+  });
+  lanServer = server;
+  return lanStatus();
+}
+
+function stopLanServer(): { running: boolean; url: string | null; localIp: string | null } {
+  if (lanServer) {
+    lanServer.close();
+    lanServer = null;
+  }
+  return lanStatus();
+}
+
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
 
@@ -100,6 +214,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Start the IDE MCP HTTP bridge so editor configs (.vscode/.cursor mcp.json
   // pointing at localhost:3847/mcp) have a live server to reach immediately.
   startIdeMcpServer();
+
+  // Auto-start the LAN collaboration server if the user opted in.
+  try {
+    const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+    if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) startLanServer();
+  } catch (err) {
+    console.warn('[Artha] LAN autostart check failed:', err);
+  }
 
   // One-time migration: older sessions were stored as "New Chat" with no
   // auto-title; back-fill their title from the first user message so the
@@ -925,6 +1047,140 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return true;
   });
 
+  // ── Cloud OAuth (Google Workspace) ─────────────────────────────────────────
+  // Google client id is stored on the user settings blob (same place as every
+  // other app setting). It's an installed-app "Desktop" OAuth client, so the
+  // flow uses PKCE — no client secret required.
+  const readSettings = (): Record<string, unknown> => {
+    const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+    return JSON.parse(row?.settings_json ?? '{}');
+  };
+  const writeSetting = (key: string, value: unknown) => {
+    const db = getDb();
+    const settings = readSettings();
+    settings[key] = value;
+    db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify(settings));
+  };
+
+  ipcMain.handle('settings:getGoogleClientId', () => {
+    return (readSettings().google_client_id as string | undefined) ?? '';
+  });
+  ipcMain.handle('settings:setGoogleClientId', (_e, id: string) => {
+    writeSetting('google_client_id', (id ?? '').trim());
+    return true;
+  });
+
+  const GOOGLE_SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+  ];
+  const OAUTH_REDIRECT = 'http://localhost:9742/oauth/callback';
+  const OAUTH_PORT = 9742;
+
+  ipcMain.handle('oauth:startFlow', async (_e, opts: { provider: string }): Promise<{ success: boolean; error?: string }> => {
+    try {
+      if (opts?.provider !== 'google') return { success: false, error: `Unsupported provider: ${opts?.provider}` };
+      const db = getDb();
+      const clientId = readSettings().google_client_id as string | undefined;
+      if (!clientId) return { success: false, error: 'No Google Client ID configured. Add it in the Cloud panel’s Setup section first.' };
+      const clientSecret = readSettings().google_client_secret as string | undefined; // optional
+
+      const nodeCrypto = await import('crypto');
+      const codeVerifier = nodeCrypto.randomBytes(32).toString('base64url');
+      const codeChallenge = nodeCrypto.createHash('sha256').update(codeVerifier).digest('base64url');
+      const state = nodeCrypto.randomBytes(16).toString('hex');
+
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', clientId);
+      authUrl.searchParams.set('redirect_uri', OAUTH_REDIRECT);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', GOOGLE_SCOPES.join(' '));
+      authUrl.searchParams.set('access_type', 'offline');
+      authUrl.searchParams.set('prompt', 'consent');
+      authUrl.searchParams.set('code_challenge', codeChallenge);
+      authUrl.searchParams.set('code_challenge_method', 'S256');
+      authUrl.searchParams.set('state', state);
+
+      return await new Promise<{ success: boolean; error?: string }>((resolve) => {
+        let settled = false;
+        let popup: BrowserWindow | null = new BrowserWindow({
+          width: 800, height: 600, modal: true, parent: window, title: 'Connect Google',
+          webPreferences: { contextIsolation: true, nodeIntegration: false },
+        });
+        const server = http.createServer(async (req, res) => {
+          const url = new URL(req.url ?? '', OAUTH_REDIRECT);
+          if (url.pathname !== '/oauth/callback') { res.writeHead(404); res.end(); return; }
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><body style="font-family:system-ui;padding:48px;text-align:center"><h2>Artha — Google connected</h2><p>You can close this window and return to Artha.</p></body></html>');
+          const err = url.searchParams.get('error');
+          const code = url.searchParams.get('code');
+          const returnedState = url.searchParams.get('state');
+          if (err) return finish({ success: false, error: err });
+          if (returnedState !== state) return finish({ success: false, error: 'OAuth state mismatch — aborting.' });
+          if (!code) return finish({ success: false, error: 'No authorization code returned.' });
+          try {
+            const body = new URLSearchParams({
+              code, client_id: clientId, redirect_uri: OAUTH_REDIRECT,
+              grant_type: 'authorization_code', code_verifier: codeVerifier,
+            });
+            if (clientSecret) body.set('client_secret', clientSecret);
+            const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+              method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+            });
+            const tok = await tokenRes.json() as { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string; error?: string; error_description?: string };
+            if (!tokenRes.ok) return finish({ success: false, error: tok.error_description || tok.error || `Token exchange failed (${tokenRes.status}).` });
+            const expiresAt = Math.floor(Date.now() / 1000) + (tok.expires_in ?? 3600);
+            db.prepare(
+              `INSERT INTO oauth_tokens (provider, access_token, refresh_token, expires_at, scope)
+               VALUES ('google', ?, ?, ?, ?)
+               ON CONFLICT(provider) DO UPDATE SET
+                 access_token=excluded.access_token,
+                 refresh_token=COALESCE(excluded.refresh_token, oauth_tokens.refresh_token),
+                 expires_at=excluded.expires_at, scope=excluded.scope`
+            ).run(tok.access_token ?? null, tok.refresh_token ?? null, expiresAt, tok.scope ?? GOOGLE_SCOPES.join(' '));
+            finish({ success: true });
+          } catch (e) {
+            finish({ success: false, error: e instanceof Error ? e.message : String(e) });
+          }
+        });
+        const finish = (r: { success: boolean; error?: string }) => {
+          if (settled) return;
+          settled = true;
+          try { server.close(); } catch { /* ignore */ }
+          if (popup && !popup.isDestroyed()) popup.close();
+          popup = null;
+          resolve(r);
+        };
+        server.on('error', (e) => finish({ success: false, error: e.message }));
+        server.listen(OAUTH_PORT, '127.0.0.1', () => { popup?.loadURL(authUrl.toString()); });
+        popup.on('closed', () => finish({ success: false, error: 'Window closed before authorization completed.' }));
+        setTimeout(() => finish({ success: false, error: 'OAuth timed out.' }), 180_000);
+      });
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('oauth:getStatus', () => {
+    return getDb().prepare(`SELECT provider, expires_at FROM oauth_tokens`).all() as { provider: string; expires_at: number }[];
+  });
+
+  ipcMain.handle('oauth:revoke', async (_e, provider: string) => {
+    const db = getDb();
+    const row = db.prepare(`SELECT access_token FROM oauth_tokens WHERE provider=?`).get(provider) as { access_token: string | null } | undefined;
+    db.prepare(`DELETE FROM oauth_tokens WHERE provider=?`).run(provider);
+    if (row?.access_token) {
+      try {
+        await fetch('https://oauth2.googleapis.com/revoke', {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ token: row.access_token }),
+        });
+      } catch { /* best-effort — row is already gone locally */ }
+    }
+    return true;
+  });
+
   // ── IDE Integration ───────────────────────────────────────────────────────
   // Generate and write an MCP server config for VS Code (.vscode/mcp.json) or
   // Cursor (.cursor/mcp.json) so the user can talk to Artha's tools from their
@@ -992,4 +1248,37 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // the panel can render its running indicator.
   ipcMain.handle('ide:startMcpServer', () => startIdeMcpServer());
   ipcMain.handle('ide:stopMcpServer', () => stopIdeMcpServer());
+
+  // ── LAN collaboration server ──────────────────────────────────────────────
+  ipcMain.handle('lan:start', () => startLanServer());
+  ipcMain.handle('lan:stop', () => stopLanServer());
+  ipcMain.handle('lan:getStatus', () => lanStatus());
+  ipcMain.handle('lan:setAutostart', (_e, enabled: boolean) => {
+    writeSetting('lan_autostart', !!enabled);
+    return true;
+  });
+  ipcMain.handle('lan:getAutostart', () => !!readSettings().lan_autostart);
+
+  // ── Parallel subagents ────────────────────────────────────────────────────
+  ipcMain.handle('agent:runParallel', (_e, opts: { sessionId: string; goal: string; subTasks: string[] }) => {
+    return orchestrator.runParallel(opts.sessionId, opts.goal, opts.subTasks);
+  });
+
+  // ── Desktop control ───────────────────────────────────────────────────────
+  // Bridges the main-process desktopCapturer into the tool system + renderer.
+  // Returns a base64 PNG (no data: prefix) of the primary screen.
+  ipcMain.handle('desktop:capture', async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 1920, height: 1080 },
+    });
+    const first = sources[0];
+    if (!first) throw new Error('No screen source available.');
+    return first.thumbnail.toPNG().toString('base64');
+  });
+  ipcMain.handle('settings:getDesktopControl', () => !!readSettings().desktop_control_enabled);
+  ipcMain.handle('settings:setDesktopControl', (_e, enabled: boolean) => {
+    writeSetting('desktop_control_enabled', !!enabled);
+    return true;
+  });
 }

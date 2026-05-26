@@ -33,6 +33,11 @@ import {
   invokeMemoryTool,
   getMemoryContext,
 } from '../tools/memory';
+import {
+  DESKTOP_TOOL_SCHEMAS,
+  isDesktopTool,
+  invokeDesktopTool,
+} from '../tools/desktop';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -46,6 +51,8 @@ export interface WorkflowStep {
   status: 'pending' | 'running' | 'done' | 'failed';
   output?: string;
   error?: string;
+  /** True if this step is independent and may run in parallel with siblings. */
+  parallel?: boolean;
 }
 
 /** Image or file attachment the user added before sending a message. The
@@ -65,6 +72,11 @@ export interface AgentPlan {
   goal: string;
   steps: WorkflowStep[];
   requiresApproval: boolean;
+  /** When true, the goal decomposes into independent sub-tasks the orchestrator
+   *  should fan out via runParallel() instead of the sequential ReAct loop. */
+  requiresParallel?: boolean;
+  /** The independent sub-task prompts to run concurrently (set with requiresParallel). */
+  subTasks?: string[];
   /** Skill active for this run, if one was matched/invoked. Threaded through
    *  approval so its instructions + tool scope survive a pause-for-approval. */
   skill?: ActiveSkill | null;
@@ -187,6 +199,14 @@ export class AgentOrchestrator {
     plan.attachments = attachments;
     this.activePlans.set(workflowId, plan);
 
+    // Fan-out path: the planner judged the goal to be independent sub-tasks.
+    // Run them concurrently rather than as one sequential loop.
+    if (plan.requiresParallel && plan.subTasks && plan.subTasks.length > 1) {
+      this.activePlans.delete(workflowId);
+      await this.runParallel(sessionId, enrichedGoal, plan.subTasks);
+      return;
+    }
+
     if (plan.requiresApproval) {
       db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
         .run(JSON.stringify(plan.steps), workflowId);
@@ -292,6 +312,90 @@ or
     this.cancelledWorkflows.add(workflowId);
   }
 
+  /** Decompose a goal into independent sub-tasks and run them concurrently.
+   *  Each sub-task gets a throwaway child session + its own ReAct loop; we cap
+   *  concurrency at 4 so we don't hammer Ollama. The final assistant message of
+   *  each child is collected, the child sessions are deleted, and a combined
+   *  summary is persisted to the parent session.
+   *
+   *  Note: child loops emit their own token/streamEnd events to the desktop UI,
+   *  so output interleaves; the ChatWindow's parallel indicator (driven by the
+   *  parallelStart/parallelTaskDone events below) is the intended UX surface. */
+  async runParallel(sessionId: string, goal: string, subTasks: string[]): Promise<string[]> {
+    const db = getDb();
+    const workflowId = crypto.randomUUID();
+    const results: string[] = new Array(subTasks.length).fill('');
+
+    this.emit('agent:workflowStart', workflowId);
+    this.emit('agent:parallelStart', { goal, subTasks });
+
+    const CONCURRENCY = 4;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const i = cursor++;
+        if (i >= subTasks.length) break;
+        const subTask = subTasks[i];
+        const childSessionId = crypto.randomUUID();
+        const runId = crypto.randomUUID();
+        db.prepare(`INSERT INTO chat_sessions (session_id, title) VALUES (?, ?)`)
+          .run(childSessionId, `Sub-task ${i + 1}: ${subTask.slice(0, 40)}`);
+        db.prepare(`INSERT INTO agent_runs (run_id, session_id, workflow_id, goal, model, status) VALUES (?,?,?,?,?, 'running')`)
+          .run(runId, childSessionId, workflowId, subTask, this.activeModelName());
+
+        try {
+          const messages: OpenAI.ChatCompletionMessageParam[] = [
+            {
+              role: 'system',
+              content: `You are Artha, a local AI agent on a Mac running one sub-task of a larger goal. Complete this sub-task precisely using your tools, then report the result concisely. Sub-task:`,
+            },
+            { role: 'user', content: subTask },
+          ];
+          await this.runReactLoop({ workflowId, runId, sessionId: childSessionId, goal: subTask, messages, silent: true });
+          const row = db.prepare(
+            `SELECT content FROM messages WHERE session_id=? AND sender_type='agent' ORDER BY rowid DESC LIMIT 1`
+          ).get(childSessionId) as { content: string } | undefined;
+          results[i] = row?.content ?? '';
+        } catch (err) {
+          results[i] = `Error: ${err instanceof Error ? err.message : String(err)}`;
+        } finally {
+          // Drop the throwaway session (cascades its messages) after collecting.
+          try { db.prepare(`DELETE FROM chat_sessions WHERE session_id=?`).run(childSessionId); } catch { /* ignore */ }
+          this.emit('agent:parallelTaskDone', { index: i, result: results[i] });
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, subTasks.length) }, () => worker())
+    );
+
+    // Persist a combined summary to the parent session so the chat shows a result.
+    const combined = subTasks
+      .map((t, i) => `### Sub-task ${i + 1}: ${t}\n\n${results[i] || '_(no result)_'}`)
+      .join('\n\n');
+    try {
+      db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'agent', ?)`)
+        .run(sessionId, combined);
+    } catch (err) {
+      console.warn('[Artha] persisting parallel summary failed:', err);
+    }
+    this.emit('agent:token', combined);
+    this.emit('agent:streamEnd');
+
+    return results;
+  }
+
+  /** Desktop-control tools are gated behind an opt-in setting (default off). */
+  private desktopControlEnabled(): boolean {
+    try {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+      return !!JSON.parse(row?.settings_json ?? '{}').desktop_control_enabled;
+    } catch {
+      return false;
+    }
+  }
+
   // ── Private ───────────────────────────────────────────────────────────────
 
   /** Build the user-turn content. If image attachments are present, returns an
@@ -339,19 +443,22 @@ Respond ONLY with a valid JSON object (no markdown, no explanation):
     { "index": 1, "description": "Create a Screenshots folder", "toolName": "fs_create_directory" },
     { "index": 2, "description": "Move each screenshot into the folder", "toolName": "fs_move_file" }
   ],
-  "requiresApproval": true
+  "requiresApproval": true,
+  "requiresParallel": false,
+  "subTasks": []
 }
 
 Rules:
 - Set requiresApproval=true whenever steps move, delete, or modify files
 - Always start with fs_list_directory or fs_search_files before moving anything
-- Keep steps minimal and concrete`,
+- Keep steps minimal and concrete
+- Set requiresParallel=true ONLY when the request is clearly several INDEPENDENT tasks that don't depend on each other's output (e.g. "research X, Y and Z separately", "summarize each of these 3 files"). In that case put each independent task as a self-contained prompt string in "subTasks" (2-4 items). For normal sequential work leave requiresParallel=false and subTasks=[].`,
     };
 
     const response = await llm.complete([planningPrompt, ...history, { role: 'user', content: goal }]);
     const raw = response.choices[0]?.message?.content ?? '{}';
 
-    let parsed: { steps: WorkflowStep[]; requiresApproval: boolean };
+    let parsed: { steps: WorkflowStep[]; requiresApproval: boolean; requiresParallel?: boolean; subTasks?: string[] };
     try {
       parsed = JSON.parse(raw.replace(/```json\n?|\n?```/g, ''));
     } catch {
@@ -361,12 +468,18 @@ Rules:
       };
     }
 
+    const subTasks = Array.isArray(parsed.subTasks)
+      ? parsed.subTasks.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      : [];
+
     return {
       workflowId,
       sessionId,
       goal,
       steps: parsed.steps.map((s, i) => ({ ...s, index: i, status: 'pending' as const })),
       requiresApproval: parsed.requiresApproval,
+      requiresParallel: !!parsed.requiresParallel && subTasks.length > 1,
+      subTasks,
     };
   }
 
@@ -460,12 +573,23 @@ RULES — follow exactly, no exceptions:
     modelOverride?: string;
     skill?: ActiveSkill | null;
     startMs?: number;
+    /** When true, suppress renderer-facing events (token/toolCall/streamEnd/…)
+     *  but keep DB persistence. Used for parallel child loops so their output
+     *  doesn't interleave in the chat — runParallel owns the visible lifecycle. */
+    silent?: boolean;
   }): Promise<void> {
     const db = getDb();
     const llm = getActiveLLMClient(args.modelOverride);
+    // Renderer-facing emit gate. Silent child loops still persist to SQLite.
+    const emit = (channel: string, data?: unknown): void => {
+      if (!args.silent) this.emit(channel, data);
+    };
     const tools = [
       ...this.skills.filterTools(this.registry.getToolSchemas(), args.skill ?? null),
       ...MEMORY_TOOL_SCHEMAS,
+      // Desktop control (mouse/keyboard/screenshot) is opt-in and dangerous, so
+      // it's only offered to the model when the user has enabled it in Settings.
+      ...(this.desktopControlEnabled() ? DESKTOP_TOOL_SCHEMAS : []),
     ];
 
     const messages = args.messages;
@@ -492,7 +616,7 @@ RULES — follow exactly, no exceptions:
 
       if (this.cancelledWorkflows.has(args.workflowId)) {
         this.cancelledWorkflows.delete(args.workflowId);
-        this.emit('agent:token', '_Task stopped by user._');
+        emit('agent:token', '_Task stopped by user._');
         recordStep(stepIdx++, 'final', { reason: 'cancelled' });
         db.prepare(`UPDATE agent_runs SET status='cancelled' WHERE run_id=?`).run(args.runId);
         break;
@@ -507,12 +631,12 @@ RULES — follow exactly, no exceptions:
         msg = await llm.streamComplete(
           messages,
           tools,
-          (tok) => { this.emit('agent:token', tok); streamedLive = true; },
+          (tok) => { emit('agent:token', tok); streamedLive = true; },
           () => this.cancelledWorkflows.has(args.workflowId),
         );
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
-        this.emit('agent:token', `\n\n⚠️ Error: ${m}`);
+        emit('agent:token', `\n\n⚠️ Error: ${m}`);
         recordStep(stepIdx++, 'final', { error: m });
         db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
         break;
@@ -533,9 +657,9 @@ RULES — follow exactly, no exceptions:
 
       if (msg.tool_calls?.length) {
         // Intermediate step — suppress any preamble text shown live.
-        if (streamedLive) this.emit('agent:streamReset');
+        if (streamedLive) emit('agent:streamReset');
         for (const toolCall of msg.tool_calls) {
-          this.emit('agent:toolCall', {
+          emit('agent:toolCall', {
             type: 'tool_invoke',
             name: toolCall.function.name,
             args: toolCall.function.arguments,
@@ -555,6 +679,8 @@ RULES — follow exactly, no exceptions:
           try {
             if (isMemoryTool(toolCall.function.name)) {
               toolResult = invokeMemoryTool(toolCall.function.name, parsedArgs, args.sessionId);
+            } else if (isDesktopTool(toolCall.function.name)) {
+              toolResult = await invokeDesktopTool(toolCall.function.name, parsedArgs);
             } else {
               toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs);
             }
@@ -630,7 +756,7 @@ RULES — follow exactly, no exceptions:
             duration_ms: Date.now() - toolStart,
           }, messages);
 
-          this.emit('agent:toolCall', {
+          emit('agent:toolCall', {
             type: 'tool_result',
             name: toolCall.function.name,
             result: toolResult,
@@ -668,10 +794,10 @@ RULES — follow exactly, no exceptions:
         // text differs (verified summary, or cleaning changed it) — otherwise
         // what the user already saw stands as-is.
         if (finalText !== rawContent.trim()) {
-          if (streamedLive) this.emit('agent:streamReset');
-          if (finalText) this.emit('agent:token', finalText);
+          if (streamedLive) emit('agent:streamReset');
+          if (finalText) emit('agent:token', finalText);
         } else if (!streamedLive && finalText) {
-          this.emit('agent:token', finalText);
+          emit('agent:token', finalText);
         }
 
         // Persist the assistant message so the next session load shows it.
@@ -681,7 +807,7 @@ RULES — follow exactly, no exceptions:
             `INSERT INTO messages (session_id, sender_type, content, citations_json) VALUES (?, 'agent', ?, ?)`
           ).run(args.sessionId, finalText, cits.length ? JSON.stringify(cits) : null);
           if (cits.length > 0) {
-            this.emit('agent:citations', { citations: cits });
+            emit('agent:citations', { citations: cits });
           }
         } catch (err) {
           console.warn('[Artha] persisting final message failed:', err);
@@ -718,7 +844,7 @@ RULES — follow exactly, no exceptions:
       sendNotification('Artha — task complete', goalSnippet);
     }
 
-    this.emit('agent:streamEnd');
+    emit('agent:streamEnd');
   }
 
   /** Build a 2-3 sentence summary anchored to the verified mutation list.

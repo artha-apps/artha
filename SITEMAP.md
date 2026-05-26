@@ -45,6 +45,8 @@
 | `src/tools/docs.ts` | Document generation (DOCX via `docx`, PPTX via `pptxgenjs`, XLSX via `xlsx`, PDF via `pdf-lib`) |
 | `src/tools/memory.ts` | `MEMORY_TOOL_SCHEMAS` + `invokeMemoryTool` + `getMemoryContext` — SQLite entity graph |
 | `src/tools/rag.ts` | Retrieval-augmented generation — chunk, embed, vector search over local docs |
+| `src/tools/desktop.ts` | `DESKTOP_TOOL_SCHEMAS` + `invokeDesktopTool` — mouse/keyboard/screenshot via nut-js + desktopCapturer (opt-in) |
+| `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree/nut-js` native dep |
 | **scheduler/** | |
 | `src/scheduler/scheduler.ts` | `SchedulerService` — cron / one-shot task runner via `node-schedule` |
 | **notify.ts** | `sendNotification()` — Electron native notifications with focus-on-click |
@@ -60,13 +62,15 @@
 | `src/App.tsx` | Root component — view router, IPC event wiring (clarify, update-available) |
 | **stores/** | |
 | `src/stores/chat.ts` | Zustand store — `ActiveView` union, messages, pending attachments, clarify state |
+| **lib/** | |
+| `src/lib/qrcode.ts` | Dependency-free QR encoder (byte mode + Reed-Solomon, v1–10) — `generateQrMatrix` / `qrToSvg` |
 | **components/Chat/** | |
 | `ChatWindow.tsx` | Composer with send, attach image, attach PDF, voice mic; message bubble list |
 | `ClarificationModal.tsx` | Pre-flight Q&A modal (pauses the agent until user answers or skips) |
 | `PlanApproval.tsx` | Approval UI for the ReAct plan before execution |
 | `ThinkingBubble.tsx` | Live streaming "thinking…" indicator |
 | **components/Sidebar/** | |
-| `Sidebar.tsx` | Nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Settings |
+| `Sidebar.tsx` | Nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Settings |
 | **components/Settings/** | |
 | `ModelsPanel.tsx` | Configure LLM models — API key, base URL, context window slider |
 | `McpPanel.tsx` | Add / remove MCP servers; view tool schemas |
@@ -78,6 +82,9 @@
 | `MarketplacePanel.tsx` | MCP plugin marketplace — search, category filter, install |
 | `MemoryPanel.tsx` | Browse agent memory entities — type badges, delete, clear-all |
 | `IDEIntegrationPanel.tsx` | Generate `.vscode/mcp.json` or `.cursor/mcp.json` for a project folder |
+| `CloudIntegrationsPanel.tsx` | Connect Google Workspace (Gmail/Calendar/Drive) via OAuth — client-id setup, connect/disconnect |
+| `LANServerPanel.tsx` | Start/stop the LAN collaboration server — copyable URL, inline QR, curl/fetch examples, autostart |
+| `DesktopControlPanel.tsx` | Toggle desktop control (mouse/keyboard/screenshot), test-screenshot preview, tool list |
 | `SettingsPanel.tsx` | App settings — notifications toggle |
 | `ProvenancePanel.tsx` | Source attribution for agent answers |
 | `TimeTravelPanel.tsx` | Session replay / history |

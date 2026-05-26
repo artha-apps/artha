@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "tsc --watch",
     "build": "tsc",
-    "start": "electron ."
+    "start": "electron .",
+    "postinstall": "electron-rebuild -f -w @nut-tree/nut-js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.6.0",
+    "@nut-tree/nut-js": "^4.2.0",
     "@types/node-schedule": "^2.1.8",
     "better-sqlite3": "^12.2.0",
     "dockerode": "^5.0.0",

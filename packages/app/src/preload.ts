@@ -57,6 +57,17 @@ const api = {
     },
     clarifyRespond: (workflowId: string, answers: string[] | null) =>
       ipcRenderer.invoke('agent:clarifyRespond', workflowId, answers),
+    // Decompose a goal into sub-tasks and run them concurrently.
+    runParallel: (sessionId: string, goal: string, subTasks: string[]) =>
+      ipcRenderer.invoke('agent:runParallel', { sessionId, goal, subTasks }) as Promise<string[]>,
+    onParallelStart: (cb: (payload: { goal: string; subTasks: string[] }) => void) => {
+      ipcRenderer.on('agent:parallelStart', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:parallelStart');
+    },
+    onParallelTaskDone: (cb: (payload: { index: number; result: string }) => void) => {
+      ipcRenderer.on('agent:parallelTaskDone', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:parallelTaskDone');
+    },
   },
 
   // ── Sessions & History ───────────────────────────────────────────────────
@@ -152,6 +163,38 @@ const api = {
     set: (patch: unknown) => ipcRenderer.invoke('settings:set', patch),
     getWebConfig: () => ipcRenderer.invoke('settings:getWebConfig'),
     setWebConfig: (patch: unknown) => ipcRenderer.invoke('settings:setWebConfig', patch),
+    // Google OAuth client id (Desktop app) lives on the settings blob.
+    getGoogleClientId: () => ipcRenderer.invoke('settings:getGoogleClientId') as Promise<string>,
+    setGoogleClientId: (id: string) => ipcRenderer.invoke('settings:setGoogleClientId', id) as Promise<boolean>,
+    // Desktop-control master switch (default off).
+    getDesktopControl: () => ipcRenderer.invoke('settings:getDesktopControl') as Promise<boolean>,
+    setDesktopControl: (enabled: boolean) => ipcRenderer.invoke('settings:setDesktopControl', enabled) as Promise<boolean>,
+  },
+
+  // ── Cloud OAuth (Google Workspace) ────────────────────────────────────────
+  // Connect Gmail/Calendar/Drive via an installed-app OAuth (PKCE) flow.
+  oauth: {
+    startFlow: (provider: 'google') =>
+      ipcRenderer.invoke('oauth:startFlow', { provider }) as Promise<{ success: boolean; error?: string }>,
+    getStatus: () =>
+      ipcRenderer.invoke('oauth:getStatus') as Promise<{ provider: string; expires_at: number }[]>,
+    revoke: (provider: string) => ipcRenderer.invoke('oauth:revoke', provider) as Promise<boolean>,
+  },
+
+  // ── LAN collaboration server ──────────────────────────────────────────────
+  // Exposes the agent over the local network (0.0.0.0:7842) for teammates.
+  lan: {
+    start: () => ipcRenderer.invoke('lan:start') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
+    stop: () => ipcRenderer.invoke('lan:stop') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
+    getStatus: () => ipcRenderer.invoke('lan:getStatus') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
+    setAutostart: (enabled: boolean) => ipcRenderer.invoke('lan:setAutostart', enabled) as Promise<boolean>,
+    getAutostart: () => ipcRenderer.invoke('lan:getAutostart') as Promise<boolean>,
+  },
+
+  // ── Desktop control ───────────────────────────────────────────────────────
+  // Capture the screen (base64 PNG) — used by the Desktop panel's test button.
+  desktop: {
+    capture: () => ipcRenderer.invoke('desktop:capture') as Promise<string>,
   },
 
   // ── Bundles ──────────────────────────────────────────────────────────────

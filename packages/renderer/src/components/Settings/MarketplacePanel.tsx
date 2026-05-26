@@ -6,7 +6,12 @@
  * already-wired `mcp:installServer` IPC channel, then refreshes the MCP panel.
  */
 import { useEffect, useState } from 'react';
-import { ExternalLink, Download, Check, Loader } from 'lucide-react';
+import { ExternalLink, Download, Check, Loader, Link as LinkIcon } from 'lucide-react';
+import { useChatStore } from '../../stores/chat';
+
+// Catalog entries for Google Workspace services that need an OAuth grant — the
+// user must connect them in the Cloud tab rather than installing an MCP server.
+const AUTH_REQUIRED = new Set(['mcp-google-drive', 'mcp-gmail', 'mcp-google-calendar']);
 
 // ── Catalog ──────────────────────────────────────────────────────────────────
 // Duplicated here so the renderer bundle doesn't pull in Node/Electron modules
@@ -62,6 +67,7 @@ export default function MarketplacePanel() {
   const [installing, setInstalling] = useState<string | null>(null);
   const [installed, setInstalled] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const setActiveView = useChatStore(s => s.setActiveView);
 
   // Installed state is persisted in the DB (the `tools` table), keyed by install
   // URI. Map those URIs back to catalog ids so the badges survive navigation.
@@ -152,6 +158,7 @@ export default function MarketplacePanel() {
           {filtered.map(entry => {
             const isInstalling = installing === entry.id;
             const isDone = installed.has(entry.id);
+            const authRequired = AUTH_REQUIRED.has(entry.id);
 
             return (
               <div key={entry.id}
@@ -173,6 +180,9 @@ export default function MarketplacePanel() {
                     <span className="text-artha-muted/80">Tools:</span> {entry.tools}
                   </p>
                   <p className="text-[11px] text-artha-muted/50 font-mono mt-1">{entry.installUri}</p>
+                  {authRequired && (
+                    <p className="text-[11px] text-amber-400/90 mt-1.5">Auth required — go to Cloud tab</p>
+                  )}
                 </div>
 
                 {/* Actions */}
@@ -188,24 +198,34 @@ export default function MarketplacePanel() {
                       <ExternalLink size={13} />
                     </a>
                   )}
-                  <button
-                    onClick={() => install(entry)}
-                    disabled={isInstalling || isDone}
-                    title={isDone ? 'Installed' : 'Install'}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-not-allowed ${
-                      isDone
-                        ? 'bg-green-500/15 border border-green-500/30 text-green-400'
-                        : 'bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-50 text-white'
-                    }`}
-                  >
-                    {isInstalling ? (
-                      <><Loader size={11} className="animate-spin" /> Installing…</>
-                    ) : isDone ? (
-                      <><Check size={11} /> Installed</>
-                    ) : (
-                      <><Download size={11} /> Install</>
-                    )}
-                  </button>
+                  {authRequired ? (
+                    <button
+                      onClick={() => setActiveView('cloud')}
+                      title="Connect in the Cloud tab"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-cyan-600/80 hover:bg-cyan-500 text-white transition-colors"
+                    >
+                      <LinkIcon size={11} /> Cloud tab
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => install(entry)}
+                      disabled={isInstalling || isDone}
+                      title={isDone ? 'Installed' : 'Install'}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-not-allowed ${
+                        isDone
+                          ? 'bg-green-500/15 border border-green-500/30 text-green-400'
+                          : 'bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-50 text-white'
+                      }`}
+                    >
+                      {isInstalling ? (
+                        <><Loader size={11} className="animate-spin" /> Installing…</>
+                      ) : isDone ? (
+                        <><Check size={11} /> Installed</>
+                      ) : (
+                        <><Download size={11} /> Install</>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
             );
