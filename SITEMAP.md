@@ -70,7 +70,7 @@
 | `PlanApproval.tsx` | Approval UI for the ReAct plan before execution |
 | `ThinkingBubble.tsx` | Live streaming "thinking…" indicator |
 | **components/Sidebar/** | |
-| `Sidebar.tsx` | Nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Settings |
+| `Sidebar.tsx` | Project switcher + project-scoped session list; nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Settings |
 | **components/Settings/** | |
 | `ModelsPanel.tsx` | Configure LLM models — API key, base URL, context window slider |
 | `McpPanel.tsx` | Add / remove MCP servers; view tool schemas |

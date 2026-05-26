@@ -509,13 +509,14 @@ Rules:
       ? `ACTIVE SKILL — "${skill.name}". This is your operating playbook for this task; follow it:\n${skill.instructions}\n\n`
       : '';
     const memoryBlock = getMemoryContext();
+    const projectBlock = this.getSessionProjectBlock(plan.sessionId);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
         role: 'system',
         content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools.
 
-${memoryBlock}${skillBlock}
+${memoryBlock}${skillBlock}${projectBlock}
 
 Home:      ${homeDir}
 Desktop:   ${homeDir}/Desktop
@@ -932,6 +933,37 @@ RULES — follow exactly, no exceptions:
     let p = m[1];
     if (p.startsWith('~/')) p = homeDir + p.slice(1);
     return p;
+  }
+
+  /** Build the project-context preamble for a session: the project root (so the
+   *  model resolves relative paths there) plus the contents of an ARTHA.md /
+   *  .artha/context.md file in the root, if present. Returns '' when the session
+   *  has no project. Best-effort — any failure yields no block. */
+  private getSessionProjectBlock(sessionId: string): string {
+    try {
+      const db = getDb();
+      const s = db.prepare(`SELECT project_id FROM chat_sessions WHERE session_id=?`).get(sessionId) as { project_id: string | null } | undefined;
+      if (!s?.project_id) return '';
+      const p = db.prepare(`SELECT name, root_path FROM projects WHERE project_id=?`).get(s.project_id) as { name: string; root_path: string } | undefined;
+      if (!p) return '';
+
+      const fs = require('fs') as typeof import('fs');
+      const path = require('path') as typeof import('path');
+      let context = '';
+      let contextFile = '';
+      for (const rel of ['ARTHA.md', '.artha/context.md']) {
+        const f = path.join(p.root_path, rel);
+        try {
+          if (fs.existsSync(f)) { context = fs.readFileSync(f, 'utf-8').slice(0, 4000); contextFile = rel; break; }
+        } catch { /* try next */ }
+      }
+
+      return `PROJECT: ${p.name}\nPROJECT ROOT: ${p.root_path}\n` +
+        `When the user refers to files or folders without an absolute path, resolve them inside the project root above.\n` +
+        (context ? `\nPROJECT CONTEXT (from ${contextFile}):\n${context}\n` : '') + '\n';
+    } catch {
+      return '';
+    }
   }
 
   /** Pull the last N messages of this session into an OpenAI message array.

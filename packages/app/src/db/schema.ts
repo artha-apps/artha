@@ -48,11 +48,22 @@ export async function initDatabase(): Promise<void> {
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- Projects — a working folder that scopes a group of chat sessions and
+    -- gives the agent durable context (project root + an optional ARTHA.md).
+    CREATE TABLE IF NOT EXISTS projects (
+      project_id   TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name         TEXT NOT NULL,
+      root_path    TEXT NOT NULL,
+      settings_json TEXT NOT NULL DEFAULT '{}',
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     -- Chat sessions
     CREATE TABLE IF NOT EXISTS chat_sessions (
       session_id   TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
       title        TEXT NOT NULL DEFAULT 'New Chat',
       model_id     TEXT,
+      project_id   TEXT,   -- NULL = general (no project)
       start_time   INTEGER NOT NULL DEFAULT (unixepoch()),
       last_activity INTEGER NOT NULL DEFAULT (unixepoch())
     );
@@ -414,6 +425,17 @@ export async function initDatabase(): Promise<void> {
     }
   } catch (err) {
     console.warn('[Artha] context_window migration skipped:', err);
+  }
+
+  // Migration: add project_id to chat_sessions for DBs created before projects
+  // existed. NULL means the session belongs to no project (general chat).
+  try {
+    const sessCols = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
+    if (!sessCols.some(c => c.name === 'project_id')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN project_id TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] project_id migration skipped:', err);
   }
 
   console.log('[Artha] Database initialised at', dbPath);

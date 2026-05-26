@@ -369,11 +369,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return getDb().prepare(`SELECT * FROM chat_sessions ORDER BY last_activity DESC`).all();
   });
 
-  ipcMain.handle('sessions:create', () => {
+  ipcMain.handle('sessions:create', (_e, projectId?: string | null) => {
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare(`INSERT INTO chat_sessions (session_id) VALUES (?)`).run(id);
-    return { session_id: id, title: 'New Chat' };
+    db.prepare(`INSERT INTO chat_sessions (session_id, project_id) VALUES (?, ?)`).run(id, projectId ?? null);
+    return { session_id: id, title: 'New Chat', project_id: projectId ?? null };
   });
 
   ipcMain.handle('sessions:delete', (_e, id: string) => {
@@ -398,6 +398,37 @@ export function registerIpcHandlers(window: BrowserWindow): void {
         citations,
       };
     });
+  });
+
+  // ── Projects ─────────────────────────────────────────────────────────────
+  // A project is a working folder that scopes its chat sessions and gives the
+  // agent durable context (root path + optional ARTHA.md, injected by the
+  // orchestrator). Creating one opens a folder picker; the folder's basename
+  // becomes the default project name.
+  ipcMain.handle('projects:list', () => {
+    return getDb().prepare(`SELECT * FROM projects ORDER BY created_at DESC`).all();
+  });
+
+  ipcMain.handle('projects:create', async () => {
+    const result = await dialog.showOpenDialog(window, {
+      properties: ['openDirectory'],
+      title: 'Choose a project folder',
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const rootPath = result.filePaths[0];
+    const name = path.basename(rootPath) || rootPath;
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare(`INSERT INTO projects (project_id, name, root_path) VALUES (?,?,?)`).run(id, name, rootPath);
+    return { project_id: id, name, root_path: rootPath };
+  });
+
+  ipcMain.handle('projects:delete', (_e, id: string) => {
+    const db = getDb();
+    // Detach sessions rather than deleting them — history is preserved as general chats.
+    db.prepare(`UPDATE chat_sessions SET project_id=NULL WHERE project_id=?`).run(id);
+    db.prepare(`DELETE FROM projects WHERE project_id=?`).run(id);
+    return true;
   });
 
   // ── LLM / Models ───────────────────────────────────────────────────────

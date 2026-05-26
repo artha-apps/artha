@@ -67,6 +67,15 @@ export interface Session {
   session_id: string;
   title: string;
   last_activity: number;
+  project_id?: string | null;
+}
+
+/** A working-folder project that scopes a group of sessions. */
+export interface Project {
+  project_id: string;
+  name: string;
+  root_path: string;
+  created_at?: number;
 }
 
 /** Top-level view selector. Each value maps to a panel mounted under <main>
@@ -99,9 +108,13 @@ interface ChatState {
   activeWorkflowId: string | null;
   activeSkill: ActiveSkillBadge | null;
   pendingAttachments: MessageAttachment[];
+  projects: Project[];
+  activeProjectId: string | null;
 
   // Actions
   setSessions: (s: Session[]) => void;
+  setProjects: (p: Project[]) => void;
+  setActiveProjectId: (id: string | null) => void;
   setActiveSession: (id: string) => void;
   setMessages: (msgs: Message[]) => void;
   addUserMessage: (sessionId: string, content: string, attachments?: MessageAttachment[]) => void;
@@ -134,8 +147,12 @@ export const useChatStore = create<ChatState>((set) => ({
   activeWorkflowId: null,
   activeSkill: null,
   pendingAttachments: [],
+  projects: [],
+  activeProjectId: null,
 
   setSessions: (sessions) => set({ sessions }),
+  setProjects: (projects) => set({ projects }),
+  setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   // Switching sessions clears ALL in-flight state, including isStreaming — so a
   // stuck stream from a failed send never bleeds into the new session.
   setActiveSession: (id) => set({

@@ -73,7 +73,7 @@ const api = {
   // ── Sessions & History ───────────────────────────────────────────────────
   sessions: {
     list: () => ipcRenderer.invoke('sessions:list'),
-    create: () => ipcRenderer.invoke('sessions:create'),
+    create: (projectId?: string | null) => ipcRenderer.invoke('sessions:create', projectId),
     delete: (id: string) => ipcRenderer.invoke('sessions:delete', id),
     getMessages: (sessionId: string) =>
       ipcRenderer.invoke('sessions:getMessages', sessionId),
@@ -81,6 +81,16 @@ const api = {
       ipcRenderer.on('session:titleUpdated', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('session:titleUpdated');
     },
+  },
+
+  // ── Projects ───────────────────────────────────────────────────────────────
+  // A project scopes chat sessions to a working folder and gives the agent
+  // durable context (root path + optional ARTHA.md). `create` opens a folder
+  // picker; sessions created with a projectId belong to that project.
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list') as Promise<{ project_id: string; name: string; root_path: string; created_at: number }[]>,
+    create: () => ipcRenderer.invoke('projects:create') as Promise<{ project_id: string; name: string; root_path: string } | null>,
+    delete: (id: string) => ipcRenderer.invoke('projects:delete', id) as Promise<boolean>,
   },
 
   // ── LLM / Models ────────────────────────────────────────────────────────
