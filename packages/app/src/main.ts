@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
 import { registerIpcHandlers } from './ipc/handlers';
@@ -18,7 +18,20 @@ async function createWindow(): Promise<void> {
     console.error('[Artha] Database init failed:', err);
     console.error('[Artha] If you see a better-sqlite3 bindings error, run:');
     console.error('[Artha]   npx electron-rebuild -f -w better-sqlite3');
-    // Continue loading the window anyway so the UI is visible
+    // Surface the failure loudly. Without this, the window loads but every
+    // DB-backed panel (Skills, Models, Sessions, Memory, …) silently renders
+    // its empty-state, which looks like "features are missing" rather than a
+    // broken database engine.
+    dialog.showErrorBox(
+      'Artha — database failed to start',
+      'The local database engine (better-sqlite3) could not be loaded, so ' +
+      'Skills, Models, chat history and other data will appear empty.\n\n' +
+      'This usually means the native module needs rebuilding for the current ' +
+      'Electron version. From the project directory run:\n\n' +
+      '  npx electron-rebuild -f -w better-sqlite3\n\n' +
+      `Details: ${err instanceof Error ? err.message : String(err)}`
+    );
+    // Continue loading the window anyway so the UI is visible.
   }
 
   mainWindow = new BrowserWindow({
