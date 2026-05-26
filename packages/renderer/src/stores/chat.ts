@@ -136,10 +136,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingAttachments: [],
 
   setSessions: (sessions) => set({ sessions }),
-  // Switching sessions clears any in-flight stream and execution log — the
-  // previous session's pending events were tied to its workflowId and are
-  // no longer meaningful.
-  setActiveSession: (id) => set({ activeSessionId: id, messages: [], streamingContent: '', executionLog: [], pendingToolEvents: [], pendingCitations: [] }),
+  // Switching sessions clears ALL in-flight state, including isStreaming — so a
+  // stuck stream from a failed send never bleeds into the new session.
+  setActiveSession: (id) => set({
+    activeSessionId: id, messages: [], streamingContent: '',
+    isStreaming: false, executionLog: [], pendingToolEvents: [],
+    pendingCitations: [], activeWorkflowId: null, activeSkill: null,
+  }),
   setMessages: (messages) => set({ messages }),
 
   addUserMessage: (sessionId, content, attachments) =>

@@ -165,7 +165,13 @@ export default function ChatWindow() {
     setPendingAttachments([]);
     setStreaming(true);
     addUserMessage(activeSessionId, msg, attachments);
-    await window.artha.agent.sendMessage(activeSessionId, msg, attachments);
+    try {
+      await window.artha.agent.sendMessage(activeSessionId, msg, attachments);
+    } catch (err) {
+      // Always reset streaming on error so the composer doesn't get stuck.
+      setStreaming(false);
+      console.error('[Artha] sendMessage failed:', err);
+    }
   };
 
   const attachImage = async () => {
