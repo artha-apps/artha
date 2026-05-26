@@ -201,18 +201,22 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   });
 
   ipcMain.handle('llm:detectHardware', async () => {
-    // Basic RAM detection — real GPU detection requires native bindings (Phase 2)
-    const totalMem = (await import('os')).totalmem();
-    const gbRam = Math.round(totalMem / 1024 / 1024 / 1024);
-    const recommendation = gbRam >= 32 ? 'Q8 or F16 models' : gbRam >= 16 ? 'Q8 models (8B)' : 'Q4 models (3B-8B)';
-    // A concrete starter model sized to the machine — qwen2.5 is strong at the
-    // tool-calling the agent leans on; llama3.2:3b is the safe low-RAM default.
-    const recommendedModel = gbRam >= 32
-      ? 'qwen2.5:14b-instruct-q4_K_M'
-      : gbRam >= 16
-        ? 'qwen2.5:7b-instruct-q4_K_M'
-        : 'llama3.2:3b-instruct-q4_K_M';
-    return { gbRam, recommendation, recommendedModel };
+    try {
+      // Basic RAM detection — real GPU detection requires native bindings (Phase 2)
+      const totalMem = (await import('os')).totalmem();
+      const gbRam = Math.round(totalMem / 1024 / 1024 / 1024);
+      const recommendation = gbRam >= 32 ? 'Q8 or F16 models' : gbRam >= 16 ? 'Q8 models (8B)' : 'Q4 models (3B-8B)';
+      // A concrete starter model sized to the machine — qwen2.5 is strong at the
+      // tool-calling the agent leans on; llama3.2:3b is the safe low-RAM default.
+      const recommendedModel = gbRam >= 32
+        ? 'qwen2.5:14b-instruct-q4_K_M'
+        : gbRam >= 16
+          ? 'qwen2.5:7b-instruct-q4_K_M'
+          : 'llama3.2:3b-instruct-q4_K_M';
+      return { gbRam, recommendation, recommendedModel };
+    } catch {
+      return { gbRam: 8, recommendation: 'Q4 models (3B-8B)', recommendedModel: 'llama3.2:3b-instruct-q4_K_M' };
+    }
   });
 
   // Check whether the local Ollama runtime is reachable — drives onboarding.

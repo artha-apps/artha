@@ -95,19 +95,29 @@ export default function ModelsPanel() {
   const [savingCloud, setSavingCloud] = useState(false);
   const [cloudError, setCloudError] = useState('');
 
-  /** Pull model list + hardware info + active model in parallel. Falls back to
-   *  "Ollama offline" on any failure so the user sees an actionable empty state
-   *  instead of a stuck spinner. */
+  /** Pull model list + hardware info + active model in parallel.
+   *  Ollama reachability is checked independently so a hardware-detection
+   *  failure never falsely shows the "Ollama not running" banner. */
   const load = async () => {
     setLoading(true);
-    // Configured (saved) models load independently of Ollama — cloud BYOK models
-    // must still show even when the local runtime is offline.
+
+    // ── 1. Ollama reachability — checked on its own so nothing else poisons it ──
+    try {
+      const online = await (window.artha.llm.checkOllama() as Promise<boolean>);
+      setOllamaOnline(online);
+    } catch {
+      setOllamaOnline(false);
+    }
+
+    // ── 2. Configured (saved) models — cloud BYOK must show even when Ollama is offline ──
     window.artha.llm.listConfigured().then(c => {
       const list = c as ConfiguredModel[];
       setConfigured(list);
       const activeRow = list.find(m => m.is_active);
       if (activeRow) setCtxWindow(activeRow.context_window ?? 4096);
     }).catch(() => {});
+
+    // ── 3. Model list + hardware + active model — failures here don't affect the banner ──
     try {
       const [modelList, hw, active] = await Promise.all([
         window.artha.llm.listModels() as Promise<OllamaModel[]>,
@@ -125,9 +135,8 @@ export default function ModelsPanel() {
       } else {
         setActiveModelState(active);
       }
-      setOllamaOnline(true);
     } catch {
-      setOllamaOnline(false);
+      // Model list / hardware failures are silent — banner is driven by checkOllama only
     } finally {
       setLoading(false);
     }
