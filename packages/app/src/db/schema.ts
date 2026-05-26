@@ -54,6 +54,8 @@ export async function initDatabase(): Promise<void> {
       project_id   TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
       name         TEXT NOT NULL,
       root_path    TEXT NOT NULL,
+      rag_index_id TEXT,            -- auto-built RAG index over root_path (Phase 2)
+      summary      TEXT,            -- rolling cross-session project memory (Phase 3)
       settings_json TEXT NOT NULL DEFAULT '{}',
       created_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );
@@ -290,6 +292,7 @@ export async function initDatabase(): Promise<void> {
       content     TEXT NOT NULL,
       tags_json   TEXT NOT NULL DEFAULT '[]',
       source_session_id TEXT,
+      project_id  TEXT,   -- NULL = global memory; else scoped to a project (Phase 3)
       created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
     );
@@ -436,6 +439,29 @@ export async function initDatabase(): Promise<void> {
     }
   } catch (err) {
     console.warn('[Artha] project_id migration skipped:', err);
+  }
+
+  // Migration: add rag_index_id + summary to projects (Phase 2/3 columns) for
+  // DBs whose projects table pre-dates them.
+  try {
+    const projCols = db.prepare(`PRAGMA table_info(projects)`).all() as { name: string }[];
+    if (projCols.length) {
+      if (!projCols.some(c => c.name === 'rag_index_id')) db.exec(`ALTER TABLE projects ADD COLUMN rag_index_id TEXT`);
+      if (!projCols.some(c => c.name === 'summary')) db.exec(`ALTER TABLE projects ADD COLUMN summary TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] projects column migration skipped:', err);
+  }
+
+  // Migration: add project_id to memory_entities so memories can be scoped to a
+  // project. NULL = global memory available in every conversation.
+  try {
+    const memCols = db.prepare(`PRAGMA table_info(memory_entities)`).all() as { name: string }[];
+    if (memCols.length && !memCols.some(c => c.name === 'project_id')) {
+      db.exec(`ALTER TABLE memory_entities ADD COLUMN project_id TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] memory project_id migration skipped:', err);
   }
 
   console.log('[Artha] Database initialised at', dbPath);

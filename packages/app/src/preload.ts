@@ -91,6 +91,8 @@ const api = {
     list: () => ipcRenderer.invoke('projects:list') as Promise<{ project_id: string; name: string; root_path: string; created_at: number }[]>,
     create: () => ipcRenderer.invoke('projects:create') as Promise<{ project_id: string; name: string; root_path: string } | null>,
     delete: (id: string) => ipcRenderer.invoke('projects:delete', id) as Promise<boolean>,
+    // Rebuild the project's RAG index over its folder. Returns chunk count.
+    reindex: (id: string) => ipcRenderer.invoke('projects:reindex', id) as Promise<number>,
   },
 
   // ── LLM / Models ────────────────────────────────────────────────────────

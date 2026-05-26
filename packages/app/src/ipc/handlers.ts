@@ -419,12 +419,43 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const name = path.basename(rootPath) || rootPath;
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare(`INSERT INTO projects (project_id, name, root_path) VALUES (?,?,?)`).run(id, name, rootPath);
-    return { project_id: id, name, root_path: rootPath };
+
+    // Phase 2: auto-build a RAG index over the project folder so the agent can
+    // retrieve project files via rag_search. The index is registered up front
+    // (so it shows in the RAG panel) and built in the background — embedding a
+    // large folder can take a while, and we don't want to block the picker.
+    const indexId = crypto.randomUUID();
+    db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`)
+      .run(indexId, `Project: ${name}`, rootPath);
+    db.prepare(`INSERT INTO projects (project_id, name, root_path, rag_index_id) VALUES (?,?,?,?)`)
+      .run(id, name, rootPath, indexId);
+    ragIndexer.buildIndex(indexId, rootPath).catch(err =>
+      console.warn('[Artha] project index build failed:', err)
+    );
+
+    return { project_id: id, name, root_path: rootPath, rag_index_id: indexId };
+  });
+
+  ipcMain.handle('projects:reindex', async (_e, id: string) => {
+    const db = getDb();
+    const proj = db.prepare(`SELECT rag_index_id, root_path FROM projects WHERE project_id=?`)
+      .get(id) as { rag_index_id: string | null; root_path: string } | undefined;
+    if (!proj) return 0;
+    let indexId = proj.rag_index_id;
+    if (!indexId) {
+      indexId = crypto.randomUUID();
+      const name = path.basename(proj.root_path) || proj.root_path;
+      db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`).run(indexId, `Project: ${name}`, proj.root_path);
+      db.prepare(`UPDATE projects SET rag_index_id=? WHERE project_id=?`).run(indexId, id);
+    }
+    return ragIndexer.buildIndex(indexId, proj.root_path);
   });
 
   ipcMain.handle('projects:delete', (_e, id: string) => {
     const db = getDb();
+    // Drop the project's RAG index along with it.
+    const proj = db.prepare(`SELECT rag_index_id FROM projects WHERE project_id=?`).get(id) as { rag_index_id: string | null } | undefined;
+    if (proj?.rag_index_id) db.prepare(`DELETE FROM rag_indexes WHERE index_id=?`).run(proj.rag_index_id);
     // Detach sessions rather than deleting them — history is preserved as general chats.
     db.prepare(`UPDATE chat_sessions SET project_id=NULL WHERE project_id=?`).run(id);
     db.prepare(`DELETE FROM projects WHERE project_id=?`).run(id);

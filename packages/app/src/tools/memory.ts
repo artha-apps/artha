@@ -116,6 +116,12 @@ export function invokeMemoryTool(
 ): string {
   const db = getDb();
 
+  // Resolve the active session's project (if any) so memories are scoped:
+  // stored against the project, and recalled from global + this project only.
+  const projectId = sessionId
+    ? ((db.prepare(`SELECT project_id FROM chat_sessions WHERE session_id=?`).get(sessionId) as { project_id: string | null } | undefined)?.project_id ?? null)
+    : null;
+
   if (name === 'memory_store') {
     const memName   = String(args.name ?? '').trim();
     const content   = String(args.content ?? '').trim();
@@ -123,8 +129,11 @@ export function invokeMemoryTool(
     const tags      = Array.isArray(args.tags) ? args.tags : [];
     if (!memName || !content) return 'Error: name and content are required.';
 
-    // Upsert — update existing row if name matches, insert otherwise.
-    const existing = db.prepare(`SELECT entity_id FROM memory_entities WHERE name=? LIMIT 1`).get(memName) as { entity_id: string } | undefined;
+    // Upsert scoped to the same project bucket so the same name can exist in
+    // different projects (and globally) without clobbering each other.
+    const existing = db.prepare(
+      `SELECT entity_id FROM memory_entities WHERE name=? AND IFNULL(project_id,'')=IFNULL(?,'') LIMIT 1`
+    ).get(memName, projectId) as { entity_id: string } | undefined;
     if (existing) {
       db.prepare(
         `UPDATE memory_entities SET content=?, entity_type=?, tags_json=?, updated_at=unixepoch() WHERE entity_id=?`
@@ -132,9 +141,9 @@ export function invokeMemoryTool(
       return `Memory updated (id: ${existing.entity_id}): "${memName}"`;
     }
     const row = db.prepare(
-      `INSERT INTO memory_entities (name, entity_type, content, tags_json, source_session_id)
-       VALUES (?, ?, ?, ?, ?) RETURNING entity_id`
-    ).get(memName, entType, content, JSON.stringify(tags), sessionId ?? null) as { entity_id: string };
+      `INSERT INTO memory_entities (name, entity_type, content, tags_json, source_session_id, project_id)
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING entity_id`
+    ).get(memName, entType, content, JSON.stringify(tags), sessionId ?? null, projectId) as { entity_id: string };
     return `Memory stored (id: ${row.entity_id}): "${memName}"`;
   }
 
@@ -146,9 +155,9 @@ export function invokeMemoryTool(
     const rows = db.prepare(
       `SELECT entity_id, name, entity_type, content, updated_at
        FROM memory_entities
-       WHERE name LIKE ? OR content LIKE ?
+       WHERE (name LIKE ? OR content LIKE ?) AND (project_id IS NULL OR project_id = ?)
        ORDER BY updated_at DESC LIMIT ?`
-    ).all(pat, pat, limit) as Pick<MemoryEntity, 'entity_id' | 'name' | 'entity_type' | 'content' | 'updated_at'>[];
+    ).all(pat, pat, projectId, limit) as Pick<MemoryEntity, 'entity_id' | 'name' | 'entity_type' | 'content' | 'updated_at'>[];
     if (!rows.length) return `No memories found matching "${query}".`;
     return rows.map(r =>
       `[${r.entity_id}] (${r.entity_type}) ${r.name}: ${r.content}`
@@ -167,15 +176,25 @@ export function invokeMemoryTool(
 
 /**
  * Returns a formatted memory preamble injected into the ReAct system prompt.
- * Loads the 20 most recently updated memories. Returns an empty string when
+ * Loads the 20 most recently updated memories. When a projectId is given, the
+ * set is global memories + that project's memories; otherwise only global ones
+ * (so project memories never leak into unrelated chats). Empty string when
  * there is nothing to inject.
  */
-export function getMemoryContext(): string {
+export function getMemoryContext(projectId?: string | null): string {
   try {
     const db = getDb();
-    const rows = db.prepare(
-      `SELECT name, entity_type, content FROM memory_entities ORDER BY updated_at DESC LIMIT 20`
-    ).all() as Pick<MemoryEntity, 'name' | 'entity_type' | 'content'>[];
+    const rows = (projectId
+      ? db.prepare(
+          `SELECT name, entity_type, content FROM memory_entities
+           WHERE project_id IS NULL OR project_id = ?
+           ORDER BY updated_at DESC LIMIT 20`
+        ).all(projectId)
+      : db.prepare(
+          `SELECT name, entity_type, content FROM memory_entities
+           WHERE project_id IS NULL
+           ORDER BY updated_at DESC LIMIT 20`
+        ).all()) as Pick<MemoryEntity, 'name' | 'entity_type' | 'content'>[];
     if (!rows.length) return '';
     const lines = rows.map(r => `• [${r.entity_type}] ${r.name}: ${r.content}`).join('\n');
     return `LONG-TERM MEMORY (what you know about this user from past sessions):\n${lines}\n\n`;

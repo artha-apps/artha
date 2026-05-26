@@ -508,7 +508,8 @@ Rules:
     const skillBlock = skill
       ? `ACTIVE SKILL — "${skill.name}". This is your operating playbook for this task; follow it:\n${skill.instructions}\n\n`
       : '';
-    const memoryBlock = getMemoryContext();
+    const projectId = this.getSessionProjectId(plan.sessionId);
+    const memoryBlock = getMemoryContext(projectId);
     const projectBlock = this.getSessionProjectBlock(plan.sessionId);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -554,6 +555,11 @@ RULES — follow exactly, no exceptions:
       skill,
       startMs: planStartMs,
     });
+
+    // Phase 3: refresh the project's rolling cross-session memory in the
+    // background so a future chat in this project starts already aware of what
+    // happened here. Best-effort; never blocks or fails the run.
+    if (projectId) void this.updateProjectSummary(projectId, plan.sessionId);
   }
 
   /** The core ReAct loop. Repeatedly: call the LLM with the current message
@@ -935,6 +941,49 @@ RULES — follow exactly, no exceptions:
     return p;
   }
 
+  /** The project a session belongs to, or null. */
+  private getSessionProjectId(sessionId: string): string | null {
+    try {
+      const r = getDb().prepare(`SELECT project_id FROM chat_sessions WHERE session_id=?`).get(sessionId) as { project_id: string | null } | undefined;
+      return r?.project_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Refresh a project's rolling cross-session memory from the latest exchange.
+   *  Merges the existing summary with the tail of the session via the synthesis
+   *  model and stores it on the project. Best-effort; failures are swallowed. */
+  private async updateProjectSummary(projectId: string, sessionId: string): Promise<void> {
+    try {
+      const db = getDb();
+      const proj = db.prepare(`SELECT summary FROM projects WHERE project_id=?`).get(projectId) as { summary: string | null } | undefined;
+      if (!proj) return;
+      const recent = db.prepare(
+        `SELECT sender_type, content FROM messages WHERE session_id=? ORDER BY rowid DESC LIMIT 6`
+      ).all(sessionId) as { sender_type: string; content: string }[];
+      if (!recent.length) return;
+      const transcript = recent.reverse()
+        .map(m => `${m.sender_type}: ${m.content}`).join('\n').slice(0, 4000);
+
+      const llm = getActiveLLMClient(undefined, 'synthesis');
+      const resp = await llm.complete([
+        {
+          role: 'system',
+          content: 'You maintain a concise running memory of a project across chat sessions. Given the existing project memory and the latest conversation, output an UPDATED memory as 4-10 short bullet points capturing durable facts, decisions, current state, and user preferences. Drop stale or superseded points. Omit chit-chat. Keep it under 200 words and output only the bullets.',
+        },
+        {
+          role: 'user',
+          content: `EXISTING PROJECT MEMORY:\n${proj.summary ?? '(none yet)'}\n\nLATEST CONVERSATION:\n${transcript}\n\nUpdated project memory:`,
+        },
+      ]);
+      const text = resp.choices[0]?.message?.content?.trim();
+      if (text) db.prepare(`UPDATE projects SET summary=? WHERE project_id=?`).run(text.slice(0, 4000), projectId);
+    } catch {
+      /* best-effort */
+    }
+  }
+
   /** Build the project-context preamble for a session: the project root (so the
    *  model resolves relative paths there) plus the contents of an ARTHA.md /
    *  .artha/context.md file in the root, if present. Returns '' when the session
@@ -944,7 +993,8 @@ RULES — follow exactly, no exceptions:
       const db = getDb();
       const s = db.prepare(`SELECT project_id FROM chat_sessions WHERE session_id=?`).get(sessionId) as { project_id: string | null } | undefined;
       if (!s?.project_id) return '';
-      const p = db.prepare(`SELECT name, root_path FROM projects WHERE project_id=?`).get(s.project_id) as { name: string; root_path: string } | undefined;
+      const p = db.prepare(`SELECT name, root_path, rag_index_id, summary FROM projects WHERE project_id=?`)
+        .get(s.project_id) as { name: string; root_path: string; rag_index_id: string | null; summary: string | null } | undefined;
       if (!p) return '';
 
       const fs = require('fs') as typeof import('fs');
@@ -960,6 +1010,8 @@ RULES — follow exactly, no exceptions:
 
       return `PROJECT: ${p.name}\nPROJECT ROOT: ${p.root_path}\n` +
         `When the user refers to files or folders without an absolute path, resolve them inside the project root above.\n` +
+        (p.rag_index_id ? `This project's files are indexed — use rag_search to retrieve relevant project files before answering questions about its contents, and cite the filenames.\n` : '') +
+        (p.summary ? `\nPROJECT MEMORY (carried over from past sessions in this project):\n${p.summary}\n` : '') +
         (context ? `\nPROJECT CONTEXT (from ${contextFile}):\n${context}\n` : '') + '\n';
     } catch {
       return '';

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench, Globe, Route, History, ShieldCheck, Package, Sparkles, Archive, Store, Brain, Code2, Link, Wifi, Monitor, Folder, FolderPlus, ChevronDown, Check, Trash2 } from 'lucide-react';
+import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench, Globe, Route, History, ShieldCheck, Package, Sparkles, Archive, Store, Brain, Code2, Link, Wifi, Monitor, Folder, FolderPlus, ChevronDown, Check, Trash2, RefreshCw } from 'lucide-react';
 import { useChatStore, ActiveView } from '../../stores/chat';
 
 export default function Sidebar() {
@@ -8,6 +8,7 @@ export default function Sidebar() {
     activeView, setActiveView, projects, activeProjectId, setProjects, setActiveProjectId,
   } = useChatStore();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [reindexingId, setReindexingId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Load projects once.
@@ -61,6 +62,16 @@ export default function Sidebar() {
     setProjects(updated);
     setActiveProjectId(proj.project_id);
     setProjectMenuOpen(false);
+  };
+
+  const reindexProject = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setReindexingId(id);
+    try {
+      await window.artha.projects.reindex(id);
+    } finally {
+      setReindexingId(null);
+    }
   };
 
   const deleteProject = async (e: React.MouseEvent, id: string) => {
@@ -127,6 +138,13 @@ export default function Sidebar() {
               >
                 <span className="w-4 shrink-0">{activeProjectId === p.project_id && <Check size={13} className="text-artha-accent" />}</span>
                 <span className="truncate flex-1 text-white">{p.name}</span>
+                <span
+                  onClick={(e) => reindexProject(e, p.project_id)}
+                  className={`text-artha-muted hover:text-artha-accent transition-colors ${reindexingId === p.project_id ? '' : 'opacity-0 group-hover:opacity-100'}`}
+                  title="Re-index project files"
+                >
+                  <RefreshCw size={12} className={reindexingId === p.project_id ? 'animate-spin' : ''} />
+                </span>
                 <span
                   onClick={(e) => deleteProject(e, p.project_id)}
                   className="opacity-0 group-hover:opacity-100 text-artha-muted hover:text-red-400 transition-colors"
