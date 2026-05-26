@@ -4,7 +4,7 @@
  * Writes .vscode/mcp.json or .cursor/mcp.json into the user's project
  * folder so that Copilot Chat / Cursor can talk to Artha's local MCP server.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Code2, CheckCircle2, FolderOpen, Zap, Info } from 'lucide-react';
 
 type IDE = 'vscode' | 'cursor';
@@ -30,6 +30,16 @@ export default function IDEIntegrationPanel() {
   const [generatedPath, setGeneratedPath] = useState<string | null>(null);
   const [busy, setBusy]               = useState(false);
   const [error, setError]             = useState<string | null>(null);
+  const [serverRunning, setServerRunning] = useState(false);
+  const [serverUrl, setServerUrl]     = useState('http://localhost:3847/mcp');
+
+  // Ensure the local MCP bridge is up the moment this panel mounts — the
+  // generated editor configs are useless without a live server on the port.
+  useEffect(() => {
+    window.artha.ide.startMcpServer()
+      .then(({ running, url }) => { setServerRunning(running); if (url) setServerUrl(url); })
+      .catch(() => setServerRunning(false));
+  }, []);
 
   async function handleGenerate() {
     setBusy(true);
@@ -61,9 +71,22 @@ export default function IDEIntegrationPanel() {
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <Code2 size={22} className="text-cyan-400" />
-        <div>
+        <div className="flex-1">
           <h2 className="text-lg font-semibold text-white">IDE Integration</h2>
           <p className="text-sm text-gray-400">Connect VS Code or Cursor to Artha's local MCP server</p>
+        </div>
+      </div>
+
+      {/* MCP server status — the bridge the generated configs talk to */}
+      <div className="flex items-center gap-3 p-3 mb-6 rounded-lg bg-white/5 border border-white/10">
+        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+          serverRunning ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-gray-500'
+        }`} />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-white">
+            MCP server {serverRunning ? 'running' : 'stopped'}
+          </p>
+          <p className="text-xs text-gray-400 font-mono break-all">{serverUrl}</p>
         </div>
       </div>
 

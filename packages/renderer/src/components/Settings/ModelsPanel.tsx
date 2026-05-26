@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import {
-  Cpu, CheckCircle2, RefreshCw, HardDrive, MemoryStick,
+  Cpu, CheckCircle2, RefreshCw, HardDrive,
   ChevronRight, Cloud, Plus, Trash2, Lock, Shield, Download, Zap,
 } from 'lucide-react';
 
@@ -40,6 +40,8 @@ interface HardwareInfo {
   gbRam: number;
   recommendation: string;
   recommendedModel?: string;
+  gpuName: string | null;
+  vramGb: number | null;
 }
 
 interface PullProgress {
@@ -391,13 +393,18 @@ export default function ModelsPanel() {
 
       {/* Hardware card */}
       {hardware && (
-        <div className="bg-artha-s2 border border-artha-border rounded-xl p-4 mb-6 flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <MemoryStick size={15} className="text-artha-accent" />
-            <span className="text-sm font-medium text-white">{hardware.gbRam} GB RAM</span>
+        <div className="bg-artha-s2 border border-artha-border rounded-xl p-4 mb-6">
+          {/* GPU · RAM summary line */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Cpu size={15} className="text-artha-accent shrink-0" />
+            <span className="text-sm font-medium text-white">
+              {hardware.gpuName && <>{hardware.gpuName} · </>}
+              {hardware.gbRam} GB RAM
+              {hardware.vramGb ? <> · {hardware.vramGb} GB VRAM</> : null}
+            </span>
           </div>
-          <div className="w-px h-5 bg-artha-border" />
-          <div className="flex items-start gap-2 flex-1">
+          {/* Recommendation */}
+          <div className="flex items-start gap-2 mt-2">
             <HardDrive size={15} className="text-artha-muted mt-0.5 shrink-0" />
             <p className="text-xs text-artha-muted leading-relaxed">
               Recommended: <span className="text-white">{hardware.recommendation}</span>

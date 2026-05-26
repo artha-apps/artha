@@ -108,6 +108,9 @@ const api = {
     removeServer: (id: string) => ipcRenderer.invoke('mcp:removeServer', id),
     getAuditLog: (limit?: number) =>
       ipcRenderer.invoke('mcp:getAuditLog', limit),
+    // Install URIs of every installed MCP server — lets the Marketplace restore
+    // the "Installed" badge from the DB instead of in-memory state.
+    listInstalledIds: () => ipcRenderer.invoke('mcp:listInstalledIds') as Promise<string[]>,
   },
 
   // ── Skills ───────────────────────────────────────────────────────────────
@@ -192,6 +195,21 @@ const api = {
       ipcRenderer.invoke('ide:generateMcpConfig', opts) as Promise<string>,
     pickProjectAndGenerate: (ide: 'vscode' | 'cursor', port: number) =>
       ipcRenderer.invoke('ide:pickProjectAndGenerate', ide, port) as Promise<string | null>,
+    // Local MCP HTTP bridge the generated editor configs point at. Start is
+    // idempotent; both return the current running status + URL.
+    startMcpServer: () =>
+      ipcRenderer.invoke('ide:startMcpServer') as Promise<{ running: boolean; url: string }>,
+    stopMcpServer: () =>
+      ipcRenderer.invoke('ide:stopMcpServer') as Promise<{ running: boolean }>,
+  },
+
+  // ── System ───────────────────────────────────────────────────────────────
+  // Probes for optional native dependencies the app shells out to.
+  system: {
+    // PDF reading needs Poppler's `pdftoppm`; the chat composer checks this
+    // before opening the PDF picker so it can show an install hint.
+    checkPoppler: () =>
+      ipcRenderer.invoke('system:checkPoppler') as Promise<{ installed: boolean; path?: string }>,
   },
 
   // ── Router ───────────────────────────────────────────────────────────────

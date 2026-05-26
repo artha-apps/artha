@@ -4,6 +4,7 @@
  */
 import { ipcMain, BrowserWindow, dialog, shell } from 'electron';
 import * as path from 'path';
+import * as http from 'http';
 import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { MCPRegistry } from '../mcp/registry';
@@ -22,11 +23,83 @@ import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 let orchestrator: AgentOrchestrator;
 const ragIndexer = getDefaultRagIndexer();
 
+// ── IDE MCP HTTP server ─────────────────────────────────────────────────────
+// The IDE Integration panel writes editor configs pointing at
+// http://localhost:3847/mcp. This is the server those configs talk to: a tiny
+// HTTP bridge that dispatches { tool, args } POSTs to the MCP registry so an
+// external editor (VS Code / Cursor agent) can call Artha's tools. Bound to
+// loopback only — it's a local bridge, never exposed to the network.
+const IDE_MCP_PORT = 3847;
+let ideMcpServer: http.Server | null = null;
+
+function startIdeMcpServer(): { running: boolean; url: string } {
+  const url = `http://localhost:${IDE_MCP_PORT}/mcp`;
+  // Already running → no-op (idempotent, safe to call repeatedly).
+  if (ideMcpServer) return { running: true, url };
+
+  const server = http.createServer((req, res) => {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (req.method === 'GET' && req.url === '/health') {
+      json(200, { status: 'ok' });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/mcp') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const { tool, args } = JSON.parse(body || '{}') as {
+            tool?: string; args?: Record<string, unknown>;
+          };
+          if (!tool) {
+            json(400, { error: 'Request body must include a "tool" field.' });
+            return;
+          }
+          const result = await MCPRegistry.getInstance().invokeTool(tool, args ?? {});
+          json(200, { result });
+        } catch (err) {
+          json(500, { error: err instanceof Error ? err.message : String(err) });
+        }
+      });
+      return;
+    }
+
+    json(404, { error: 'Not found' });
+  });
+
+  server.on('error', (err) => {
+    console.error('[Artha] IDE MCP server error:', err);
+    ideMcpServer = null;
+  });
+  server.listen(IDE_MCP_PORT, '127.0.0.1', () => {
+    console.log(`[Artha] IDE MCP server listening on ${url}`);
+  });
+  ideMcpServer = server;
+  return { running: true, url };
+}
+
+function stopIdeMcpServer(): { running: boolean } {
+  if (ideMcpServer) {
+    ideMcpServer.close();
+    ideMcpServer = null;
+  }
+  return { running: false };
+}
+
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
 
   // Load all enabled MCP servers at startup
   MCPRegistry.getInstance().loadFromDatabase().catch(console.error);
+
+  // Start the IDE MCP HTTP bridge so editor configs (.vscode/.cursor mcp.json
+  // pointing at localhost:3847/mcp) have a live server to reach immediately.
+  startIdeMcpServer();
 
   // One-time migration: older sessions were stored as "New Chat" with no
   // auto-title; back-fill their title from the first user message so the
@@ -133,6 +206,22 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return pages.length > 0 ? { pdfName, pages } : null;
   });
 
+  // PDF reading depends on Poppler's `pdftoppm`. The renderer calls this before
+  // opening the PDF picker so it can surface an install hint instead of silently
+  // failing when Poppler is missing.
+  ipcMain.handle('system:checkPoppler', async () => {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync('which', ['pdftoppm']);
+      const found = stdout.trim();
+      return found ? { installed: true, path: found } : { installed: false };
+    } catch {
+      return { installed: false };
+    }
+  });
+
   // Update the DB *before* signalling the orchestrator so that even if the
   // ReAct loop hasn't yet observed the cancel flag, the persisted state is
   // already correct for any UI re-render.
@@ -200,9 +289,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('llm:detectHardware', async () => {
+  ipcMain.handle('llm:detectHardware', async (): Promise<{
+    gbRam: number;
+    recommendation: string;
+    recommendedModel: string;
+    gpuName: string | null;
+    vramGb: number | null;
+  }> => {
     try {
-      // Basic RAM detection — real GPU detection requires native bindings (Phase 2)
       const totalMem = (await import('os')).totalmem();
       const gbRam = Math.round(totalMem / 1024 / 1024 / 1024);
       const recommendation = gbRam >= 32 ? 'Q8 or F16 models' : gbRam >= 16 ? 'Q8 models (8B)' : 'Q4 models (3B-8B)';
@@ -213,9 +307,60 @@ export function registerIpcHandlers(window: BrowserWindow): void {
         : gbRam >= 16
           ? 'qwen2.5:7b-instruct-q4_K_M'
           : 'llama3.2:3b-instruct-q4_K_M';
-      return { gbRam, recommendation, recommendedModel };
+
+      // ── GPU detection ──────────────────────────────────────────────────────
+      // Best-effort: shell out to the platform's introspection tool. Any failure
+      // (tool missing, parse error, no GPU) degrades to nulls rather than
+      // breaking the whole hardware probe.
+      let gpuName: string | null = null;
+      let vramGb: number | null = null;
+      try {
+        const { execFile } = await import('child_process');
+        const { promisify } = await import('util');
+        const execFileAsync = promisify(execFile);
+
+        if (process.platform === 'darwin') {
+          const { stdout } = await execFileAsync('system_profiler', ['SPDisplaysDataType', '-json']);
+          const parsed = JSON.parse(stdout) as {
+            SPDisplaysDataType?: {
+              _name?: string; spdisplays_vram?: string; sppci_model?: string;
+              spdisplays_ndrvs?: { _name?: string }[];
+            }[];
+          };
+          const gpu = parsed.SPDisplaysDataType?.[0];
+          if (gpu) {
+            // On Apple Silicon the chip name lives on the top entry
+            // (sppci_model / _name); spdisplays_ndrvs[0]._name is the fallback.
+            gpuName = gpu.sppci_model ?? gpu._name ?? gpu.spdisplays_ndrvs?.[0]?._name ?? null;
+            // spdisplays_vram looks like "18 GB" or "1536 MB" — normalise to GB.
+            if (gpu.spdisplays_vram) {
+              const m = gpu.spdisplays_vram.match(/([\d.]+)\s*(GB|MB)/i);
+              if (m) {
+                const val = parseFloat(m[1]);
+                vramGb = m[2].toUpperCase() === 'MB' ? Math.round(val / 1024) : Math.round(val);
+              }
+            }
+          }
+        } else if (process.platform === 'win32' || process.platform === 'linux') {
+          const { stdout } = await execFileAsync('nvidia-smi', [
+            '--query-gpu=name,memory.total', '--format=csv,noheader,nounits',
+          ]);
+          const firstLine = stdout.split('\n').map(l => l.trim()).filter(Boolean)[0];
+          if (firstLine) {
+            const [name, memMb] = firstLine.split(',').map(s => s.trim());
+            gpuName = name || null;
+            const mb = Number(memMb);
+            if (Number.isFinite(mb) && mb > 0) vramGb = Math.round(mb / 1024);
+          }
+        }
+      } catch {
+        gpuName = null;
+        vramGb = null;
+      }
+
+      return { gbRam, recommendation, recommendedModel, gpuName, vramGb };
     } catch {
-      return { gbRam: 8, recommendation: 'Q4 models (3B-8B)', recommendedModel: 'llama3.2:3b-instruct-q4_K_M' };
+      return { gbRam: 8, recommendation: 'Q4 models (3B-8B)', recommendedModel: 'llama3.2:3b-instruct-q4_K_M', gpuName: null, vramGb: null };
     }
   });
 
@@ -373,6 +518,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('mcp:removeServer', (_e, id: string) => {
     getDb().prepare(`DELETE FROM tools WHERE tool_id=?`).run(id);
     return true;
+  });
+
+  // Installed MCP servers persist in the `tools` table keyed by their install
+  // URI (mcp_server_uri). The Marketplace uses this to restore the "Installed"
+  // badge across panel navigations instead of relying on in-memory state.
+  ipcMain.handle('mcp:listInstalledIds', () => {
+    const rows = getDb().prepare(
+      `SELECT mcp_server_uri FROM tools WHERE mcp_server_uri IS NOT NULL`
+    ).all() as { mcp_server_uri: string }[];
+    return rows.map(r => r.mcp_server_uri);
   });
 
   ipcMain.handle('mcp:getAuditLog', (_e, limit = 200) => {
@@ -831,4 +986,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     await shell.showItemInFolder(confFile);
     return confFile;
   });
+
+  // Start / stop the local MCP HTTP bridge that editor configs point at. Start
+  // is idempotent (no-op if already running); both return the current status so
+  // the panel can render its running indicator.
+  ipcMain.handle('ide:startMcpServer', () => startIdeMcpServer());
+  ipcMain.handle('ide:stopMcpServer', () => stopIdeMcpServer());
 }

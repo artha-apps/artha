@@ -5,7 +5,7 @@
  * with category filtering and search. One-click install delegates to the
  * already-wired `mcp:installServer` IPC channel, then refreshes the MCP panel.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ExternalLink, Download, Check, Loader } from 'lucide-react';
 
 // ── Catalog ──────────────────────────────────────────────────────────────────
@@ -63,6 +63,20 @@ export default function MarketplacePanel() {
   const [installed, setInstalled] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
+  // Installed state is persisted in the DB (the `tools` table), keyed by install
+  // URI. Map those URIs back to catalog ids so the badges survive navigation.
+  const refreshInstalled = async () => {
+    try {
+      const uris = await window.artha.mcp.listInstalledIds();
+      const ids = CATALOG.filter(e => uris.includes(e.installUri)).map(e => e.id);
+      setInstalled(new Set(ids));
+    } catch {
+      /* leave whatever we have */
+    }
+  };
+
+  useEffect(() => { refreshInstalled(); }, []);
+
   const filtered = CATALOG.filter(e => {
     const matchCat = category === 'all' || e.category === category;
     const q = query.toLowerCase();
@@ -75,7 +89,8 @@ export default function MarketplacePanel() {
     setInstalling(entry.id);
     try {
       await window.artha.mcp.installServer(entry.installUri);
-      setInstalled(prev => new Set([...prev, entry.id]));
+      // Re-fetch from the DB so the Set stays in sync with persisted state.
+      await refreshInstalled();
     } catch (err) {
       setError(`Failed to install ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {

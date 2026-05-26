@@ -101,6 +101,7 @@ export default function ChatWindow() {
   const [ragIndexes, setRagIndexes] = useState<{ name: string; doc_count: number }[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const [isListening, setIsListening] = useState(false);
+  const [popplerWarning, setPopplerWarning] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -181,6 +182,14 @@ export default function ChatWindow() {
   };
 
   const attachPdf = async () => {
+    // PDF rendering shells out to Poppler's pdftoppm. If it's missing the picker
+    // would silently fail, so surface an install hint instead of opening it.
+    const { installed } = await window.artha.system.checkPoppler();
+    if (!installed) {
+      setPopplerWarning(true);
+      return;
+    }
+    setPopplerWarning(false);
     const result = await window.artha.agent.pickPdf();
     if (!result) return;
     // Each rendered PDF page becomes a separate image attachment
@@ -436,6 +445,24 @@ export default function ChatWindow() {
             <div className="flex items-center gap-1.5 mb-2 w-fit px-2.5 py-1 rounded-full bg-artha-accent/15 border border-artha-accent/30 text-xs text-artha-accent">
               <span className="leading-none">{activeSkill.icon}</span>
               <span className="font-medium">Skill: {activeSkill.name}</span>
+            </div>
+          )}
+
+          {/* Poppler-missing warning — PDF attach needs pdftoppm installed */}
+          {popplerWarning && (
+            <div className="flex items-start gap-2 mb-2 px-3 py-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-sm text-red-400">
+              <FileText size={14} className="shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                Poppler is required for PDF reading. Install it with:{' '}
+                <code className="bg-red-500/10 px-1.5 py-0.5 rounded font-mono text-xs">brew install poppler</code>
+              </div>
+              <button
+                onClick={() => setPopplerWarning(false)}
+                className="shrink-0 text-red-400/70 hover:text-red-400 transition-colors"
+                title="Dismiss"
+              >
+                <X size={13} />
+              </button>
             </div>
           )}
 
