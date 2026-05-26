@@ -264,12 +264,13 @@ export default function ModelsPanel() {
   useEffect(() => {
     const unsub = window.artha.llm.onPullProgress((p: PullProgress) => {
       setPulling(prev => ({ ...prev, [p.name]: p }));
-      // On success, refresh the installed list and clear progress after a moment
+      // On success, refresh the installed list, clear progress, and switch to Installed tab
       if (p.status === 'success') {
         setTimeout(() => {
           setPulling(prev => { const n = { ...prev }; delete n[p.name]; return n; });
+          setTab('installed');
           load();
-        }, 1500);
+        }, 1200);
       }
     });
     return unsub;
