@@ -1,9 +1,13 @@
 /**
  * ModelsPanel — browse available Ollama models, see hardware info,
- * and set the active model with one click.
+ * and set the active model with one click. Includes a curated catalog
+ * so users can pull new models directly from the UI.
  */
 import { useEffect, useState } from 'react';
-import { Cpu, CheckCircle2, RefreshCw, HardDrive, MemoryStick, ChevronRight, Cloud, Plus, Trash2, Lock, Shield } from 'lucide-react';
+import {
+  Cpu, CheckCircle2, RefreshCw, HardDrive, MemoryStick,
+  ChevronRight, Cloud, Plus, Trash2, Lock, Shield, Download, Zap,
+} from 'lucide-react';
 
 /** Subset of Ollama's /api/tags model entry we actually render. */
 interface OllamaModel {
@@ -35,7 +39,119 @@ const CLOUD_PROVIDERS: Record<string, { label: string; baseUrl: string; modelHin
 interface HardwareInfo {
   gbRam: number;
   recommendation: string;
+  recommendedModel?: string;
 }
+
+interface PullProgress {
+  name: string;
+  status: string;
+  percent?: number;
+  error?: string;
+}
+
+/** Curated catalog of popular Ollama models users can pull in one click. */
+const MODEL_CATALOG = [
+  {
+    tag: 'llama3.2:3b',
+    label: 'Llama 3.2 3B',
+    family: 'Llama',
+    size: '~2 GB',
+    ramRequired: 4,
+    speed: 'Fast',
+    description: 'Meta\'s lightweight model. Great for quick tasks on any Mac.',
+    badge: 'Recommended for most',
+  },
+  {
+    tag: 'llama3.2:1b',
+    label: 'Llama 3.2 1B',
+    family: 'Llama',
+    size: '~0.8 GB',
+    ramRequired: 2,
+    speed: 'Very fast',
+    description: 'Ultra-lightweight. Instant responses, ideal for low-RAM machines.',
+    badge: null,
+  },
+  {
+    tag: 'qwen2.5:7b',
+    label: 'Qwen 2.5 7B',
+    family: 'Qwen',
+    size: '~4.7 GB',
+    ramRequired: 8,
+    speed: 'Medium',
+    description: 'Best tool-calling accuracy. The default Artha model for agentic tasks.',
+    badge: 'Best for agents',
+  },
+  {
+    tag: 'qwen2.5:14b',
+    label: 'Qwen 2.5 14B',
+    family: 'Qwen',
+    size: '~9 GB',
+    ramRequired: 16,
+    speed: 'Medium',
+    description: 'Stronger reasoning and tool use. Needs 16 GB+ RAM.',
+    badge: null,
+  },
+  {
+    tag: 'mistral:7b',
+    label: 'Mistral 7B',
+    family: 'Mistral',
+    size: '~4.1 GB',
+    ramRequired: 8,
+    speed: 'Medium',
+    description: 'Strong general-purpose European model. Great instruction following.',
+    badge: null,
+  },
+  {
+    tag: 'gemma3:4b',
+    label: 'Gemma 3 4B',
+    family: 'Gemma',
+    size: '~3.3 GB',
+    ramRequired: 6,
+    speed: 'Fast',
+    description: 'Google\'s efficient model. Good balance of speed and capability.',
+    badge: null,
+  },
+  {
+    tag: 'phi4:14b',
+    label: 'Phi 4 14B',
+    family: 'Phi',
+    size: '~8.9 GB',
+    ramRequired: 16,
+    speed: 'Medium',
+    description: 'Microsoft\'s reasoning-focused model. Excellent at structured tasks.',
+    badge: null,
+  },
+  {
+    tag: 'deepseek-r1:7b',
+    label: 'DeepSeek R1 7B',
+    family: 'DeepSeek',
+    size: '~4.7 GB',
+    ramRequired: 8,
+    speed: 'Medium',
+    description: 'Chain-of-thought reasoning model. Shows its thinking process.',
+    badge: null,
+  },
+  {
+    tag: 'codellama:7b',
+    label: 'CodeLlama 7B',
+    family: 'CodeLlama',
+    size: '~3.8 GB',
+    ramRequired: 8,
+    speed: 'Medium',
+    description: 'Specialized for coding tasks. Use for programming workflows.',
+    badge: null,
+  },
+  {
+    tag: 'nomic-embed-text',
+    label: 'Nomic Embed Text',
+    family: 'Nomic',
+    size: '~0.3 GB',
+    ramRequired: 2,
+    speed: 'Very fast',
+    description: 'Embedding model for RAG and semantic search. Not a chat model.',
+    badge: 'For RAG',
+  },
+];
 
 /** Bytes → human-readable size for the model card. */
 function formatSize(bytes: number): string {
@@ -43,8 +159,6 @@ function formatSize(bytes: number): string {
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 }
 
-/** Infer the model family from its Ollama tag name. Drives the colored badge
- *  in the model card. Returns a generic "Model" label for anything unknown. */
 function modelFamily(name: string): string {
   const n = name.toLowerCase();
   if (n.includes('qwen')) return 'Qwen';
@@ -67,6 +181,7 @@ function familyColor(family: string): string {
     Phi: 'text-pink-400 bg-pink-400/10',
     DeepSeek: 'text-cyan-400 bg-cyan-400/10',
     CodeLlama: 'text-yellow-400 bg-yellow-400/10',
+    Nomic: 'text-green-400 bg-green-400/10',
   };
   return map[family] ?? 'text-artha-muted bg-white/5';
 }
@@ -79,13 +194,14 @@ export default function ModelsPanel() {
   const [switching, setSwitching] = useState<string | null>(null);
   const [ollamaOnline, setOllamaOnline] = useState(true);
 
-  // ── Context window state ──────────────────────────────────────────────────
-  // Tracks the context window setting for the currently-active configured model.
-  // Saved on blur / Enter so the user doesn't have to click a separate button.
+  // Pull progress — keyed by model tag
+  const [pulling, setPulling] = useState<Record<string, PullProgress>>({});
+
+  // Context window state
   const [ctxWindow, setCtxWindow] = useState<number>(4096);
   const [ctxSaving, setCtxSaving] = useState(false);
 
-  // ── BYOK cloud state ──────────────────────────────────────────────────────
+  // BYOK cloud state
   const [configured, setConfigured] = useState<ConfiguredModel[]>([]);
   const [showCloudForm, setShowCloudForm] = useState(false);
   const [cloudProvider, setCloudProvider] = useState<keyof typeof CLOUD_PROVIDERS>('openai');
@@ -95,13 +211,16 @@ export default function ModelsPanel() {
   const [savingCloud, setSavingCloud] = useState(false);
   const [cloudError, setCloudError] = useState('');
 
-  /** Pull model list + hardware info + active model in parallel.
+  // Catalog tab: 'installed' | 'browse'
+  const [tab, setTab] = useState<'installed' | 'browse'>('installed');
+
+  /** Pull model list + hardware info + active model.
    *  Ollama reachability is checked independently so a hardware-detection
    *  failure never falsely shows the "Ollama not running" banner. */
   const load = async () => {
     setLoading(true);
 
-    // ── 1. Ollama reachability — checked on its own so nothing else poisons it ──
+    // 1. Ollama reachability — checked on its own
     try {
       const online = await (window.artha.llm.checkOllama() as Promise<boolean>);
       setOllamaOnline(online);
@@ -109,7 +228,7 @@ export default function ModelsPanel() {
       setOllamaOnline(false);
     }
 
-    // ── 2. Configured (saved) models — cloud BYOK must show even when Ollama is offline ──
+    // 2. Configured (saved) models — cloud BYOK must show even when Ollama is offline
     window.artha.llm.listConfigured().then(c => {
       const list = c as ConfiguredModel[];
       setConfigured(list);
@@ -117,7 +236,7 @@ export default function ModelsPanel() {
       if (activeRow) setCtxWindow(activeRow.context_window ?? 4096);
     }).catch(() => {});
 
-    // ── 3. Model list + hardware + active model — failures here don't affect the banner ──
+    // 3. Model list + hardware + active model
     try {
       const [modelList, hw, active] = await Promise.all([
         window.artha.llm.listModels() as Promise<OllamaModel[]>,
@@ -126,26 +245,56 @@ export default function ModelsPanel() {
       ]);
       setModels(modelList);
       setHardware(hw);
-
-      // If no model is marked active in DB, default-highlight qwen2.5:7b
-      // (matches the LLM client fallback) — or the first available model
       if (!active && modelList.length > 0) {
         const preferred = modelList.find(m => m.name.startsWith('qwen2.5')) ?? modelList[0];
         setActiveModelState(preferred.name);
       } else {
         setActiveModelState(active);
       }
+      // Auto-switch to browse tab when no models installed
+      if (modelList.length === 0) setTab('browse');
     } catch {
-      // Model list / hardware failures are silent — banner is driven by checkOllama only
+      // Silent — banner is driven by checkOllama only
     } finally {
       setLoading(false);
     }
   };
 
+  // Subscribe to pull progress events
+  useEffect(() => {
+    const unsub = window.artha.llm.onPullProgress((p: PullProgress) => {
+      setPulling(prev => ({ ...prev, [p.name]: p }));
+      // On success, refresh the installed list and clear progress after a moment
+      if (p.status === 'success') {
+        setTimeout(() => {
+          setPulling(prev => { const n = { ...prev }; delete n[p.name]; return n; });
+          load();
+        }, 1500);
+      }
+    });
+    return unsub;
+  }, []);
+
   useEffect(() => { load(); }, []);
 
-  /** Cloud models live in the same table but with a non-local base_url. */
-  const cloudModels = configured.filter(m => !m.base_url.includes('localhost') && !m.base_url.includes('127.0.0.1'));
+  const cloudModels = configured.filter(
+    m => !m.base_url.includes('localhost') && !m.base_url.includes('127.0.0.1')
+  );
+
+  const installedTags = new Set(models.map(m => m.name));
+
+  /** Pull a model from the catalog using the streaming endpoint. */
+  const pullModel = async (tag: string) => {
+    setPulling(prev => ({ ...prev, [tag]: { name: tag, status: 'starting', percent: 0 } }));
+    try {
+      await window.artha.llm.pullModelStream(tag);
+    } catch (err) {
+      setPulling(prev => ({
+        ...prev,
+        [tag]: { name: tag, status: 'error', error: err instanceof Error ? err.message : 'Pull failed' },
+      }));
+    }
+  };
 
   const pickProvider = (p: keyof typeof CLOUD_PROVIDERS) => {
     setCloudProvider(p);
@@ -203,15 +352,12 @@ export default function ModelsPanel() {
     await load();
   };
 
-  /** Persist the new active model and reflect it in local state. Guards against
-   *  double-click races via the `switching` flag. */
   const switchModel = async (name: string) => {
     if (switching) return;
     setSwitching(name);
     try {
       await window.artha.llm.setActiveModel(name);
       setActiveModelState(name);
-      // Reload configured list so context_window is synced for the newly-active row.
       const list = await window.artha.llm.listConfigured() as ConfiguredModel[];
       setConfigured(list);
       const nowActive = list.find(m => m.is_active);
@@ -231,7 +377,7 @@ export default function ModelsPanel() {
           </div>
           <div>
             <h1 className="text-base font-semibold text-white">Models</h1>
-            <p className="text-xs text-artha-muted">Manage your local Ollama models</p>
+            <p className="text-xs text-artha-muted">Local Ollama models + cloud API keys</p>
           </div>
         </div>
         <button onClick={load} disabled={loading}
@@ -260,11 +406,13 @@ export default function ModelsPanel() {
       {/* Ollama offline warning */}
       {!ollamaOnline && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-sm text-red-400">
-          Ollama is not running. Start it with <code className="bg-red-500/10 px-1.5 py-0.5 rounded font-mono text-xs">ollama serve</code> then refresh.
+          Ollama is not running. Start it with{' '}
+          <code className="bg-red-500/10 px-1.5 py-0.5 rounded font-mono text-xs">ollama serve</code>{' '}
+          then refresh. Or use a cloud model below.
         </div>
       )}
 
-      {/* Active model badge + context window config */}
+      {/* Active model badge + context window */}
       {activeModel && (
         <div className="mb-5 rounded-xl border border-white/10 bg-white/3 p-4 space-y-3">
           <div className="flex items-center gap-2">
@@ -272,7 +420,6 @@ export default function ModelsPanel() {
             <span className="text-xs text-artha-muted">Active model: </span>
             <code className="text-xs text-green-400 font-mono truncate">{activeModel}</code>
           </div>
-          {/* Context window slider — controls max_tokens sent to the model */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs text-artha-muted">Context window</label>
@@ -293,95 +440,228 @@ export default function ModelsPanel() {
               </div>
             </div>
             <input
-              type="range"
-              min={512}
-              max={128000}
-              step={512}
-              value={ctxWindow}
+              type="range" min={512} max={128000} step={512} value={ctxWindow}
               onChange={e => setCtxWindow(Number(e.target.value))}
-              onMouseUp={saveContextWindow}
-              onTouchEnd={saveContextWindow}
+              onMouseUp={saveContextWindow} onTouchEnd={saveContextWindow}
               className="w-full h-1 rounded-full bg-white/10 accent-artha-accent cursor-pointer"
             />
             <div className="flex justify-between text-[10px] text-artha-muted/60">
-              <span>512</span>
-              <span>8 k</span>
-              <span>32 k</span>
-              <span>128 k</span>
+              <span>512</span><span>8 k</span><span>32 k</span><span>128 k</span>
             </div>
           </div>
         </div>
       )}
 
-      {/* Model list */}
-      {loading ? (
+      {/* ── Tab bar: Installed / Browse ── */}
+      <div className="flex gap-1 mb-4 p-1 bg-artha-s2 border border-artha-border rounded-xl">
+        <button
+          onClick={() => setTab('installed')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            tab === 'installed' ? 'bg-artha-accent/20 text-white' : 'text-artha-muted hover:text-white'
+          }`}
+        >
+          <CheckCircle2 size={12} />
+          Installed
+          {models.length > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-artha-accent/20 text-artha-accent text-[10px] font-semibold">
+              {models.length}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setTab('browse')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            tab === 'browse' ? 'bg-artha-accent/20 text-white' : 'text-artha-muted hover:text-white'
+          }`}
+        >
+          <Download size={12} />
+          Browse &amp; Install
+        </button>
+      </div>
+
+      {/* ── Installed models ── */}
+      {tab === 'installed' && (
+        loading ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="h-16 bg-artha-s2 border border-artha-border rounded-xl animate-pulse" />
+            ))}
+          </div>
+        ) : models.length === 0 ? (
+          <div className="text-center py-12 text-artha-muted">
+            <Cpu size={32} className="mx-auto mb-3 opacity-30" />
+            <p className="text-sm font-medium text-white mb-1">No models installed yet</p>
+            <p className="text-xs mb-4">Switch to the Browse tab to pull your first model.</p>
+            <button
+              onClick={() => setTab('browse')}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent/20 hover:bg-artha-accent/30 text-artha-accent text-xs font-medium transition-colors"
+            >
+              <Download size={13} /> Browse models
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {models.map((model) => {
+              const family = modelFamily(model.name);
+              const isActive = model.name === activeModel;
+              const isLoading = switching === model.name;
+              return (
+                <button
+                  key={model.name}
+                  onClick={() => switchModel(model.name)}
+                  disabled={isActive || !!switching}
+                  className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border text-left transition-all
+                    ${isActive
+                      ? 'bg-artha-accent/10 border-artha-accent/40 cursor-default'
+                      : 'bg-artha-s2 border-artha-border hover:border-artha-accent/30 hover:bg-artha-accent/5 disabled:opacity-50 disabled:cursor-wait'
+                    }`}
+                >
+                  <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-md ${familyColor(family)}`}>
+                    {family}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-white truncate">{model.name}</p>
+                    {model.details?.parameter_size && (
+                      <p className="text-xs text-artha-muted mt-0.5">
+                        {model.details.parameter_size}
+                        {model.details.quantization_level && ` · ${model.details.quantization_level}`}
+                      </p>
+                    )}
+                  </div>
+                  <span className="text-xs text-artha-muted shrink-0">{formatSize(model.size)}</span>
+                  <div className="shrink-0 w-5 flex items-center justify-center">
+                    {isActive ? (
+                      <CheckCircle2 size={16} className="text-artha-accent" />
+                    ) : isLoading ? (
+                      <RefreshCw size={14} className="text-artha-muted animate-spin" />
+                    ) : (
+                      <ChevronRight size={14} className="text-artha-muted" />
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )
+      )}
+
+      {/* ── Browse & Install catalog ── */}
+      {tab === 'browse' && (
         <div className="space-y-3">
-          {[1, 2, 3].map(i => (
-            <div key={i} className="h-16 bg-artha-s2 border border-artha-border rounded-xl animate-pulse" />
-          ))}
-        </div>
-      ) : models.length === 0 ? (
-        <div className="text-center py-16 text-artha-muted">
-          <Cpu size={32} className="mx-auto mb-3 opacity-30" />
-          <p className="text-sm font-medium text-white mb-1">No models installed</p>
-          <p className="text-xs">Run <code className="bg-white/5 px-1.5 py-0.5 rounded font-mono">ollama pull qwen2.5:7b</code> to get started</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {models.map((model) => {
-            const family = modelFamily(model.name);
-            const isActive = model.name === activeModel;
-            const isLoading = switching === model.name;
+          {MODEL_CATALOG.map((entry) => {
+            const isInstalled = installedTags.has(entry.tag);
+            const isActive = entry.tag === activeModel || entry.tag.split(':')[0] === activeModel?.split(':')[0];
+            const progress = pulling[entry.tag];
+            const isPulling = !!progress && progress.status !== 'success' && progress.status !== 'error';
+            const fitsRam = !hardware || hardware.gbRam >= entry.ramRequired;
 
             return (
-              <button
-                key={model.name}
-                onClick={() => switchModel(model.name)}
-                disabled={isActive || !!switching}
-                className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border text-left transition-all
-                  ${isActive
-                    ? 'bg-artha-accent/10 border-artha-accent/40 cursor-default'
-                    : 'bg-artha-s2 border-artha-border hover:border-artha-accent/30 hover:bg-artha-accent/5 disabled:opacity-50 disabled:cursor-wait'
-                  }`}
+              <div
+                key={entry.tag}
+                className={`rounded-xl border p-4 transition-all ${
+                  isInstalled && isActive
+                    ? 'bg-artha-accent/10 border-artha-accent/40'
+                    : isInstalled
+                    ? 'bg-artha-s2 border-artha-accent/20'
+                    : 'bg-artha-s2 border-artha-border'
+                }`}
               >
-                {/* Family badge */}
-                <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-md ${familyColor(family)}`}>
-                  {family}
-                </span>
+                <div className="flex items-start gap-3">
+                  {/* Family badge */}
+                  <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-md mt-0.5 ${familyColor(entry.family)}`}>
+                    {entry.family}
+                  </span>
 
-                {/* Name + details */}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-white truncate">{model.name}</p>
-                  {model.details?.parameter_size && (
-                    <p className="text-xs text-artha-muted mt-0.5">
-                      {model.details.parameter_size}
-                      {model.details.quantization_level && ` · ${model.details.quantization_level}`}
-                    </p>
-                  )}
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium text-white">{entry.label}</p>
+                      {entry.badge && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-artha-accent/20 text-artha-accent font-medium">
+                          {entry.badge}
+                        </span>
+                      )}
+                      {!fitsRam && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400 font-medium">
+                          Needs {entry.ramRequired} GB RAM
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-artha-muted mt-0.5 leading-relaxed">{entry.description}</p>
+                    <div className="flex items-center gap-3 mt-1.5">
+                      <span className="text-[11px] text-artha-muted">{entry.size}</span>
+                      <span className="text-artha-border">·</span>
+                      <span className="flex items-center gap-1 text-[11px] text-artha-muted">
+                        <Zap size={10} /> {entry.speed}
+                      </span>
+                      <span className="text-artha-border">·</span>
+                      <code className="text-[10px] text-artha-muted font-mono">{entry.tag}</code>
+                    </div>
+                  </div>
+
+                  {/* Action */}
+                  <div className="shrink-0 flex flex-col items-end gap-1.5">
+                    {isInstalled ? (
+                      isActive ? (
+                        <span className="flex items-center gap-1 text-xs text-artha-accent font-medium">
+                          <CheckCircle2 size={13} /> Active
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => switchModel(entry.tag)}
+                          disabled={!!switching}
+                          className="px-3 py-1.5 rounded-lg border border-artha-accent/30 text-artha-accent hover:bg-artha-accent/10 text-xs font-medium transition-colors disabled:opacity-40"
+                        >
+                          Use this
+                        </button>
+                      )
+                    ) : isPulling ? (
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="flex items-center gap-1 text-xs text-artha-muted">
+                          <RefreshCw size={11} className="animate-spin" />
+                          {progress.status === 'starting' ? 'Starting…' : `${progress.percent ?? 0}%`}
+                        </span>
+                        {typeof progress.percent === 'number' && (
+                          <div className="w-24 h-1 rounded-full bg-white/10">
+                            <div
+                              className="h-1 rounded-full bg-artha-accent transition-all"
+                              style={{ width: `${progress.percent}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ) : progress?.status === 'error' ? (
+                      <button
+                        onClick={() => pullModel(entry.tag)}
+                        className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs font-medium transition-colors"
+                      >
+                        Retry
+                      </button>
+                    ) : progress?.status === 'success' ? (
+                      <span className="flex items-center gap-1 text-xs text-green-400">
+                        <CheckCircle2 size={13} /> Installed
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => pullModel(entry.tag)}
+                        disabled={!ollamaOnline}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent/15 hover:bg-artha-accent/25 disabled:opacity-40 disabled:cursor-not-allowed text-artha-accent text-xs font-medium transition-colors"
+                      >
+                        <Download size={12} /> Pull
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                {/* Size */}
-                <span className="text-xs text-artha-muted shrink-0">{formatSize(model.size)}</span>
-
-                {/* Status indicator */}
-                <div className="shrink-0 w-5 flex items-center justify-center">
-                  {isActive ? (
-                    <CheckCircle2 size={16} className="text-artha-accent" />
-                  ) : isLoading ? (
-                    <RefreshCw size={14} className="text-artha-muted animate-spin" />
-                  ) : (
-                    <ChevronRight size={14} className="text-artha-muted opacity-0 group-hover:opacity-100" />
-                  )}
-                </div>
-              </button>
+                {/* Error message */}
+                {progress?.status === 'error' && progress.error && (
+                  <p className="mt-2 text-xs text-red-400 pl-14">{progress.error}</p>
+                )}
+              </div>
             );
           })}
         </div>
       )}
-
-      <p className="text-xs text-artha-muted text-center mt-8">
-        Pull new models via terminal: <code className="bg-white/5 px-1.5 py-0.5 rounded font-mono">ollama pull &lt;model-name&gt;</code>
-      </p>
 
       {/* ── Cloud models (BYOK) ── */}
       <section className="mt-10 pt-6 border-t border-artha-border">
@@ -448,7 +728,9 @@ export default function ModelsPanel() {
               {(Object.keys(CLOUD_PROVIDERS) as (keyof typeof CLOUD_PROVIDERS)[]).map(p => (
                 <button key={p} onClick={() => pickProvider(p)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    cloudProvider === p ? 'bg-artha-accent/20 text-white border border-artha-accent/30' : 'bg-artha-surface border border-artha-border text-artha-muted hover:text-white'
+                    cloudProvider === p
+                      ? 'bg-artha-accent/20 text-white border border-artha-accent/30'
+                      : 'bg-artha-surface border border-artha-border text-artha-muted hover:text-white'
                   }`}>
                   {CLOUD_PROVIDERS[p].label}
                 </button>
@@ -486,7 +768,7 @@ export default function ModelsPanel() {
               <button onClick={saveCloudModel} disabled={savingCloud}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-40 text-sm font-medium transition-colors">
                 {savingCloud ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
-                Save & activate
+                Save &amp; activate
               </button>
               <button onClick={() => { setShowCloudForm(false); setCloudError(''); }}
                 className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-white hover:bg-white/5 transition-colors">
