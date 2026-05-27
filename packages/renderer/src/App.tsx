@@ -28,6 +28,7 @@ import IDEIntegrationPanel from './components/Settings/IDEIntegrationPanel';
 import CloudIntegrationsPanel from './components/Settings/CloudIntegrationsPanel';
 import LANServerPanel from './components/Settings/LANServerPanel';
 import DesktopControlPanel from './components/Settings/DesktopControlPanel';
+import TeamPanel from './components/Settings/TeamPanel';
 import SettingsPanel from './components/Settings/SettingsPanel';
 
 declare global {
@@ -129,6 +130,7 @@ export default function App() {
         {activeView === 'cloud' && <CloudIntegrationsPanel />}
         {activeView === 'lan' && <LANServerPanel />}
         {activeView === 'desktop' && <DesktopControlPanel />}
+        {activeView === 'team' && <TeamPanel />}
         {activeView === 'rag' && <RAGPanel />}
         {activeView === 'settings' && <SettingsPanel />}
       </main>

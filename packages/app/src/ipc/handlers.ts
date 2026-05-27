@@ -92,6 +92,36 @@ function stopIdeMcpServer(): { running: boolean } {
   return { running: false };
 }
 
+// ── LAN API-key auth helper ─────────────────────────────────────────────────
+// The LAN server requires a Bearer token on every request when at least one
+// API key has been registered. We hash incoming tokens with SHA-256 and
+// compare against the stored key_hash — the plaintext key is never persisted.
+function hashApiKey(key: string): string {
+  const { createHash } = require('crypto') as typeof import('crypto');
+  return createHash('sha256').update(key).digest('hex');
+}
+
+function isLanRequestAuthorised(req: http.IncomingMessage): boolean {
+  try {
+    const db = getDb();
+    const keys = db.prepare(`SELECT key_hash FROM api_keys WHERE is_enabled=1`).all() as { key_hash: string }[];
+    // No keys registered → open access (owner hasn't locked down the server yet)
+    if (keys.length === 0) return true;
+    const auth = (req.headers['authorization'] ?? '') as string;
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (!token) return false;
+    const hash = hashApiKey(token);
+    const matched = keys.some(k => k.key_hash === hash);
+    if (matched) {
+      // Best-effort last-used timestamp update
+      try { db.prepare(`UPDATE api_keys SET last_used_at=unixepoch() WHERE key_hash=?`).run(hash); } catch { /* ignore */ }
+    }
+    return matched;
+  } catch {
+    return false; // fail closed
+  }
+}
+
 // ── LAN collaboration server ────────────────────────────────────────────────
 // Exposes Artha's skills + agent over the local network (0.0.0.0:7842) so
 // teammates can hit it from a browser/curl. Distinct from the IDE bridge
@@ -131,8 +161,17 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
     };
     const url = new URL(req.url ?? '/', `http://localhost:${LAN_PORT}`);
 
+    // /health is always public so monitoring tools don't need a key
     if (req.method === 'GET' && url.pathname === '/health') {
-      json(200, { status: 'ok', uptime: process.uptime() });
+      json(200, { status: 'ok', uptime: process.uptime(), auth_required: (() => {
+        try { return (getDb().prepare(`SELECT COUNT(*) AS n FROM api_keys WHERE is_enabled=1`).get() as { n: number }).n > 0; } catch { return false; }
+      })() });
+      return;
+    }
+
+    // All other routes require a valid Bearer token if any keys exist
+    if (!isLanRequestAuthorised(req)) {
+      json(401, { error: 'Unauthorized. Include a valid Bearer token in the Authorization header.' });
       return;
     }
 
@@ -1342,5 +1381,84 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('settings:setDesktopControl', (_e, enabled: boolean) => {
     writeSetting('desktop_control_enabled', !!enabled);
     return true;
+  });
+
+  // ── Team members ──────────────────────────────────────────────────────────
+  // Local team roster used in the Team panel. No auth of its own — the admin
+  // UI is only accessible on the machine running Artha. Remote access is
+  // controlled by LAN API keys (see below).
+  ipcMain.handle('team:listMembers', () => {
+    return getDb().prepare(
+      `SELECT member_id, display_name, email, role, joined_at FROM team_members ORDER BY joined_at ASC`
+    ).all();
+  });
+
+  ipcMain.handle('team:addMember', (_e, m: { displayName: string; email?: string; role?: 'admin' | 'member' }) => {
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO team_members (member_id, display_name, email, role) VALUES (?, ?, ?, ?)`
+    ).run(id, m.displayName.trim(), m.email?.trim() ?? null, m.role ?? 'member');
+    return { member_id: id };
+  });
+
+  ipcMain.handle('team:updateMember', (_e, memberId: string, patch: { displayName?: string; email?: string; role?: 'admin' | 'member' }) => {
+    const db = getDb();
+    if (patch.displayName !== undefined) db.prepare(`UPDATE team_members SET display_name=? WHERE member_id=?`).run(patch.displayName.trim(), memberId);
+    if (patch.email !== undefined) db.prepare(`UPDATE team_members SET email=? WHERE member_id=?`).run(patch.email.trim() || null, memberId);
+    if (patch.role !== undefined) db.prepare(`UPDATE team_members SET role=? WHERE member_id=?`).run(patch.role, memberId);
+    return true;
+  });
+
+  ipcMain.handle('team:removeMember', (_e, memberId: string) => {
+    getDb().prepare(`DELETE FROM team_members WHERE member_id=?`).run(memberId);
+    return true;
+  });
+
+  // ── LAN API keys ──────────────────────────────────────────────────────────
+  // Generate, list, and revoke Bearer tokens for the LAN collaboration server.
+  // The plaintext key is returned ONCE on creation and never stored — only the
+  // SHA-256 hash lives in the DB. Lost keys must be revoked and regenerated.
+  ipcMain.handle('apikeys:list', () => {
+    return getDb().prepare(
+      `SELECT key_id, name, created_at, last_used_at, is_enabled FROM api_keys ORDER BY created_at DESC`
+    ).all();
+  });
+
+  ipcMain.handle('apikeys:create', (_e, name: string): { key_id: string; plaintext: string } => {
+    const db = getDb();
+    const { randomBytes } = require('crypto') as typeof import('crypto');
+    const plaintext = randomBytes(32).toString('base64url'); // 43-char URL-safe token
+    const keyHash = hashApiKey(plaintext);
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO api_keys (key_id, name, key_hash) VALUES (?, ?, ?)`
+    ).run(id, name.trim() || 'API Key', keyHash);
+    return { key_id: id, plaintext };
+  });
+
+  ipcMain.handle('apikeys:toggle', (_e, keyId: string, enabled: boolean) => {
+    getDb().prepare(`UPDATE api_keys SET is_enabled=? WHERE key_id=?`).run(enabled ? 1 : 0, keyId);
+    return true;
+  });
+
+  ipcMain.handle('apikeys:revoke', (_e, keyId: string) => {
+    getDb().prepare(`DELETE FROM api_keys WHERE key_id=?`).run(keyId);
+    return true;
+  });
+
+  // ── Shared memories ───────────────────────────────────────────────────────
+  // Toggle is_shared on a memory entity. Shared memories are injected into LAN
+  // server sessions so remote teammates get the same persistent context.
+  ipcMain.handle('memory:setShared', (_e, entityId: string, shared: boolean) => {
+    getDb().prepare(`UPDATE memory_entities SET is_shared=? WHERE entity_id=?`).run(shared ? 1 : 0, entityId);
+    return true;
+  });
+
+  ipcMain.handle('memory:listShared', () => {
+    return getDb().prepare(
+      `SELECT entity_id, name, entity_type, content, tags_json, is_shared, created_at, updated_at
+       FROM memory_entities WHERE is_shared=1 ORDER BY updated_at DESC`
+    ).all();
   });
 }

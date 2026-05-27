@@ -328,6 +328,35 @@ export async function initDatabase(): Promise<void> {
       created_at    INTEGER DEFAULT (unixepoch())
     );
 
+    -- ── Team members ──────────────────────────────────────────────────────
+    -- Local team roster. Each member has a display name, optional email, and
+    -- a role (admin | member). "admin" can manage members and API keys;
+    -- "member" can query the LAN server but cannot change team settings.
+    -- This table is local-only — no cloud sync. The LAN server uses api_keys
+    -- for authentication; team_members is metadata for the admin UI only.
+    CREATE TABLE IF NOT EXISTS team_members (
+      member_id    TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      display_name TEXT NOT NULL,
+      email        TEXT,
+      role         TEXT NOT NULL DEFAULT 'member'
+                   CHECK(role IN ('admin', 'member')),
+      joined_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    -- ── LAN API keys ──────────────────────────────────────────────────────
+    -- Bearer tokens issued for the LAN collaboration server. The actual key
+    -- is shown to the user once on creation and never stored in plaintext —
+    -- only a SHA-256 hex digest is persisted here. The LAN server hashes
+    -- incoming tokens and compares against key_hash.
+    CREATE TABLE IF NOT EXISTS api_keys (
+      key_id       TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name         TEXT NOT NULL,
+      key_hash     TEXT NOT NULL UNIQUE,
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+      last_used_at INTEGER,
+      is_enabled   INTEGER NOT NULL DEFAULT 1
+    );
+
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
 
@@ -462,6 +491,18 @@ export async function initDatabase(): Promise<void> {
     }
   } catch (err) {
     console.warn('[Artha] memory project_id migration skipped:', err);
+  }
+
+  // Migration: add is_shared flag to memory_entities (team shared memories).
+  // When 1, this memory is injected into LAN server sessions so remote teammates
+  // get the same persistent context as the local user.
+  try {
+    const memCols2 = db.prepare(`PRAGMA table_info(memory_entities)`).all() as { name: string }[];
+    if (memCols2.length && !memCols2.some(c => c.name === 'is_shared')) {
+      db.exec(`ALTER TABLE memory_entities ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0`);
+    }
+  } catch (err) {
+    console.warn('[Artha] memory is_shared migration skipped:', err);
   }
 
   console.log('[Artha] Database initialised at', dbPath);
