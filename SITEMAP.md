@@ -11,6 +11,7 @@
 | `REQUIREMENTS.md` | Living product spec / implementation log |
 | `SITEMAP.md` | This file |
 | `README.md` | Public-facing overview (install, usage, contributing) |
+| `CHANGELOG.md` | Release notes per version (Keep a Changelog + SemVer) |
 | `assets/` | App icons — `icon.icns` (macOS), `icon.ico` (Windows), `icon.png` (Linux) |
 | `.github/workflows/ci.yml` | CI: typecheck + lint + test on push/PR |
 | `.github/workflows/release.yml` | Release: build DMG/EXE/DEB and publish to GitHub Releases on tag push |
