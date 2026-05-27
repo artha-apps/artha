@@ -6,13 +6,11 @@
   "scripts": {
     "dev": "tsc --watch",
     "build": "tsc",
-    "start": "electron .",
-    "postinstall": "electron-rebuild -f -w @nut-tree/nut-js"
+    "start": "electron ."
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.6.0",
-    "@nut-tree/nut-js": "^4.2.0",
     "@types/node-schedule": "^2.1.8",
     "better-sqlite3": "^12.2.0",
     "dockerode": "^5.0.0",
@@ -28,6 +26,9 @@
     "robots-parser": "^3.0.1",
     "uuid": "^14.0.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "optionalDependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
