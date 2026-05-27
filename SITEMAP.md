@@ -46,7 +46,7 @@
 | `src/tools/memory.ts` | `MEMORY_TOOL_SCHEMAS` + `invokeMemoryTool` + `getMemoryContext` — SQLite entity graph |
 | `src/tools/rag.ts` | Retrieval-augmented generation — chunk, embed, vector search over local docs |
 | `src/tools/desktop.ts` | `DESKTOP_TOOL_SCHEMAS` + `invokeDesktopTool` — mouse/keyboard/screenshot via nut-js + desktopCapturer (opt-in) |
-| `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree/nut-js` native dep |
+| `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree-fork/nut-js` optional native dep |
 | **scheduler/** | |
 | `src/scheduler/scheduler.ts` | `SchedulerService` — cron / one-shot task runner via `node-schedule` |
 | **notify.ts** | `sendNotification()` — Electron native notifications with focus-on-click |
