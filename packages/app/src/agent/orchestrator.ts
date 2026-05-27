@@ -22,6 +22,7 @@ import { MCPRegistry, type ToolContext } from '../mcp/registry';
 import { SkillRegistry, type ActiveSkill } from '../skills/registry';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
+import { buildShallowTree } from './folderTree';
 import OpenAI from 'openai';
 import {
   startCitationCollection,
@@ -1014,12 +1015,25 @@ RULES — follow exactly, no exceptions:
 
       let block = `WORKING SCOPE — this chat is restricted to the locations below. ` +
         `You may only read or write files inside them; any path outside is denied. ` +
-        `When the user names a file/folder without an absolute path, resolve it inside these locations.\n`;
+        `When the user names a file/folder without an absolute path, resolve it inside these locations.\n` +
+        `To answer what a folder or app is/does, READ its key files directly (e.g. README.md, ` +
+        `package.json, source files) with fs_read_file — the structure is shown below so you can ` +
+        `pick files without guessing. Use rag_search only for semantic lookup across many files, ` +
+        `and never claim "no information found" before reading the obvious files listed here.\n`;
 
       if (folders.length) {
         block += `\nFOLDERS:\n`;
         for (const f of folders) {
-          block += `- ${f.path}${f.rag_index_id ? ' (indexed — use rag_search to find relevant files here, and cite filenames)' : ''}\n`;
+          const idx = f.rag_index_id
+            ? db.prepare(`SELECT doc_count FROM rag_indexes WHERE index_id=?`).get(f.rag_index_id) as { doc_count: number } | undefined
+            : undefined;
+          const chunks = idx?.doc_count ?? 0;
+          const status = chunks > 0
+            ? ` (semantic index ready: ${chunks} chunks — rag_search works here)`
+            : ` (semantic index not ready yet — read files directly with fs_read_file)`;
+          block += `- ${f.path}${status}\n`;
+          const tree = buildShallowTree(f.path);
+          if (tree) block += `  Contents:\n${tree}\n`;
         }
         block += `Save any files you generate into ${folders[0].path}.\n`;
       }
