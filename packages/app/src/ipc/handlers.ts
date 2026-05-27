@@ -16,6 +16,7 @@ import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
+import { recomputePrimaryProject } from '../db/scopes';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
@@ -439,66 +440,102 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     });
   });
 
-  // ── Projects ─────────────────────────────────────────────────────────────
-  // A project is a working folder that scopes its chat sessions and gives the
-  // agent durable context (root path + optional ARTHA.md, injected by the
-  // orchestrator). Creating one opens a folder picker; the folder's basename
-  // becomes the default project name.
-  ipcMain.handle('projects:list', () => {
-    return getDb().prepare(`SELECT * FROM projects ORDER BY created_at DESC`).all();
+  // ── Scopes ───────────────────────────────────────────────────────────────
+  // A scope is a folder or individual file attached to ONE chat. The agent is
+  // made aware of it (context injection in the orchestrator) and confined to it
+  // (hard sandbox in the filesystem tools). A folder scope mirrors a row in
+  // `projects` (deduped by absolute path) so it carries an auto-built RAG index
+  // + cross-session memory shared across any chat that opens the same folder.
+
+  /** Find the folder workspace for `rootPath`, or create one (with a RAG index
+   *  built in the background). Returns the workspace's project_id + rag_index_id. */
+  function findOrCreateFolderWorkspace(rootPath: string): { projectId: string; ragIndexId: string } {
+    const db = getDb();
+    const existing = db.prepare(`SELECT project_id, rag_index_id FROM projects WHERE root_path=? ORDER BY created_at ASC LIMIT 1`)
+      .get(rootPath) as { project_id: string; rag_index_id: string | null } | undefined;
+    if (existing) {
+      let indexId = existing.rag_index_id;
+      if (!indexId) {
+        indexId = crypto.randomUUID();
+        const name = path.basename(rootPath) || rootPath;
+        db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`).run(indexId, `Folder: ${name}`, rootPath);
+        db.prepare(`UPDATE projects SET rag_index_id=? WHERE project_id=?`).run(indexId, existing.project_id);
+        ragIndexer.buildIndex(indexId, rootPath).catch(err => console.warn('[Artha] folder index build failed:', err));
+      }
+      return { projectId: existing.project_id, ragIndexId: indexId };
+    }
+    const name = path.basename(rootPath) || rootPath;
+    const projectId = crypto.randomUUID();
+    const indexId = crypto.randomUUID();
+    db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`).run(indexId, `Folder: ${name}`, rootPath);
+    db.prepare(`INSERT INTO projects (project_id, name, root_path, rag_index_id) VALUES (?,?,?,?)`).run(projectId, name, rootPath, indexId);
+    // Build in the background — embedding a large folder is slow and we don't
+    // want to block the picker returning.
+    ragIndexer.buildIndex(indexId, rootPath).catch(err => console.warn('[Artha] folder index build failed:', err));
+    return { projectId, ragIndexId: indexId };
+  }
+
+  ipcMain.handle('scopes:list', (_e, sessionId: string) => {
+    return getDb().prepare(`SELECT * FROM session_scopes WHERE session_id=? ORDER BY added_at ASC, rowid ASC`).all(sessionId);
   });
 
-  ipcMain.handle('projects:create', async () => {
+  ipcMain.handle('scopes:addFolder', async (_e, sessionId: string) => {
     const result = await dialog.showOpenDialog(window, {
       properties: ['openDirectory'],
-      title: 'Choose a project folder',
+      title: 'Add a folder to this chat',
     });
     if (result.canceled || !result.filePaths[0]) return null;
     const rootPath = result.filePaths[0];
-    const name = path.basename(rootPath) || rootPath;
     const db = getDb();
-    const id = crypto.randomUUID();
-
-    // Phase 2: auto-build a RAG index over the project folder so the agent can
-    // retrieve project files via rag_search. The index is registered up front
-    // (so it shows in the RAG panel) and built in the background — embedding a
-    // large folder can take a while, and we don't want to block the picker.
-    const indexId = crypto.randomUUID();
-    db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`)
-      .run(indexId, `Project: ${name}`, rootPath);
-    db.prepare(`INSERT INTO projects (project_id, name, root_path, rag_index_id) VALUES (?,?,?,?)`)
-      .run(id, name, rootPath, indexId);
-    ragIndexer.buildIndex(indexId, rootPath).catch(err =>
-      console.warn('[Artha] project index build failed:', err)
-    );
-
-    return { project_id: id, name, root_path: rootPath, rag_index_id: indexId };
-  });
-
-  ipcMain.handle('projects:reindex', async (_e, id: string) => {
-    const db = getDb();
-    const proj = db.prepare(`SELECT rag_index_id, root_path FROM projects WHERE project_id=?`)
-      .get(id) as { rag_index_id: string | null; root_path: string } | undefined;
-    if (!proj) return 0;
-    let indexId = proj.rag_index_id;
-    if (!indexId) {
-      indexId = crypto.randomUUID();
-      const name = path.basename(proj.root_path) || proj.root_path;
-      db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`).run(indexId, `Project: ${name}`, proj.root_path);
-      db.prepare(`UPDATE projects SET rag_index_id=? WHERE project_id=?`).run(indexId, id);
+    const { ragIndexId } = findOrCreateFolderWorkspace(rootPath);
+    const scopeId = crypto.randomUUID();
+    try {
+      db.prepare(`INSERT INTO session_scopes (scope_id, session_id, path, kind, rag_index_id) VALUES (?,?,?,?,?)`)
+        .run(scopeId, sessionId, rootPath, 'folder', ragIndexId);
+    } catch {
+      // UNIQUE(session_id, path) — folder already attached to this chat.
+      return db.prepare(`SELECT * FROM session_scopes WHERE session_id=? AND path=?`).get(sessionId, rootPath);
     }
-    return ragIndexer.buildIndex(indexId, proj.root_path);
+    recomputePrimaryProject(sessionId);
+    return db.prepare(`SELECT * FROM session_scopes WHERE scope_id=?`).get(scopeId);
   });
 
-  ipcMain.handle('projects:delete', (_e, id: string) => {
+  ipcMain.handle('scopes:addFile', async (_e, sessionId: string) => {
+    const result = await dialog.showOpenDialog(window, {
+      properties: ['openFile', 'multiSelections'],
+      title: 'Add file(s) to this chat',
+    });
+    if (result.canceled || !result.filePaths.length) return [];
     const db = getDb();
-    // Drop the project's RAG index along with it.
-    const proj = db.prepare(`SELECT rag_index_id FROM projects WHERE project_id=?`).get(id) as { rag_index_id: string | null } | undefined;
-    if (proj?.rag_index_id) db.prepare(`DELETE FROM rag_indexes WHERE index_id=?`).run(proj.rag_index_id);
-    // Detach sessions rather than deleting them — history is preserved as general chats.
-    db.prepare(`UPDATE chat_sessions SET project_id=NULL WHERE project_id=?`).run(id);
-    db.prepare(`DELETE FROM projects WHERE project_id=?`).run(id);
+    const added: unknown[] = [];
+    for (const filePath of result.filePaths) {
+      const scopeId = crypto.randomUUID();
+      try {
+        db.prepare(`INSERT INTO session_scopes (scope_id, session_id, path, kind) VALUES (?,?,?,?)`)
+          .run(scopeId, sessionId, filePath, 'file');
+        added.push(db.prepare(`SELECT * FROM session_scopes WHERE scope_id=?`).get(scopeId));
+      } catch { /* already attached — skip */ }
+    }
+    return added;
+  });
+
+  ipcMain.handle('scopes:remove', (_e, scopeId: string) => {
+    const db = getDb();
+    const row = db.prepare(`SELECT session_id FROM session_scopes WHERE scope_id=?`).get(scopeId) as { session_id: string } | undefined;
+    db.prepare(`DELETE FROM session_scopes WHERE scope_id=?`).run(scopeId);
+    if (row) recomputePrimaryProject(row.session_id);
     return true;
+  });
+
+  // Rebuild the RAG index for a folder scope. Returns the chunk count.
+  ipcMain.handle('scopes:reindex', async (_e, scopeId: string) => {
+    const db = getDb();
+    const row = db.prepare(`SELECT path, kind, rag_index_id FROM session_scopes WHERE scope_id=?`)
+      .get(scopeId) as { path: string; kind: string; rag_index_id: string | null } | undefined;
+    if (!row || row.kind !== 'folder') return 0;
+    const { ragIndexId } = findOrCreateFolderWorkspace(row.path);
+    if (row.rag_index_id !== ragIndexId) db.prepare(`UPDATE session_scopes SET rag_index_id=? WHERE scope_id=?`).run(ragIndexId, scopeId);
+    return ragIndexer.buildIndex(ragIndexId, row.path);
   });
 
   // ── LLM / Models ───────────────────────────────────────────────────────

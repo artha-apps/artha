@@ -70,12 +70,15 @@ export interface Session {
   project_id?: string | null;
 }
 
-/** A working-folder project that scopes a group of sessions. */
-export interface Project {
-  project_id: string;
-  name: string;
-  root_path: string;
-  created_at?: number;
+/** A folder or file attached to the active chat. The agent is made aware of
+ *  these and hard-sandboxed to them (see `session_scopes`). */
+export interface SessionScope {
+  scope_id: string;
+  session_id: string;
+  path: string;
+  kind: 'folder' | 'file';
+  rag_index_id: string | null;
+  added_at: number;
 }
 
 /** Top-level view selector. Each value maps to a panel mounted under <main>
@@ -108,13 +111,11 @@ interface ChatState {
   activeWorkflowId: string | null;
   activeSkill: ActiveSkillBadge | null;
   pendingAttachments: MessageAttachment[];
-  projects: Project[];
-  activeProjectId: string | null;
+  scopes: SessionScope[];
 
   // Actions
   setSessions: (s: Session[]) => void;
-  setProjects: (p: Project[]) => void;
-  setActiveProjectId: (id: string | null) => void;
+  setScopes: (scopes: SessionScope[]) => void;
   setActiveSession: (id: string) => void;
   setMessages: (msgs: Message[]) => void;
   addUserMessage: (sessionId: string, content: string, attachments?: MessageAttachment[]) => void;
@@ -147,18 +148,18 @@ export const useChatStore = create<ChatState>((set) => ({
   activeWorkflowId: null,
   activeSkill: null,
   pendingAttachments: [],
-  projects: [],
-  activeProjectId: null,
+  scopes: [],
 
   setSessions: (sessions) => set({ sessions }),
-  setProjects: (projects) => set({ projects }),
-  setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
+  setScopes: (scopes) => set({ scopes }),
   // Switching sessions clears ALL in-flight state, including isStreaming — so a
-  // stuck stream from a failed send never bleeds into the new session.
+  // stuck stream from a failed send never bleeds into the new session. Scopes
+  // are cleared too and reloaded for the new session by ChatWindow.
   setActiveSession: (id) => set({
     activeSessionId: id, messages: [], streamingContent: '',
     isStreaming: false, executionLog: [], pendingToolEvents: [],
     pendingCitations: [], activeWorkflowId: null, activeSkill: null,
+    scopes: [],
   }),
   setMessages: (messages) => set({ messages }),
 

@@ -6,6 +6,16 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 export type ArthaAPI = typeof api;
 
+/** A folder or file attached to a single chat (see `session_scopes`). */
+export interface SessionScope {
+  scope_id: string;
+  session_id: string;
+  path: string;
+  kind: 'folder' | 'file';
+  rag_index_id: string | null;
+  added_at: number;
+}
+
 const api = {
   // ── Agent ────────────────────────────────────────────────────────────────
   agent: {
@@ -83,16 +93,17 @@ const api = {
     },
   },
 
-  // ── Projects ───────────────────────────────────────────────────────────────
-  // A project scopes chat sessions to a working folder and gives the agent
-  // durable context (root path + optional ARTHA.md). `create` opens a folder
-  // picker; sessions created with a projectId belong to that project.
-  projects: {
-    list: () => ipcRenderer.invoke('projects:list') as Promise<{ project_id: string; name: string; root_path: string; created_at: number }[]>,
-    create: () => ipcRenderer.invoke('projects:create') as Promise<{ project_id: string; name: string; root_path: string } | null>,
-    delete: (id: string) => ipcRenderer.invoke('projects:delete', id) as Promise<boolean>,
-    // Rebuild the project's RAG index over its folder. Returns chunk count.
-    reindex: (id: string) => ipcRenderer.invoke('projects:reindex', id) as Promise<number>,
+  // ── Scopes ───────────────────────────────────────────────────────────────
+  // Per-chat folders/files. The agent is made aware of them and hard-sandboxed
+  // to them. `addFolder`/`addFile` open native pickers; folders get an auto RAG
+  // index built in the background.
+  scopes: {
+    list: (sessionId: string) => ipcRenderer.invoke('scopes:list', sessionId) as Promise<SessionScope[]>,
+    addFolder: (sessionId: string) => ipcRenderer.invoke('scopes:addFolder', sessionId) as Promise<SessionScope | null>,
+    addFile: (sessionId: string) => ipcRenderer.invoke('scopes:addFile', sessionId) as Promise<SessionScope[]>,
+    remove: (scopeId: string) => ipcRenderer.invoke('scopes:remove', scopeId) as Promise<boolean>,
+    // Rebuild a folder scope's RAG index. Returns chunk count.
+    reindex: (scopeId: string) => ipcRenderer.invoke('scopes:reindex', scopeId) as Promise<number>,
   },
 
   // ── LLM / Models ────────────────────────────────────────────────────────

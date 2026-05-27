@@ -46,9 +46,21 @@ export function isRagTool(name: string): boolean {
   return RAG_TOOL_NAMES.has(name);
 }
 
-export async function invokeRagTool(name: string, args: Record<string, unknown>): Promise<string> {
+export async function invokeRagTool(
+  name: string,
+  args: Record<string, unknown>,
+  ragIndexIds?: string[] | null,
+): Promise<string> {
+  const scoped = !!(ragIndexIds && ragIndexIds.length);
+
   if (name === 'rag_list_indexes') {
-    const rows = getDb().prepare(`SELECT name, doc_count FROM rag_indexes ORDER BY created_at DESC`).all() as { name: string; doc_count: number }[];
+    // A scoped chat sees only its own folders' indexes; otherwise list all.
+    const rows = (scoped
+      ? getDb().prepare(
+          `SELECT name, doc_count FROM rag_indexes WHERE index_id IN (${ragIndexIds!.map(() => '?').join(',')}) ORDER BY created_at DESC`
+        ).all(...ragIndexIds!)
+      : getDb().prepare(`SELECT name, doc_count FROM rag_indexes ORDER BY created_at DESC`).all()
+    ) as { name: string; doc_count: number }[];
     return formatIndexList(rows);
   }
 
@@ -56,7 +68,8 @@ export async function invokeRagTool(name: string, args: Record<string, unknown>)
     const query = typeof args.query === 'string' ? args.query.trim() : '';
     if (!query) return 'Error: "query" is required.';
     const topK = Math.min(Math.max(Number(args.top_k) || 6, 1), 20);
-    const hits = await searchAllIndexes(query, topK);
+    // When the chat is scoped to folders, confine retrieval to their indexes.
+    const hits = await searchAllIndexes(query, topK, scoped ? ragIndexIds : null);
     return formatRagResults(query, hits);
   }
 

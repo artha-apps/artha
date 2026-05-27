@@ -70,6 +70,21 @@ export async function initDatabase(): Promise<void> {
       last_activity INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- Per-chat scope: the folders and individual files a single chat session is
+    -- bound to. The agent is context-aware of these and (hard sandbox) may only
+    -- read/write inside them. kind='folder' rows mirror a row in projects
+    -- (deduped by path) so the folder gets an auto RAG index + cross-session
+    -- memory; kind='file' rows are standalone (inlined into context, no index).
+    CREATE TABLE IF NOT EXISTS session_scopes (
+      scope_id     TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      session_id   TEXT NOT NULL REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+      path         TEXT NOT NULL,
+      kind         TEXT NOT NULL CHECK(kind IN ('folder','file')),
+      rag_index_id TEXT,            -- folder workspaces only; mirrors projects.rag_index_id
+      added_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+      UNIQUE(session_id, path)
+    );
+
     -- Individual messages (includes tool calls/outputs as JSON)
     CREATE TABLE IF NOT EXISTS messages (
       message_id     TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),

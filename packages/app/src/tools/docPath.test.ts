@@ -26,4 +26,16 @@ describe('resolveDocOutPath', () => {
     // "/etcetera" must NOT be treated as inside "/etc"
     expect(resolveDocOutPath('/etcetera/notes.pdf', 'pdf', HOME)).toBe('/etcetera/notes.pdf');
   });
+
+  it('drops bare names into the scoped folder when defaultDir is given', () => {
+    expect(resolveDocOutPath('report.docx', 'docx', HOME, '/home/u/work')).toBe('/home/u/work/report.docx');
+  });
+
+  it('ignores a relative defaultDir and falls back to ~/Documents', () => {
+    expect(resolveDocOutPath('report.docx', 'docx', HOME, 'work')).toBe('/home/u/Documents/report.docx');
+  });
+
+  it('still honours an absolute filename over defaultDir', () => {
+    expect(resolveDocOutPath('/home/u/Desktop/x.pdf', 'pdf', HOME, '/home/u/work')).toBe('/home/u/Desktop/x.pdf');
+  });
 });
