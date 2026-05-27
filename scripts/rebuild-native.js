@@ -32,3 +32,17 @@ try {
   // Do not fail the install.
   process.exit(0);
 }
+
+// Desktop control (@nut-tree-fork/nut-js) is an OPTIONAL native dependency: the
+// app boots and every non-desktop feature works without it. Only rebuild it
+// when it actually got installed, and never fail the install if the rebuild
+// (or the package) is missing — desktop.ts surfaces a friendly error at runtime.
+try {
+  require.resolve('@nut-tree-fork/nut-js');
+  console.log('[postinstall] Rebuilding @nut-tree-fork/nut-js (optional desktop control)…');
+  execSync('npx electron-rebuild -f -w @nut-tree-fork/nut-js', { stdio: 'inherit' });
+} catch (err) {
+  console.warn('[postinstall] Skipped @nut-tree-fork/nut-js rebuild (optional):', err && err.message);
+  console.warn('[postinstall] Desktop control stays disabled until you run:');
+  console.warn('[postinstall]   npx electron-rebuild -f -w @nut-tree-fork/nut-js');
+}

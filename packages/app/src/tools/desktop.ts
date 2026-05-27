@@ -2,9 +2,11 @@
  * Desktop control tools — let the ReAct loop drive native macOS apps via
  * keyboard/mouse simulation and screen capture.
  *
- * Mouse/keyboard automation uses `@nut-tree/nut-js`, loaded lazily so the app
- * still boots if the native module isn't built. Screen capture uses Electron's
- * `desktopCapturer` (main-process API). App launching shells out to `open -a`.
+ * Mouse/keyboard automation uses `@nut-tree-fork/nut-js` (the maintained, free
+ * fork of the now-private `@nut-tree/nut-js`) — an OPTIONAL dependency loaded
+ * lazily so the app still boots if it isn't installed/built. Screen capture
+ * uses Electron's `desktopCapturer` (main-process API). App launching shells
+ * out to `open -a`.
  *
  * These tools are DANGEROUS (they move the real cursor and type real keys), so
  * the orchestrator only exposes them when `desktop_control_enabled` is set.
@@ -120,11 +122,11 @@ export function isDesktopTool(name: string): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadNut(): Promise<any> {
   try {
-    return await import('@nut-tree/nut-js');
+    return await import('@nut-tree-fork/nut-js');
   } catch (err) {
     throw new Error(
-      'Desktop automation backend (@nut-tree/nut-js) is not available. ' +
-      'Install dependencies and run `npx electron-rebuild -f -w @nut-tree/nut-js`. ' +
+      'Desktop automation backend (@nut-tree-fork/nut-js) is not available. ' +
+      'It is an optional dependency — install it and run `npx electron-rebuild -f -w @nut-tree-fork/nut-js`. ' +
       `Original error: ${err instanceof Error ? err.message : String(err)}`
     );
   }
