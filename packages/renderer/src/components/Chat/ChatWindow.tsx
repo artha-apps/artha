@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2 } from 'lucide-react';
+import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -93,8 +93,10 @@ export default function ChatWindow() {
   const {
     messages, streamingContent, isStreaming, activeSessionId,
     addUserMessage, activeWorkflowId, setStreaming, pendingCitations, activeSkill,
-    pendingAttachments, setPendingAttachments,
+    pendingAttachments, setPendingAttachments, scopes, setScopes,
   } = useChatStore();
+  const [scopeBusy, setScopeBusy] = useState(false);
+  const [reindexingScope, setReindexingScope] = useState<string | null>(null);
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
   const [input, setInput] = useState('');
   const [skills, setSkills] = useState<SkillOption[]>([]);
@@ -220,6 +222,53 @@ export default function ChatWindow() {
   const removeAttachment = (idx: number) => {
     setPendingAttachments(pendingAttachments.filter((_, i) => i !== idx));
   };
+
+  // ── Per-chat scopes (folders/files the agent is aware of & sandboxed to) ──
+  // Load the active session's scopes whenever it changes. setActiveSession
+  // clears scopes, so this repopulates them for the opened chat.
+  useEffect(() => {
+    if (!activeSessionId) { setScopes([]); return; }
+    window.artha.scopes.list(activeSessionId).then(setScopes).catch(() => setScopes([]));
+  }, [activeSessionId, setScopes]);
+
+  const addFolderScope = async () => {
+    if (!activeSessionId || scopeBusy) return;
+    setScopeBusy(true);
+    try {
+      const added = await window.artha.scopes.addFolder(activeSessionId);
+      if (added) setScopes(await window.artha.scopes.list(activeSessionId));
+    } finally {
+      setScopeBusy(false);
+    }
+  };
+
+  const addFileScope = async () => {
+    if (!activeSessionId || scopeBusy) return;
+    setScopeBusy(true);
+    try {
+      const added = await window.artha.scopes.addFile(activeSessionId);
+      if (added?.length) setScopes(await window.artha.scopes.list(activeSessionId));
+    } finally {
+      setScopeBusy(false);
+    }
+  };
+
+  const removeScope = async (scopeId: string) => {
+    if (!activeSessionId) return;
+    await window.artha.scopes.remove(scopeId);
+    setScopes(await window.artha.scopes.list(activeSessionId));
+  };
+
+  const reindexScope = async (scopeId: string) => {
+    setReindexingScope(scopeId);
+    try {
+      await window.artha.scopes.reindex(scopeId);
+    } finally {
+      setReindexingScope(null);
+    }
+  };
+
+  const baseName = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p;
 
   /** Toggle the microphone. Uses the browser's built-in SpeechRecognition API
    *  (Chromium — works on macOS fully on-device via Apple's speech engine).
@@ -469,6 +518,55 @@ export default function ChatWindow() {
               ))}
             </div>
           )}
+
+          {/* Per-chat scope chips — folders/files this chat is bound to. The
+              agent is sandboxed to these; empty means full home-dir access. */}
+          <div className="flex flex-wrap items-center gap-1.5 mb-2">
+            {scopes.map(sc => (
+              <span
+                key={sc.scope_id}
+                title={sc.path}
+                className="group flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-artha-s2 border border-artha-border text-xs text-artha-text"
+              >
+                {sc.kind === 'folder'
+                  ? <Folder size={11} className="shrink-0 text-artha-accent" />
+                  : <FileText size={11} className="shrink-0 text-artha-accent" />}
+                <span className="truncate max-w-[160px]">{baseName(sc.path)}</span>
+                {sc.kind === 'folder' && (
+                  <button
+                    onClick={() => reindexScope(sc.scope_id)}
+                    title="Re-index this folder"
+                    className={`text-artha-muted hover:text-artha-accent transition-colors ${reindexingScope === sc.scope_id ? '' : 'opacity-0 group-hover:opacity-100'}`}
+                  >
+                    <RefreshCw size={10} className={reindexingScope === sc.scope_id ? 'animate-spin' : ''} />
+                  </button>
+                )}
+                <button
+                  onClick={() => removeScope(sc.scope_id)}
+                  title="Remove from chat"
+                  className="text-artha-muted hover:text-red-400 transition-colors"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+            <button
+              onClick={addFolderScope}
+              disabled={scopeBusy}
+              title="Add a folder — the agent works only inside the chat's folders/files"
+              className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-artha-border text-xs text-artha-muted hover:text-white hover:border-artha-accent/40 transition-colors disabled:opacity-40"
+            >
+              <FolderPlus size={11} /> Folder
+            </button>
+            <button
+              onClick={addFileScope}
+              disabled={scopeBusy}
+              title="Add a file to this chat's context"
+              className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-artha-border text-xs text-artha-muted hover:text-white hover:border-artha-accent/40 transition-colors disabled:opacity-40"
+            >
+              <FilePlus2 size={11} /> File
+            </button>
+          </div>
 
           {/* RAG index status — tells the user whether /ask has files to search */}
           {ragIndexes.length > 0 && (

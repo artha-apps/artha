@@ -79,7 +79,7 @@ export function isDocsTool(name: string): boolean {
   return DOCS_TOOL_NAMES.has(name);
 }
 
-export async function invokeDocsTool(name: string, args: Record<string, unknown>): Promise<string> {
+export async function invokeDocsTool(name: string, args: Record<string, unknown>, defaultDir?: string | null, ragIndexIds?: string[] | null): Promise<string> {
   if (name !== 'docs_generate') throw new Error(`Unknown docs tool: ${name}`);
 
   const type = String(args.type ?? '').toLowerCase() as DocType;
@@ -102,7 +102,7 @@ export async function invokeDocsTool(name: string, args: Record<string, unknown>
   if (args.use_rag === true) {
     const ragQuery = typeof args.rag_query === 'string' && args.rag_query.trim() ? args.rag_query.trim() : prompt;
     try {
-      const hits = await searchAllIndexes(ragQuery, 6);
+      const hits = await searchAllIndexes(ragQuery, 6, ragIndexIds && ragIndexIds.length ? ragIndexIds : null);
       for (const h of hits) {
         ragChunks.push({ id: h.id.slice(0, 8), type: 'rag', ref: path.basename(h.filePath), text: h.text });
       }
@@ -117,7 +117,9 @@ export async function invokeDocsTool(name: string, args: Record<string, unknown>
     ...userContext.map((text, i) => ({ id: `ctx-${i}`, type: 'user' as const, ref: 'provided', text })),
   ];
 
-  const outPath = resolveDocOutPath(filename, type, HOME);
+  // When the chat is scoped to a folder, drop generated docs there so the
+  // agent's output stays inside the working folder; otherwise default ~/Documents.
+  const outPath = resolveDocOutPath(filename, type, HOME, defaultDir ?? undefined);
 
   const result = await generateDocument({
     type, prompt, outPath,

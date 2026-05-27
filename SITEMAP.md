@@ -1,6 +1,6 @@
 # Artha — Workspace Sitemap
 
-> Last updated: 2026-05-24 (Step 4 complete)
+> Last updated: 2026-05-26 (per-chat folder/file scopes + filesystem sandbox)
 
 ## Root
 
@@ -23,8 +23,9 @@
 |------|---------|
 | `src/main.ts` | Entry point — BrowserWindow creation, IPC setup, auto-updater, tray |
 | `src/preload.ts` | Context bridge — exposes `window.artha.*` API to renderer (zero Node access in renderer) |
-| `src/db/schema.ts` | SQLite schema — all `CREATE TABLE` + `ALTER TABLE` migrations |
+| `src/db/schema.ts` | SQLite schema — all `CREATE TABLE` + `ALTER TABLE` migrations (incl. `session_scopes`) |
 | `src/db/db.ts` | `getDb()` singleton — opens / migrates the database on first call |
+| `src/db/scopes.ts` | Per-chat scope helpers — `getSessionScopes`/`getSessionAllowedRoots`/`getSessionPrimaryFolder`/`recomputePrimaryProject`; backs the folder/file sandbox + context |
 | **agent/** | |
 | `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory injection, tool dispatch |
 | `src/agent/skills.ts` | `SkillsService` — loads YAML skill files, filters tool schemas per skill |
@@ -38,13 +39,14 @@
 | `src/mcp/registry.ts` | `McpRegistry` — manages MCP server processes, tool schemas, invocations |
 | `src/mcp/registry-catalog.ts` | 14 curated MCP marketplace entries (filesystem, web, productivity, …) |
 | **tools/** | |
+| `src/tools/filesystem.ts` | Built-in fs tools (list/search/read/move/copy/delete) — hard sandbox confines reads/writes to the chat's attached scopes when present |
 | `src/tools/brave.ts` | Brave Search API client (free tier fallback) |
 | `src/tools/duckduckgo.ts` | DuckDuckGo HTML scraper (zero-config fallback) |
 | `src/tools/web.ts` | `webSearchImpl` — three-tier search chain (Brave → SearXNG → DuckDuckGo) |
 | `src/tools/readability.ts` | Mozilla Readability wrapper — strips boilerplate, returns clean markdown |
 | `src/tools/docs.ts` | Document generation (DOCX via `docx`, PPTX via `pptxgenjs`, XLSX via `xlsx`, PDF via `pdf-lib`) |
 | `src/tools/memory.ts` | `MEMORY_TOOL_SCHEMAS` + `invokeMemoryTool` + `getMemoryContext` — SQLite entity graph |
-| `src/tools/rag.ts` | Retrieval-augmented generation — chunk, embed, vector search over local docs |
+| `src/tools/rag.ts` | `rag_search` / `rag_list_indexes` — vector search over local docs; confined to the chat's folder indexes when scoped (else all) |
 | `src/tools/desktop.ts` | `DESKTOP_TOOL_SCHEMAS` + `invokeDesktopTool` — mouse/keyboard/screenshot via nut-js + desktopCapturer (opt-in) |
 | `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree-fork/nut-js` optional native dep |
 | **scheduler/** | |
@@ -61,16 +63,16 @@
 | `src/main.tsx` | React entry point |
 | `src/App.tsx` | Root component — view router, IPC event wiring (clarify, update-available) |
 | **stores/** | |
-| `src/stores/chat.ts` | Zustand store — `ActiveView` union, messages, pending attachments, clarify state |
+| `src/stores/chat.ts` | Zustand store — `ActiveView` union, messages, pending attachments, clarify state, per-chat `scopes` |
 | **lib/** | |
 | `src/lib/qrcode.ts` | Dependency-free QR encoder (byte mode + Reed-Solomon, v1–10) — `generateQrMatrix` / `qrToSvg` |
 | **components/Chat/** | |
-| `ChatWindow.tsx` | Composer with send, attach image, attach PDF, voice mic; message bubble list |
+| `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file); message bubble list |
 | `ClarificationModal.tsx` | Pre-flight Q&A modal (pauses the agent until user answers or skips) |
 | `PlanApproval.tsx` | Approval UI for the ReAct plan before execution |
 | `ThinkingBubble.tsx` | Live streaming "thinking…" indicator |
 | **components/Sidebar/** | |
-| `Sidebar.tsx` | Project switcher + project-scoped session list; nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Settings |
+| `Sidebar.tsx` | Flat chat-session list + New Chat; nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Settings (folders are now attached per chat in the composer) |
 | **components/Settings/** | |
 | `ModelsPanel.tsx` | Configure LLM models — API key, base URL, context window slider |
 | `McpPanel.tsx` | Add / remove MCP servers; view tool schemas |

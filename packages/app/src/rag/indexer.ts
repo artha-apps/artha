@@ -199,12 +199,17 @@ export function getDefaultRagIndexer(): RAGIndexer {
   return defaultIndexer;
 }
 
-/** Search every configured RAG index and return the globally top-k chunks by
- *  similarity. Used to ground generated documents in the user's own files.
+/** Search RAG indexes and return the globally top-k chunks by similarity.
+ *  Used to ground generated documents in the user's own files, and by the
+ *  `rag_search` tool. When `indexIds` is given (and non-empty), only those
+ *  indexes are searched — this is how a scoped chat confines retrieval to its
+ *  attached folders; otherwise every configured index is searched.
  *  Failures (Ollama down, missing index files) degrade to fewer/no results. */
-export async function searchAllIndexes(query: string, topK = 6): Promise<RetrievedChunk[]> {
+export async function searchAllIndexes(query: string, topK = 6, indexIds?: string[] | null): Promise<RetrievedChunk[]> {
   const indexer = getDefaultRagIndexer();
-  const indexes = getDb().prepare(`SELECT index_id FROM rag_indexes`).all() as { index_id: string }[];
+  const indexes = (indexIds && indexIds.length)
+    ? indexIds.map(index_id => ({ index_id }))
+    : getDb().prepare(`SELECT index_id FROM rag_indexes`).all() as { index_id: string }[];
   const all: RetrievedChunk[] = [];
   for (const { index_id } of indexes) {
     try {

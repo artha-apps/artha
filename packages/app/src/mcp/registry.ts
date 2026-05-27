@@ -12,6 +12,17 @@ import { WEB_TOOL_SCHEMAS, invokeWebTool, isWebTool } from '../tools/web';
 import { BROWSER_TOOL_SCHEMAS, invokeBrowserTool, isBrowserTool } from '../tools/browser';
 import { DOCS_TOOL_SCHEMAS, invokeDocsTool, isDocsTool } from '../tools/docs';
 import { RAG_TOOL_SCHEMAS, invokeRagTool, isRagTool } from '../tools/rag';
+import type { ScopeRoot } from '../db/scopes';
+
+/** Per-invocation context derived from the active chat's scopes. When the chat
+ *  has attached folders/files: `allowedRoots` confines filesystem tools to them,
+ *  `primaryDir` becomes the default output directory for generated docs, and
+ *  `ragIndexIds` confines rag_search / doc grounding to the chat's folders. */
+export interface ToolContext {
+  allowedRoots?: ScopeRoot[] | null;
+  primaryDir?: string | null;
+  ragIndexIds?: string[] | null;
+}
 
 interface MCPServerConnection {
   id: string;
@@ -76,9 +87,9 @@ export class MCPRegistry {
   /** Invoke a named tool — built-in tools first, then MCP servers.
    *  Built-ins are checked first so a malicious or buggy MCP server can't
    *  shadow `fs_move_file` etc. by re-using the name. */
-  async invokeTool(toolName: string, args: Record<string, unknown>): Promise<string> {
+  async invokeTool(toolName: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
     if (isFilesystemTool(toolName)) {
-      return invokeFilesystemTool(toolName, args);
+      return invokeFilesystemTool(toolName, args, ctx?.allowedRoots);
     }
     if (isWebTool(toolName)) {
       return invokeWebTool(toolName, args);
@@ -87,10 +98,10 @@ export class MCPRegistry {
       return invokeBrowserTool(toolName, args);
     }
     if (isDocsTool(toolName)) {
-      return invokeDocsTool(toolName, args);
+      return invokeDocsTool(toolName, args, ctx?.primaryDir, ctx?.ragIndexIds);
     }
     if (isRagTool(toolName)) {
-      return invokeRagTool(toolName, args);
+      return invokeRagTool(toolName, args, ctx?.ragIndexIds);
     }
     for (const conn of this.connections.values()) {
       const hasTool = conn.tools.some(t => t.function.name === toolName);

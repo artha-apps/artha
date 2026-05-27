@@ -10,15 +10,28 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import OpenAI from 'openai';
+import type { ScopeRoot } from '../db/scopes';
 
 const HOME = os.homedir();
 
 // ── Path safety ─────────────────────────────────────────────────────────────
 
-/** Resolve a user-supplied path and reject anything that lives under a known
- *  OS-system directory. The agent runs with the user's full uid, so this is
- *  the last line of defence between an LLM hallucination and `rm /etc`. */
-function safePath(p: string): string {
+/** True when `child` is `parent` itself or lives anywhere beneath it. Uses
+ *  path.relative so it's not fooled by `/foo` vs `/foobar` prefix overlap. */
+function isWithin(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/** Resolve a user-supplied path and reject (1) anything under a known OS-system
+ *  directory and (2) — when the chat has attached scopes — anything outside
+ *  them. The agent runs with the user's full uid, so this is the last line of
+ *  defence between an LLM hallucination and `rm /etc`, and the mechanism that
+ *  confines a scoped chat to its selected folders/files.
+ *
+ *  `allowedRoots` empty/undefined ⇒ no per-chat scope; fall back to the
+ *  historical home-directory-wide behaviour (system dirs still blocked). */
+function safePath(p: string, allowedRoots?: ScopeRoot[] | null): string {
   if (!p || typeof p !== 'string') {
     throw new Error(`Invalid path argument: received ${JSON.stringify(p)}`);
   }
@@ -26,6 +39,21 @@ function safePath(p: string): string {
   const blocked = ['/System', '/Library/System', '/usr', '/etc', '/bin', '/sbin', '/private/etc'];
   if (blocked.some(b => resolved.startsWith(b))) {
     throw new Error(`Access denied: cannot access system directory "${resolved}"`);
+  }
+  if (allowedRoots && allowedRoots.length) {
+    const ok = allowedRoots.some(r => {
+      const root = path.resolve(r.path);
+      // A file scope grants access to that exact file only; a folder scope
+      // grants its whole subtree.
+      return r.kind === 'file' ? resolved === root : isWithin(resolved, root);
+    });
+    if (!ok) {
+      const roots = allowedRoots.map(r => r.path).join(', ');
+      throw new Error(
+        `Access denied: "${resolved}" is outside this chat's selected folders (${roots}). ` +
+        `Attach the folder to this chat to allow it.`
+      );
+    }
   }
   return resolved;
 }
@@ -217,8 +245,8 @@ function matchPattern(filename: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, 'i').test(filename);
 }
 
-async function listDirectoryImpl(dirPath: string): Promise<string> {
-  const resolved = safePath(expandTilde(dirPath));
+async function listDirectoryImpl(dirPath: string, roots?: ScopeRoot[] | null): Promise<string> {
+  const resolved = safePath(expandTilde(dirPath), roots);
   const entries = await fsp.readdir(resolved, { withFileTypes: true });
   const result = entries.map(e => ({
     name: e.name,
@@ -228,8 +256,8 @@ async function listDirectoryImpl(dirPath: string): Promise<string> {
   return JSON.stringify({ directory: resolved, count: result.length, entries: result }, null, 2);
 }
 
-async function searchFilesImpl(directory: string, pattern: string, recursive = false): Promise<string> {
-  const resolved = safePath(expandTilde(directory));
+async function searchFilesImpl(directory: string, pattern: string, recursive = false, roots?: ScopeRoot[] | null): Promise<string> {
+  const resolved = safePath(expandTilde(directory), roots);
   const matches: string[] = [];
 
   async function walk(dir: string) {
@@ -255,15 +283,15 @@ async function searchFilesImpl(directory: string, pattern: string, recursive = f
   return JSON.stringify({ pattern, directory: resolved, count: matches.length, files: matches }, null, 2);
 }
 
-async function createDirectoryImpl(dirPath: string): Promise<string> {
-  const resolved = safePath(expandTilde(dirPath));
+async function createDirectoryImpl(dirPath: string, roots?: ScopeRoot[] | null): Promise<string> {
+  const resolved = safePath(expandTilde(dirPath), roots);
   await fsp.mkdir(resolved, { recursive: true });
   return JSON.stringify({ created: resolved, success: true });
 }
 
-async function moveFileImpl(source: string, destination: string): Promise<string> {
-  const src = safePath(expandTilde(source));
-  const dst = safePath(expandTilde(destination));
+async function moveFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null): Promise<string> {
+  const src = safePath(expandTilde(source), roots);
+  const dst = safePath(expandTilde(destination), roots);
 
   // Auto-create the destination directory so the LLM doesn't have to chain a
   // separate mkdir call; matches the spirit of `mv` in interactive use.
@@ -272,16 +300,16 @@ async function moveFileImpl(source: string, destination: string): Promise<string
   return JSON.stringify({ moved: src, to: dst, success: true });
 }
 
-async function copyFileImpl(source: string, destination: string): Promise<string> {
-  const src = safePath(expandTilde(source));
-  const dst = safePath(expandTilde(destination));
+async function copyFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null): Promise<string> {
+  const src = safePath(expandTilde(source), roots);
+  const dst = safePath(expandTilde(destination), roots);
   await fsp.mkdir(path.dirname(dst), { recursive: true });
   await fsp.copyFile(src, dst);
   return JSON.stringify({ copied: src, to: dst, success: true });
 }
 
-async function readFileImpl(filePath: string): Promise<string> {
-  const resolved = safePath(expandTilde(filePath));
+async function readFileImpl(filePath: string, roots?: ScopeRoot[] | null): Promise<string> {
+  const resolved = safePath(expandTilde(filePath), roots);
   const stat = await fsp.stat(resolved);
   if (stat.size > 100 * 1024) {
     return JSON.stringify({ error: 'File too large (>100KB). Use fs_get_file_info instead.' });
@@ -290,8 +318,8 @@ async function readFileImpl(filePath: string): Promise<string> {
   return JSON.stringify({ path: resolved, content });
 }
 
-async function getFileInfoImpl(filePath: string): Promise<string> {
-  const resolved = safePath(expandTilde(filePath));
+async function getFileInfoImpl(filePath: string, roots?: ScopeRoot[] | null): Promise<string> {
+  const resolved = safePath(expandTilde(filePath), roots);
   const stat = await fsp.stat(resolved);
   return JSON.stringify({
     path: resolved,
@@ -306,8 +334,8 @@ async function getFileInfoImpl(filePath: string): Promise<string> {
   });
 }
 
-async function deleteFileImpl(filePath: string, permanent = false): Promise<string> {
-  const resolved = safePath(expandTilde(filePath));
+async function deleteFileImpl(filePath: string, permanent = false, roots?: ScopeRoot[] | null): Promise<string> {
+  const resolved = safePath(expandTilde(filePath), roots);
   if (permanent) {
     const stat = await fsp.stat(resolved);
     if (stat.isDirectory()) {
@@ -335,31 +363,34 @@ async function deleteFileImpl(filePath: string, permanent = false): Promise<stri
  *  retry loop where the agent re-issues the call with a different alias. */
 export async function invokeFilesystemTool(
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  allowedRoots?: ScopeRoot[] | null
 ): Promise<string> {
   switch (name) {
     case 'fs_list_directory':
-      return listDirectoryImpl(args.path as string);
+      return listDirectoryImpl(args.path as string, allowedRoots);
     case 'fs_search_files':
-      return searchFilesImpl(args.directory as string, args.pattern as string, args.recursive as boolean);
+      return searchFilesImpl(args.directory as string, args.pattern as string, args.recursive as boolean, allowedRoots);
     case 'fs_create_directory':
-      return createDirectoryImpl(args.path as string);
+      return createDirectoryImpl(args.path as string, allowedRoots);
     case 'fs_move_file':
       return moveFileImpl(
         (args.source ?? args.src) as string,
-        (args.destination ?? args.dst ?? args.dest) as string
+        (args.destination ?? args.dst ?? args.dest) as string,
+        allowedRoots
       );
     case 'fs_copy_file':
       return copyFileImpl(
         (args.source ?? args.src) as string,
-        (args.destination ?? args.dst ?? args.dest) as string
+        (args.destination ?? args.dst ?? args.dest) as string,
+        allowedRoots
       );
     case 'fs_read_file':
-      return readFileImpl(args.path as string);
+      return readFileImpl(args.path as string, allowedRoots);
     case 'fs_get_file_info':
-      return getFileInfoImpl(args.path as string);
+      return getFileInfoImpl(args.path as string, allowedRoots);
     case 'fs_delete_file':
-      return deleteFileImpl(args.path as string, args.permanent as boolean);
+      return deleteFileImpl(args.path as string, args.permanent as boolean, allowedRoots);
     default:
       throw new Error(`Unknown filesystem tool: ${name}`);
   }
