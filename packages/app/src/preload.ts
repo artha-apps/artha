@@ -365,6 +365,51 @@ const api = {
       return () => ipcRenderer.removeAllListeners('browser:handoffResolved');
     },
   },
+
+  // ── Team members ─────────────────────────────────────────────────────────
+  // Local roster of team members shown in TeamPanel. No cloud sync — purely
+  // metadata for the admin UI. Remote access is gated by LAN API keys below.
+  team: {
+    listMembers: () => ipcRenderer.invoke('team:listMembers') as Promise<{
+      member_id: string; display_name: string; email: string | null;
+      role: 'admin' | 'member'; joined_at: number;
+    }[]>,
+    addMember: (m: { displayName: string; email?: string; role?: 'admin' | 'member' }) =>
+      ipcRenderer.invoke('team:addMember', m) as Promise<{ member_id: string }>,
+    updateMember: (memberId: string, patch: { displayName?: string; email?: string; role?: 'admin' | 'member' }) =>
+      ipcRenderer.invoke('team:updateMember', memberId, patch) as Promise<boolean>,
+    removeMember: (memberId: string) =>
+      ipcRenderer.invoke('team:removeMember', memberId) as Promise<boolean>,
+  },
+
+  // ── LAN API keys ──────────────────────────────────────────────────────────
+  // Bearer tokens for the LAN collaboration server. The plaintext key is
+  // returned once from `create` and never stored; the DB only keeps the hash.
+  apikeys: {
+    list: () => ipcRenderer.invoke('apikeys:list') as Promise<{
+      key_id: string; name: string; created_at: number;
+      last_used_at: number | null; is_enabled: number;
+    }[]>,
+    create: (name: string) =>
+      ipcRenderer.invoke('apikeys:create', name) as Promise<{ key_id: string; plaintext: string }>,
+    toggle: (keyId: string, enabled: boolean) =>
+      ipcRenderer.invoke('apikeys:toggle', keyId, enabled) as Promise<boolean>,
+    revoke: (keyId: string) =>
+      ipcRenderer.invoke('apikeys:revoke', keyId) as Promise<boolean>,
+  },
+
+  // ── Shared memories ───────────────────────────────────────────────────────
+  // When is_shared=1, a memory entity is also injected into LAN server
+  // sessions so remote teammates get the same persistent context.
+  sharedMemory: {
+    setShared: (entityId: string, shared: boolean) =>
+      ipcRenderer.invoke('memory:setShared', entityId, shared) as Promise<boolean>,
+    listShared: () => ipcRenderer.invoke('memory:listShared') as Promise<{
+      entity_id: string; name: string; entity_type: string;
+      content: string; tags_json: string; is_shared: number;
+      created_at: number; updated_at: number;
+    }[]>,
+  },
 };
 
 contextBridge.exposeInMainWorld('artha', api);

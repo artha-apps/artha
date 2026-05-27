@@ -80,7 +80,7 @@ export interface Project {
 
 /** Top-level view selector. Each value maps to a panel mounted under <main>
  *  in App.tsx. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'settings';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'settings';
 
 /** The skill the orchestrator matched/loaded for the in-flight workflow.
  *  Drives the small "Skill: …" badge in the composer. Cleared on stream end. */

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench, Globe, Route, History, ShieldCheck, Package, Sparkles, Archive, Store, Brain, Code2, Link, Wifi, Monitor, Folder, FolderPlus, ChevronDown, Check, Trash2, RefreshCw } from 'lucide-react';
+import { MessageSquare, Plus, Settings, Cpu, FolderSearch, Wrench, Globe, Route, History, ShieldCheck, Package, Sparkles, Archive, Store, Brain, Code2, Link, Wifi, Monitor, Users, Folder, FolderPlus, ChevronDown, Check, Trash2, RefreshCw } from 'lucide-react';
 import { useChatStore, ActiveView } from '../../stores/chat';
 
 export default function Sidebar() {
@@ -99,6 +99,7 @@ export default function Sidebar() {
     { icon: Link,         label: 'Cloud',      view: 'cloud'       },
     { icon: Wifi,         label: 'LAN Server', view: 'lan'         },
     { icon: Monitor,      label: 'Desktop',    view: 'desktop'     },
+    { icon: Users,        label: 'Team',       view: 'team'        },
     { icon: Store,        label: 'Marketplace', view: 'marketplace' },
     { icon: History,      label: 'Time Travel', view: 'timetravel' },
     { icon: ShieldCheck,  label: 'Provenance', view: 'provenance' },
