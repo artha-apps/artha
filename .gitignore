@@ -10,6 +10,8 @@ dist/
 
 # Electron builder
 release/
+# but keep the landing site's API route source files
+!landing/app/api/release/
 
 # Environment
 .env

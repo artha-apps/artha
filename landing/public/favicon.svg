@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="#0A1628" role="img" aria-label="Artha">
+  <title>Artha</title>
+  <!-- Bolder frame for 16×16 legibility -->
+  <path fill-rule="evenodd" d="M4 4 H60 V60 H4 Z M14 14 H50 V50 H14 Z"/>
+  <rect x="19" y="22" width="11" height="20"/>
+</svg>
