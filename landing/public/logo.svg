@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="currentColor" role="img" aria-label="Artha">
+  <title>Artha</title>
+  <!-- Outer frame — structure that contains intent.
+       Single path with even-odd fill so the inner square subtracts cleanly. -->
+  <path fill-rule="evenodd" d="M6 6 H58 V58 H6 Z M14 14 H50 V50 H14 Z"/>
+  <!-- Inner mass — offset toward the left, vertically centered.
+       The asymmetry is what makes the mark feel deliberate, not generic. -->
+  <rect x="19" y="22" width="10" height="20"/>
+</svg>
