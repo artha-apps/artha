@@ -75,10 +75,23 @@ export const DOCS_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
 
 const DOCS_TOOL_NAMES = new Set(DOCS_TOOL_SCHEMAS.map(t => t.function.name));
 
+/** Returns true when `name` identifies a docs tool — used by MCPRegistry to
+ *  route tool calls without importing the full schema list. */
 export function isDocsTool(name: string): boolean {
   return DOCS_TOOL_NAMES.has(name);
 }
 
+/**
+ * Dispatch a docs tool call. Currently only `docs_generate` is defined.
+ *
+ * @param name         Tool name from the model's function call.
+ * @param args         Raw arguments object as parsed from the LLM response.
+ * @param defaultDir   Output directory override — set to the chat's scoped
+ *                     folder so generated files land inside the working folder.
+ *                     Null/undefined falls back to ~/Documents.
+ * @param ragIndexIds  When non-empty, confines RAG retrieval to these index IDs
+ *                     (the chat's folder-scoped indexes). Null searches all.
+ */
 export async function invokeDocsTool(name: string, args: Record<string, unknown>, defaultDir?: string | null, ragIndexIds?: string[] | null): Promise<string> {
   if (name !== 'docs_generate') throw new Error(`Unknown docs tool: ${name}`);
 

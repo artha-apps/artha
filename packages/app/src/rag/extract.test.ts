@@ -1,3 +1,11 @@
+/**
+ * Integration tests for `rag/extract.ts`.
+ *
+ * Verifies: plain-text (UTF-8) passthrough for .md and .json files, real XLSX
+ * workbook extraction via SheetJS, and graceful empty-string fallback for a
+ * corrupt binary file. Tests write real files into a temp directory so the
+ * extractors exercise their actual parse paths rather than mocked I/O.
+ */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -15,6 +23,8 @@ afterAll(() => {
 });
 
 describe('extractText', () => {
+  // ── Plain text (UTF-8) passthrough ─────────────────────────────────────────
+
   it('reads plain text files as UTF-8', async () => {
     const f = path.join(tmp, 'note.md');
     fs.writeFileSync(f, '# Heading\n\nSome **markdown** content.');
@@ -26,6 +36,8 @@ describe('extractText', () => {
     fs.writeFileSync(f, JSON.stringify({ hello: 'world' }));
     expect(await extractText(f)).toContain('"hello":"world"');
   });
+
+  // ── Binary format extraction ────────────────────────────────────────────────
 
   it('extracts text from a real .xlsx workbook', async () => {
     const f = path.join(tmp, 'sheet.xlsx');
@@ -40,6 +52,8 @@ describe('extractText', () => {
     expect(out).toContain('Ada');
     expect(out).toContain('Engineer');
   });
+
+  // ── Error resilience ───────────────────────────────────────────────────────
 
   it('returns empty string for a corrupt file of a binary type', async () => {
     const f = path.join(tmp, 'broken.pdf');

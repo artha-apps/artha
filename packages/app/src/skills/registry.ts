@@ -50,16 +50,23 @@ export interface SkillResolution {
   goal: string;
 }
 
+/** Shape accepted by create() and update() — the public write surface for a skill. */
 export interface SkillInput {
   slug: string;
   name: string;
   description?: string;
   instructions?: string;
+  /** Allowlist entries: exact tool name or prefix ending in "_". */
   allowedTools?: string[];
   icon?: string;
   isEnabled?: boolean;
 }
 
+/**
+ * Singleton registry for all skill CRUD operations, resolution, and LLM-based
+ * auto-matching. IPC handlers call methods on the shared instance; there is no
+ * separate service layer.
+ */
 export class SkillRegistry {
   private static instance: SkillRegistry;
 
@@ -82,12 +89,15 @@ export class SkillRegistry {
       .all() as Skill[];
   }
 
+  /** Look up a skill by its canonical slug. */
   getBySlug(slug: string): Skill | undefined {
     return getDb()
       .prepare(`SELECT * FROM skills WHERE slug = ?`)
       .get(slug) as Skill | undefined;
   }
 
+  /** Persist a new user-created skill. The slug is normalised; `is_builtin` is
+   *  always 0 for caller-created rows. */
   create(input: SkillInput): Skill {
     const db = getDb();
     db.prepare(
@@ -132,6 +142,7 @@ export class SkillRegistry {
     return db.prepare(`SELECT * FROM skills WHERE skill_id = ?`).get(skillId) as Skill;
   }
 
+  /** Enable or disable a skill without touching any other fields. */
   toggle(skillId: string, enabled: boolean): void {
     getDb().prepare(`UPDATE skills SET is_enabled=?, updated_at=unixepoch() WHERE skill_id=?`)
       .run(enabled ? 1 : 0, skillId);
@@ -241,6 +252,8 @@ export class SkillRegistry {
   }
 }
 
+/** Project a DB Skill row into the leaner ActiveSkill shape used at runtime.
+ *  Silently treats a missing or malformed allowed_tools_json as "no filter". */
 function toActive(skill: Skill): ActiveSkill {
   let allowedTools: string[] = [];
   try {

@@ -42,15 +42,27 @@ export const RAG_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
 
 const RAG_TOOL_NAMES = new Set(RAG_TOOL_SCHEMAS.map(t => t.function.name));
 
+/** Returns true when `name` is a built-in RAG tool — used by MCPRegistry for
+ *  routing without importing the full schema list. */
 export function isRagTool(name: string): boolean {
   return RAG_TOOL_NAMES.has(name);
 }
 
+/**
+ * Dispatch a RAG tool call.
+ *
+ * @param name        Tool name from the model's function call.
+ * @param args        Raw argument object as parsed from the LLM response.
+ * @param ragIndexIds When non-empty, restricts retrieval and index listing to
+ *                    these specific index IDs (the chat's folder-scoped indexes).
+ *                    Null or empty array means "search all indexes".
+ */
 export async function invokeRagTool(
   name: string,
   args: Record<string, unknown>,
   ragIndexIds?: string[] | null,
 ): Promise<string> {
+  // Empty array and null are both treated as "no scope" — search all indexes.
   const scoped = !!(ragIndexIds && ragIndexIds.length);
 
   if (name === 'rag_list_indexes') {

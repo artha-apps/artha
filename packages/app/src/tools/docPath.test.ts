@@ -1,3 +1,16 @@
+/**
+ * Unit tests for `resolveDocOutPath`. Pure function — no Electron, no FS I/O,
+ * so every case can be asserted inline without setup/teardown.
+ *
+ * Verifies:
+ *   - bare names default into ~/Documents (no defaultDir)
+ *   - wrong/missing extension is corrected to match the document type
+ *   - absolute filename takes precedence over defaultDir
+ *   - writes into OS-system directories are rejected
+ *   - prefix-overlap edge case: "/etcetera" is NOT treated as "/etc"
+ *   - a valid absolute defaultDir is used as the output folder
+ *   - a relative defaultDir is silently ignored (falls back to ~/Documents)
+ */
 import { describe, it, expect } from 'vitest';
 import { resolveDocOutPath } from './docPath';
 

@@ -20,16 +20,26 @@ export interface LLMConfig {
   baseUrl: string;        // e.g. http://localhost:11434/v1
   apiKey?: string;        // 'ollama' for local, real key for cloud
   model: string;          // e.g. 'llama3:8b-instruct-q4_K_M'
+  /** Maps to max_tokens in API calls; driven by the model's context window. */
   maxTokens?: number;
   temperature?: number;
 }
 
+/** Callbacks wired by the orchestrator to forward text tokens to the renderer
+ *  and handle completion/error events. */
 export interface StreamCallbacks {
   onToken: (token: string) => void;
+  /** Called once with the full concatenated text when the stream closes. */
   onDone: (fullText: string) => void;
   onError: (err: Error) => void;
 }
 
+/**
+ * Thin wrapper around the OpenAI SDK that targets any OpenAI-compatible
+ * endpoint. Exposes three call modes: `streamChat` (simple text streaming),
+ * `complete` (non-streaming, used for classification/planning), and
+ * `streamComplete` (streaming with tool-call reassembly for the ReAct loop).
+ */
 export class LLMClient {
   private client: OpenAI;
   private config: LLMConfig;
@@ -70,7 +80,9 @@ export class LLMClient {
     }
   }
 
-  /** Non-streaming completion — for tool call parsing, planning steps. */
+  /** Non-streaming completion — for tool call parsing, planning steps, and
+   *  classification prompts where the full response is needed at once. Uses a
+   *  lower default temperature (0.3) than `streamChat` for more determinism. */
   async complete(
     messages: OpenAI.ChatCompletionMessageParam[],
     tools?: OpenAI.ChatCompletionTool[]
@@ -108,6 +120,8 @@ export class LLMClient {
     let content = '';
     let partials: PartialToolCall[] = [];
     for await (const chunk of stream) {
+      // Poll the abort signal on every chunk so the Stop button is responsive
+      // without needing a separate AbortController thread.
       if (shouldAbort?.()) {
         stream.controller.abort();
         break;
@@ -118,17 +132,24 @@ export class LLMClient {
         content += delta.content;
         onToken(delta.content);
       }
+      // Tool-call arguments arrive as partial JSON strings across multiple
+      // chunks; accumulate them until the stream closes.
       if (delta.tool_calls?.length) {
         partials = applyToolCallDeltas(partials, delta.tool_calls);
       }
     }
 
     const tool_calls = toToolCalls(partials);
+    // Return content as null (not '') so the ReAct loop can cleanly distinguish
+    // "model produced only tool calls" from "model produced empty text".
     return { content: content || null, tool_calls: tool_calls.length ? tool_calls : undefined };
   }
 }
 
-/** Canonical task types the router benchmarks and routes by. */
+/**
+ * Canonical task types the router benchmarks and routes by. Must stay in sync
+ * with `model_profiles.task_type` and the benchmark probe list in benchmark.ts.
+ */
 export type TaskType = 'plan' | 'tool_args' | 'synthesis';
 
 /** Pick the best Ollama model for a given task, in priority order:

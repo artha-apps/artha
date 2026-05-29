@@ -1,6 +1,36 @@
 /**
- * IPC Handlers — wires all Electron IPC channels to backend modules.
- * The renderer calls these via the preload bridge (window.artha.*).
+ * IPC Handlers — wires all Electron `ipcMain.handle` channels to backend
+ * modules. The renderer reaches every handler via the preload bridge
+ * (`window.artha.*`). A single exported function, `registerIpcHandlers`,
+ * is called once from `main.ts` after the BrowserWindow is created.
+ *
+ * Handler groups (search for the section banners below):
+ *   Agent          — send messages, cancel, plan approval, clarification
+ *   Sessions       — list, create, delete, load history
+ *   Scopes         — per-chat folder/file sandbox + RAG index management
+ *   LLM / Models   — Ollama + BYOK cloud model management
+ *   MCP            — install / toggle / remove MCP servers, audit log
+ *   Skills         — CRUD for agent playbooks
+ *   RAG            — index management (separate from scope-auto-indexes)
+ *   Document Gen   — generate and open docx/pptx/xlsx/pdf artifacts
+ *   Settings       — read/write the user settings blob
+ *   Bundles        — export / import `.artha-bundle` run archives
+ *   Router         — adaptive model selection benchmark + overrides
+ *   Provenance     — per-anchor source records and signed receipts
+ *   Time-travel    — replay / fork any past ReAct step
+ *   Web tools      — cache stats and clear
+ *   Browser        — BrowserView attach/detach/navigate/handoff
+ *   Scheduler      — CRUD for scheduled tasks
+ *   Artifacts      — log and browse agent-generated files
+ *   Memory         — long-term agent memory CRUD
+ *   OAuth          — Google Workspace PKCE token flow
+ *   IDE            — generate VS Code / Cursor MCP config files
+ *   LAN            — local-network collaboration server lifecycle
+ *   Parallel       — fan-out sub-agent runs
+ *   Desktop        — screen capture for desktop-control tools
+ *   Team           — local team member roster
+ *   API keys       — LAN server Bearer token management
+ *   Shared memory  — toggle cross-teammate memory injection
  */
 import { ipcMain, BrowserWindow, dialog, shell, desktopCapturer } from 'electron';
 import * as path from 'path';
@@ -22,7 +52,11 @@ import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 
+// Module-level orchestrator — created once in `registerIpcHandlers` so every
+// IPC channel shares the same ReAct loop and in-flight workflow map.
 let orchestrator: AgentOrchestrator;
+// Singleton RAG indexer shared by the standalone RAG panel and the scope
+// auto-indexer so they write to the same chunk store.
 const ragIndexer = getDefaultRagIndexer();
 
 // ── IDE MCP HTTP server ─────────────────────────────────────────────────────
@@ -34,6 +68,10 @@ const ragIndexer = getDefaultRagIndexer();
 const IDE_MCP_PORT = 3847;
 let ideMcpServer: http.Server | null = null;
 
+/**
+ * Start the IDE MCP HTTP bridge. Idempotent — returns the current status
+ * immediately if the server is already listening.
+ */
 function startIdeMcpServer(): { running: boolean; url: string } {
   const url = `http://localhost:${IDE_MCP_PORT}/mcp`;
   // Already running → no-op (idempotent, safe to call repeatedly).
@@ -85,6 +123,7 @@ function startIdeMcpServer(): { running: boolean; url: string } {
   return { running: true, url };
 }
 
+/** Stop the IDE MCP HTTP bridge. Safe to call when already stopped. */
 function stopIdeMcpServer(): { running: boolean } {
   if (ideMcpServer) {
     ideMcpServer.close();
@@ -132,6 +171,10 @@ const LAN_PORT = 7842;
 let lanServer: http.Server | null = null;
 let lanLocalIp: string | null = null;
 
+/**
+ * Return the first non-internal IPv4 address (the machine's LAN IP).
+ * Returns null when no external interface is found (e.g. VMs with no adapters).
+ */
 function detectLocalIp(): string | null {
   const ifaces = os.networkInterfaces();
   for (const name of Object.keys(ifaces)) {
@@ -142,6 +185,7 @@ function detectLocalIp(): string | null {
   return null;
 }
 
+/** Snapshot of the LAN server's current state — used by all lan:* IPC handlers. */
 function lanStatus(): { running: boolean; url: string | null; localIp: string | null } {
   const running = !!lanServer;
   return {
@@ -151,6 +195,16 @@ function lanStatus(): { running: boolean; url: string | null; localIp: string | 
   };
 }
 
+/**
+ * Bind the LAN collaboration server on 0.0.0.0:7842. Idempotent — returns
+ * the current status without restarting if already listening.
+ *
+ * Route summary:
+ *   GET  /health — always public; used by monitoring / uptime tools
+ *   GET  /       — server manifest (name, version, skill slugs)
+ *   GET  /skills — full list of enabled skill objects
+ *   POST /chat   — forward a message to the orchestrator; streams NDJSON reply
+ */
 function startLanServer(): { running: boolean; url: string | null; localIp: string | null } {
   if (lanServer) return lanStatus();
   lanLocalIp = detectLocalIp();
@@ -203,10 +257,14 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
           }
 
           res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
+          // Snapshot the max rowid before the run so we can retrieve only the
+          // new agent messages afterwards (the orchestrator streams to the
+          // desktop UI but writes final messages to the DB synchronously).
           const before = (db.prepare(`SELECT COALESCE(MAX(rowid), 0) AS m FROM messages WHERE session_id=?`).get(sid) as { m: number }).m;
 
           await orchestrator.handleMessage(sid, parsed.message, []);
 
+          // Replay all agent replies written during this run as NDJSON lines.
           const rows = db.prepare(
             `SELECT content FROM messages WHERE session_id=? AND sender_type='agent' AND rowid > ? ORDER BY rowid ASC`
           ).all(sid, before) as { content: string }[];
@@ -237,6 +295,7 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
   return lanStatus();
 }
 
+/** Close the LAN server gracefully. Returns the updated status. */
 function stopLanServer(): { running: boolean; url: string | null; localIp: string | null } {
   if (lanServer) {
     lanServer.close();
@@ -245,6 +304,16 @@ function stopLanServer(): { running: boolean; url: string | null; localIp: strin
   return lanStatus();
 }
 
+/**
+ * Register every `ipcMain.handle` channel and perform one-time startup work:
+ *   - Instantiate the AgentOrchestrator bound to `window`.
+ *   - Load enabled MCP servers from the DB.
+ *   - Start the IDE MCP HTTP bridge.
+ *   - Auto-start the LAN server if the user opted in.
+ *   - Back-fill legacy "New Chat" session titles.
+ *
+ * Must be called exactly once, after the BrowserWindow is created.
+ */
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
 
@@ -447,8 +516,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // `projects` (deduped by absolute path) so it carries an auto-built RAG index
   // + cross-session memory shared across any chat that opens the same folder.
 
-  /** Find the folder workspace for `rootPath`, or create one (with a RAG index
-   *  built in the background). Returns the workspace's project_id + rag_index_id. */
+  /**
+   * Find the existing `projects` row for `rootPath`, or insert one together
+   * with a new `rag_indexes` row.  The RAG index is built in the background
+   * so the folder picker returns immediately.
+   *
+   * Deduplication is by exact `root_path` — two chats that open the same
+   * folder reuse the same project + index, sharing context and memory.
+   */
   function findOrCreateFolderWorkspace(rootPath: string): { projectId: string; ragIndexId: string } {
     const db = getDb();
     const existing = db.prepare(`SELECT project_id, rag_index_id FROM projects WHERE root_path=? ORDER BY created_at ASC LIMIT 1`)
@@ -737,6 +812,8 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return { model_id: id };
   });
 
+  // Clamp to [512, 128 000] so a user typo can't break the model call (most
+  // Ollama models top out at 128 K; 512 is the practical floor for any reply).
   ipcMain.handle('llm:setContextWindow', (_e, modelId: string, tokens: number) => {
     const clamped = Math.max(512, Math.min(128_000, Math.round(tokens)));
     getDb().prepare(`UPDATE llm_models SET context_window=? WHERE model_id=?`).run(clamped, modelId);
@@ -1240,6 +1317,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       authUrl.searchParams.set('code_challenge_method', 'S256');
       authUrl.searchParams.set('state', state);
 
+      // Spin up a local HTTP server on OAUTH_PORT (9742) to receive the redirect
+      // from Google, then open a modal popup for the user to log in.  `settled`
+      // guards against the server, popup-close, and timeout all racing to call
+      // resolve().  The server closes itself as soon as it receives one callback.
       return await new Promise<{ success: boolean; error?: string }>((resolve) => {
         let settled = false;
         let popup: BrowserWindow | null = new BrowserWindow({
@@ -1293,6 +1374,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
         server.on('error', (e) => finish({ success: false, error: e.message }));
         server.listen(OAUTH_PORT, '127.0.0.1', () => { popup?.loadURL(authUrl.toString()); });
         popup.on('closed', () => finish({ success: false, error: 'Window closed before authorization completed.' }));
+        // 3-minute hard timeout — enough for any human to complete the login
+        // flow, but prevents the promise from hanging indefinitely if something
+        // goes wrong after the user walks away.
         setTimeout(() => finish({ success: false, error: 'OAuth timed out.' }), 180_000);
       });
     } catch (err) {
