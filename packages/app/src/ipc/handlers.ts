@@ -42,6 +42,7 @@ import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { parseSkillImport } from '../skills/util';
 import { getDefaultRagIndexer } from '../rag/indexer';
+import { buildShallowTree } from '../agent/folderTree';
 import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
@@ -471,6 +472,57 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('agent:clarifyRespond', (_e, workflowId: string, answers: string[] | null) => {
     orchestrator.clarifyRespond(workflowId, answers);
+  });
+
+  // ── Projects ───────────────────────────────────────────────────────────
+  // Projects are user-visible containers around a folder: a root path + an
+  // auto-built RAG index + a rolling cross-session memory summary. The data
+  // model has existed since v3→v6 migrations; these handlers surface it to
+  // the renderer for the project switcher, list, and `@project` references.
+
+  /** List every project, newest first. Drives the switcher dropdown and the
+   *  sidebar Projects section. */
+  ipcMain.handle('projects:list', () => {
+    return getDb().prepare(
+      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+       FROM projects ORDER BY created_at DESC`
+    ).all();
+  });
+
+  /** Single project lookup — used by the project home view + `@project`
+   *  resolution. Returns null if the id is unknown. */
+  ipcMain.handle('projects:get', (_e, projectId: string) => {
+    return getDb().prepare(
+      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+       FROM projects WHERE project_id=?`
+    ).get(projectId) ?? null;
+  });
+
+  /** Shallow, depth-2 directory tree for a folder. Drives the Code tab's
+   *  file pane without exposing arbitrary fs access — caller must already
+   *  know the path (typically the active project's root). Returns '' on
+   *  empty/unreadable paths so the caller can render an empty-state. */
+  ipcMain.handle('fs:tree', (_e, rootPath: string, maxEntries?: number) => {
+    return buildShallowTree(rootPath, { maxEntries: maxEntries ?? 80, maxDepth: 2 });
+  });
+
+  /** Create a project from a folder pick. Delegates to the same
+   *  `findOrCreateFolderWorkspace()` used when a chat attaches a folder, so
+   *  one project per folder is preserved and a RAG index is auto-built. */
+  ipcMain.handle('projects:create', async () => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (!win) return null;
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Pick a folder for the new project',
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths.length) return null;
+    const rootPath = res.filePaths[0];
+    const { projectId } = findOrCreateFolderWorkspace(rootPath);
+    return getDb().prepare(
+      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+       FROM projects WHERE project_id=?`
+    ).get(projectId) ?? null;
   });
 
   // ── Sessions ───────────────────────────────────────────────────────────

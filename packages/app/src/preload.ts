@@ -99,6 +99,31 @@ const api = {
     },
   },
 
+  // ── Projects ─────────────────────────────────────────────────────────────
+  // Project = a folder + auto-built RAG index + rolling cross-session memory.
+  // The renderer uses these to drive the switcher, the sidebar list, and
+  // `@project` references in the composer.
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list') as Promise<Array<{
+      project_id: string;
+      name: string;
+      root_path: string;
+      rag_index_id: string | null;
+      summary: string | null;
+      created_at: number;
+    }>>,
+    get: (projectId: string) => ipcRenderer.invoke('projects:get', projectId),
+    create: () => ipcRenderer.invoke('projects:create'),
+  },
+
+  // ── Filesystem reads (renderer-safe, read-only) ──────────────────────────
+  fs: {
+    /** Depth-2 directory tree as a multi-line string (Cowork-style). Used by
+     *  the Code tab's file pane; returns '' for empty / unreadable paths. */
+    tree: (rootPath: string, maxEntries?: number) =>
+      ipcRenderer.invoke('fs:tree', rootPath, maxEntries) as Promise<string>,
+  },
+
   // ── Sessions & History ───────────────────────────────────────────────────
   sessions: {
     list: () => ipcRenderer.invoke('sessions:list'),
