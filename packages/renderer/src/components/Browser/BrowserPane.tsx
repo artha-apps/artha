@@ -13,6 +13,10 @@ import { useBrowserStore } from '../../stores/browser';
 import BrowserToolbar from './BrowserToolbar';
 import HandoffBanner from './HandoffBanner';
 
+/** Props for BrowserPane.
+ *  @param onClose - Called when the user dismisses the pane; App.tsx reacts by
+ *  showing ExecutionLog in its place. BrowserPane's cleanup effect calls
+ *  `browser.detach()` so the native BrowserView is hidden at the same time. */
 interface Props {
   onClose: () => void;
 }

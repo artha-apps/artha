@@ -12,9 +12,19 @@
 import { useEffect, useState } from 'react';
 import { Bot, Download, CheckCircle2, RefreshCw, ExternalLink, Cpu, ArrowRight, Cloud } from 'lucide-react';
 
+/** A model returned by `window.artha.llm.listModels()` — only fields we render. */
 interface OllamaModel { name: string; size: number; }
+
+/** Hardware snapshot from `window.artha.llm.detectHardware()`.
+ *  `recommendation` is a human-readable label ("8 GB — good for 7B models");
+ *  `recommendedModel` is the Ollama tag to pull (e.g. "llama3.2:3b"). */
 interface HardwareInfo { gbRam: number; recommendation: string; recommendedModel: string; }
 
+/**
+ * Onboarding — full-screen first-run wizard.
+ * @param onDone - Called after `onboardingComplete` is persisted to settings.
+ *   App.tsx flips `showOnboarding` to false, unmounting this overlay.
+ */
 export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [ollamaOnline, setOllamaOnline] = useState<boolean | null>(null);
   const [checking, setChecking] = useState(false);
@@ -53,12 +63,17 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
     return () => { off(); };
   }, []);
 
+  /** Persist the chosen model as the active model, mark onboarding done, and
+   *  close the overlay. The flag prevents the overlay from showing on next launch. */
   const finishWith = async (modelName: string) => {
     await window.artha.llm.setActiveModel(modelName);
     await window.artha.settings.set({ onboardingComplete: true });
     onDone();
   };
 
+  /** Pull the hardware-recommended model. Progress is streamed via the
+   *  `llm:pullProgress` IPC channel (subscribed above) and reflected in
+   *  `progress` state. On success, immediately activates and finishes. */
   const pullRecommended = async () => {
     if (!hardware) return;
     const model = hardware.recommendedModel;

@@ -7,7 +7,10 @@ import {
   ArrowLeft, ArrowRight, RotateCw, X, Hand, Bot, Loader2,
 } from 'lucide-react';
 import { useBrowserStore } from '../../stores/browser';
+import { Tooltip } from '../ui/Tooltip';
 
+/** Props for BrowserToolbar. `onClose` is called when the user clicks the × to
+ *  collapse the entire BrowserPane back to the ExecutionLog column. */
 interface Props {
   onClose: () => void;
 }
@@ -27,6 +30,11 @@ export default function BrowserToolbar({ onClose }: Props) {
     void window.artha.browser.navigate(url);
   };
 
+  // Toggle between the two driving modes:
+  //   'agent' → user calls takeWheel() to take manual control.
+  //   'user'  → user calls resumeAgent() to hand control back to the agent.
+  // Main's BrowserController tracks this and suppresses agent actions while the
+  // user has the wheel.
   const wheelToggle = () => {
     if (state.drivingMode === 'agent') {
       void window.artha.browser.takeWheel();
@@ -38,40 +46,44 @@ export default function BrowserToolbar({ onClose }: Props) {
   const userHasWheel = state.drivingMode === 'user';
 
   return (
-    <div className="flex items-center gap-1.5 px-2 py-1.5 bg-artha-s2 border-b border-artha-border">
+    <div className="flex items-center gap-1.5 px-2 py-1.5 bg-artha-surface2 border-b border-artha-border">
       {/* Back / forward / reload / stop */}
-      <button
-        onClick={() => window.artha.browser.back()}
-        disabled={!state.canGoBack}
-        title="Back"
-        className="p-1.5 rounded-md text-artha-muted hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      >
-        <ArrowLeft size={13} />
-      </button>
-      <button
-        onClick={() => window.artha.browser.forward()}
-        disabled={!state.canGoForward}
-        title="Forward"
-        className="p-1.5 rounded-md text-artha-muted hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      >
-        <ArrowRight size={13} />
-      </button>
+      <Tooltip content="Back">
+        <button
+          onClick={() => window.artha.browser.back()}
+          disabled={!state.canGoBack}
+          className="p-1.5 rounded-md text-artha-muted hover:text-artha-text hover:bg-artha-text/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          <ArrowLeft size={13} />
+        </button>
+      </Tooltip>
+      <Tooltip content="Forward">
+        <button
+          onClick={() => window.artha.browser.forward()}
+          disabled={!state.canGoForward}
+          className="p-1.5 rounded-md text-artha-muted hover:text-artha-text hover:bg-artha-text/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          <ArrowRight size={13} />
+        </button>
+      </Tooltip>
       {state.isLoading ? (
-        <button
-          onClick={() => window.artha.browser.stop()}
-          title="Stop"
-          className="p-1.5 rounded-md text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
-        >
-          <Loader2 size={13} className="animate-spin" />
-        </button>
+        <Tooltip content="Stop loading">
+          <button
+            onClick={() => window.artha.browser.stop()}
+            className="p-1.5 rounded-md text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors"
+          >
+            <Loader2 size={13} className="animate-spin" />
+          </button>
+        </Tooltip>
       ) : (
-        <button
-          onClick={() => window.artha.browser.reload()}
-          title="Reload"
-          className="p-1.5 rounded-md text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
-        >
-          <RotateCw size={13} />
-        </button>
+        <Tooltip content="Reload this page">
+          <button
+            onClick={() => window.artha.browser.reload()}
+            className="p-1.5 rounded-md text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors"
+          >
+            <RotateCw size={13} />
+          </button>
+        </Tooltip>
       )}
 
       {/* URL bar */}
@@ -81,30 +93,32 @@ export default function BrowserToolbar({ onClose }: Props) {
         onKeyDown={e => { if (e.key === 'Enter') submit(); }}
         placeholder="Enter a URL…"
         spellCheck={false}
-        className="flex-1 mx-1.5 px-2 py-1 rounded-md bg-artha-surface border border-artha-border text-[11px] font-mono text-artha-text placeholder-artha-muted focus:border-artha-accent/40 focus:outline-none transition-colors truncate"
+        className="flex-1 mx-1.5 px-2 py-1 rounded-md bg-artha-surface border border-artha-border text-[11px] font-mono text-artha-text placeholder-artha-subtle focus:border-artha-accent focus:outline-none transition-colors truncate"
       />
 
       {/* Wheel mode toggle */}
-      <button
-        onClick={wheelToggle}
-        title={userHasWheel ? 'Give the wheel back to the agent' : 'Take the wheel yourself'}
-        className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors
-          ${userHasWheel
-            ? 'bg-amber-400/15 text-amber-300 border border-amber-400/30 hover:bg-amber-400/20'
-            : 'bg-artha-accent/15 text-artha-accent border border-artha-accent/30 hover:bg-artha-accent/20'}`}
-      >
-        {userHasWheel ? <Hand size={11} /> : <Bot size={11} />}
-        {userHasWheel ? 'You' : 'Agent'}
-      </button>
+      <Tooltip content={userHasWheel ? 'Give the wheel back to the agent' : 'Take the wheel yourself'}>
+        <button
+          onClick={wheelToggle}
+          className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors
+            ${userHasWheel
+              ? 'bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200'
+              : 'bg-artha-accent/10 text-artha-accent border border-artha-accent/30 hover:bg-artha-accent/15'}`}
+        >
+          {userHasWheel ? <Hand size={11} /> : <Bot size={11} />}
+          {userHasWheel ? 'You' : 'Agent'}
+        </button>
+      </Tooltip>
 
       {/* Close pane */}
-      <button
-        onClick={onClose}
-        title="Close browser pane"
-        className="p-1.5 rounded-md text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
-      >
-        <X size={13} />
-      </button>
+      <Tooltip content="Close browser pane">
+        <button
+          onClick={onClose}
+          className="p-1.5 rounded-md text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors"
+        >
+          <X size={13} />
+        </button>
+      </Tooltip>
     </div>
   );
 }

@@ -7,14 +7,23 @@ import { useEffect, useMemo, useState } from 'react';
 import { Wifi, Copy, Check, AlertTriangle } from 'lucide-react';
 import { qrToSvg } from '../../lib/qrcode';
 
+/** Server status snapshot returned by `lan:getStatus`. */
 interface LanStatus { running: boolean; url: string | null; localIp: string | null }
 
+/**
+ * LAN Server panel — start/stop the local HTTP server (port 7842) that exposes
+ * the agent over the local network. Provides usage examples and a QR code so
+ * mobile devices or teammates can discover the endpoint without typing the URL.
+ */
 export default function LANServerPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [status, setStatus] = useState<LanStatus>({ running: false, url: null, localIp: null });
   const [autostart, setAutostart] = useState(false);
   const [busy, setBusy] = useState(false);
+  // `copied` drives the brief "✓" flash on the URL copy button.
   const [copied, setCopied] = useState(false);
 
+  // ── Effects / handlers ─────────────────────────────────────────────────────
   useEffect(() => {
     window.artha.lan.getStatus().then(setStatus).catch(() => {});
     window.artha.lan.getAutostart().then(setAutostart).catch(() => {});
@@ -48,6 +57,7 @@ export default function LANServerPanel() {
 
   const curlHealth = `curl ${url}/health`;
   const curlChat = `curl -X POST ${url}/chat -d '{"message":"hello"}'`;
+  // The /chat endpoint streams NDJSON chunks so callers can render tokens as they arrive.
   const fetchSnippet = `const res = await fetch("${url}/chat", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -63,7 +73,7 @@ const reader = res.body.getReader();`;
         <div className="flex items-center gap-3 mb-6">
           <Wifi size={22} className="text-cyan-400" />
           <div>
-            <h2 className="text-lg font-semibold text-white">LAN Server</h2>
+            <h2 className="text-lg font-semibold text-artha-text">LAN Server</h2>
             <p className="text-sm text-artha-muted">Expose Artha’s agent over your local network so teammates can use it</p>
           </div>
         </div>
@@ -79,7 +89,7 @@ const reader = res.body.getReader();`;
           <div className="flex items-center gap-3">
             <span className={`w-2.5 h-2.5 rounded-full ${status.running ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-gray-500'}`} />
             <div>
-              <p className="text-sm font-semibold text-white">Server {status.running ? 'running' : 'stopped'}</p>
+              <p className="text-sm font-semibold text-artha-text">Server {status.running ? 'running' : 'stopped'}</p>
               <p className="text-xs text-artha-muted mt-0.5">Listens on port 7842 across your local network.</p>
             </div>
           </div>
@@ -111,7 +121,7 @@ const reader = res.body.getReader();`;
                   className="group flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-artha-s2 border border-artha-border hover:border-cyan-500/40 transition-colors"
                 >
                   <code className="flex-1 text-left text-sm text-cyan-300 font-mono truncate">{url}</code>
-                  {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} className="text-artha-muted group-hover:text-white" />}
+                  {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} className="text-artha-muted group-hover:text-artha-text" />}
                 </button>
                 <p className="text-xs text-artha-muted/70 mt-2">Scan the QR or share the URL with anyone on the same Wi-Fi.</p>
               </div>
@@ -127,7 +137,7 @@ const reader = res.body.getReader();`;
               ].map(ex => (
                 <div key={ex.label}>
                   <p className="text-xs text-artha-muted mb-1">{ex.label}</p>
-                  <pre className="p-3 rounded-xl bg-black/40 border border-white/10 text-xs text-green-300/90 font-mono overflow-x-auto whitespace-pre-wrap">
+                  <pre className="p-3 rounded-xl bg-black/40 border border-artha-border text-xs text-green-300/90 font-mono overflow-x-auto whitespace-pre-wrap">
                     {ex.code}
                   </pre>
                 </div>
@@ -144,7 +154,7 @@ const reader = res.body.getReader();`;
             onChange={toggleAutostart}
             className="w-4 h-4 accent-cyan-500"
           />
-          <span className="text-sm text-white">Start the LAN server automatically when Artha launches</span>
+          <span className="text-sm text-artha-text">Start the LAN server automatically when Artha launches</span>
         </label>
       </div>
     </div>

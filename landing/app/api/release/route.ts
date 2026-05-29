@@ -9,7 +9,7 @@ import type { NextRequest } from 'next/server';
 
 export const runtime = 'edge';
 
-const REPO = 'Noopurtrivedi/artha';
+const REPO = 'artha-apps/artha';
 
 type GHAsset = { name: string; size: number };
 type GHRelease = { tag_name: string; assets: GHAsset[] };

@@ -20,6 +20,8 @@ interface ScheduledTask {
   created_at: number;
 }
 
+// Pre-built cron expressions shown as clickable pills. The empty `value` for
+// "Custom…" triggers the free-text cron input below the grid.
 const CRON_PRESETS = [
   { label: 'Every morning at 8 AM', value: '0 8 * * *' },
   { label: 'Every weekday at 9 AM', value: '0 9 * * 1-5' },
@@ -42,17 +44,21 @@ function fireAtLocal(ts: number): string {
   return new Date(ts * 1000).toLocaleString();
 }
 
+/** Scheduled tasks panel — create cron or one-shot tasks that run the agent. */
 export default function SchedulerPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Form state
+  // ── Form state (new task) ──────────────────────────────────────────────────
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
+  // `scheduleType` controls which sub-form is shown: cron preset picker or datetime input.
   const [scheduleType, setScheduleType] = useState<'cron' | 'once'>('cron');
   const [cronPreset, setCronPreset] = useState(CRON_PRESETS[0].value);
+  // `cronCustom` is only used when the user selects "Custom…" from the preset grid.
   const [cronCustom, setCronCustom] = useState('');
   const [fireAtInput, setFireAtInput] = useState('');
 
@@ -76,11 +82,13 @@ export default function SchedulerPanel() {
     setShowForm(false);
   };
 
+  /** Validate form state, build a scheduler payload, and call `scheduler:create`. */
   const handleCreate = async () => {
     if (!name.trim() || !prompt.trim()) return;
     setSaving(true);
     try {
       const cron = scheduleType === 'cron' ? (cronPreset || cronCustom) : undefined;
+      // Convert the datetime-local string to a Unix epoch second for the backend.
       const fire_at = scheduleType === 'once' && fireAtInput
         ? Math.floor(new Date(fireAtInput).getTime() / 1000)
         : undefined;
@@ -111,7 +119,7 @@ export default function SchedulerPanel() {
         <div className="flex items-center gap-3">
           <Clock className="text-artha-accent" size={22} />
           <div>
-            <h2 className="text-lg font-semibold text-white">Scheduled Tasks</h2>
+            <h2 className="text-lg font-semibold text-artha-text">Scheduled Tasks</h2>
             <p className="text-sm text-artha-muted">Run the agent automatically on a schedule or at a specific time.</p>
           </div>
         </div>
@@ -125,8 +133,8 @@ export default function SchedulerPanel() {
 
       {/* Create form */}
       {showForm && (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-4">
-          <h3 className="text-sm font-semibold text-white">Create Scheduled Task</h3>
+        <div className="rounded-xl border border-artha-border bg-artha-text/5 p-4 space-y-4">
+          <h3 className="text-sm font-semibold text-artha-text">Create Scheduled Task</h3>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
@@ -135,7 +143,7 @@ export default function SchedulerPanel() {
                 value={name}
                 onChange={e => setName(e.target.value)}
                 placeholder="Morning briefing"
-                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-artha-muted focus:outline-none focus:border-artha-accent/50"
+                className="w-full bg-black/30 border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-artha-accent/50"
               />
             </div>
             <div className="space-y-1">
@@ -145,7 +153,7 @@ export default function SchedulerPanel() {
                   <button
                     key={t}
                     onClick={() => setScheduleType(t)}
-                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${scheduleType === t ? 'bg-artha-accent/20 text-artha-accent border border-artha-accent/30' : 'bg-black/20 text-artha-muted border border-white/10 hover:text-white'}`}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${scheduleType === t ? 'bg-artha-accent/20 text-artha-accent border border-artha-accent/30' : 'bg-black/20 text-artha-muted border border-artha-border hover:text-artha-text'}`}
                   >
                     {t === 'cron' ? 'Repeating' : 'One-time'}
                   </button>
@@ -161,7 +169,7 @@ export default function SchedulerPanel() {
               onChange={e => setPrompt(e.target.value)}
               rows={3}
               placeholder="Research today's top AI news and write a summary to ~/Desktop/briefing.md"
-              className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-artha-muted focus:outline-none focus:border-artha-accent/50 resize-none"
+              className="w-full bg-black/30 border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-artha-accent/50 resize-none"
             />
           </div>
 
@@ -173,7 +181,7 @@ export default function SchedulerPanel() {
                   <button
                     key={p.label}
                     onClick={() => setCronPreset(p.value)}
-                    className={`px-3 py-1.5 rounded-lg text-xs text-left transition-colors ${cronPreset === p.value && p.value !== '' ? 'bg-artha-accent/20 text-artha-accent border border-artha-accent/30' : 'bg-black/20 text-artha-muted border border-white/10 hover:text-white'}`}
+                    className={`px-3 py-1.5 rounded-lg text-xs text-left transition-colors ${cronPreset === p.value && p.value !== '' ? 'bg-artha-accent/20 text-artha-accent border border-artha-accent/30' : 'bg-black/20 text-artha-muted border border-artha-border hover:text-artha-text'}`}
                   >
                     {p.label}
                   </button>
@@ -184,7 +192,7 @@ export default function SchedulerPanel() {
                   value={cronCustom}
                   onChange={e => setCronCustom(e.target.value)}
                   placeholder="0 8 * * 1-5   (custom cron expression)"
-                  className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-artha-muted font-mono focus:outline-none focus:border-artha-accent/50"
+                  className="w-full bg-black/30 border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted font-mono focus:outline-none focus:border-artha-accent/50"
                 />
               )}
             </div>
@@ -195,13 +203,13 @@ export default function SchedulerPanel() {
                 type="datetime-local"
                 value={fireAtInput}
                 onChange={e => setFireAtInput(e.target.value)}
-                className="bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-artha-accent/50"
+                className="bg-black/30 border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text focus:outline-none focus:border-artha-accent/50"
               />
             </div>
           )}
 
           <div className="flex gap-2 justify-end">
-            <button onClick={resetForm} className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-artha-muted text-sm transition-colors">Cancel</button>
+            <button onClick={resetForm} className="px-3 py-1.5 rounded-lg bg-artha-text/5 hover:bg-artha-text/8 text-artha-muted text-sm transition-colors">Cancel</button>
             <button
               onClick={handleCreate}
               disabled={saving || !name.trim() || !prompt.trim()}
@@ -227,14 +235,14 @@ export default function SchedulerPanel() {
       ) : (
         <div className="space-y-3">
           {tasks.map(task => (
-            <div key={task.task_id} className={`rounded-xl border p-4 transition-colors ${task.is_enabled ? 'border-white/10 bg-white/5' : 'border-white/5 bg-white/2 opacity-60'}`}>
+            <div key={task.task_id} className={`rounded-xl border p-4 transition-colors ${task.is_enabled ? 'border-artha-border bg-artha-text/5' : 'border-white/5 bg-white/2 opacity-60'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     {task.last_status === 'ok' && <CheckCircle2 size={13} className="text-green-400 shrink-0" />}
                     {task.last_status === 'error' && <AlertCircle size={13} className="text-red-400 shrink-0" />}
                     {task.last_status === 'running' && <RefreshCw size={13} className="text-yellow-400 animate-spin shrink-0" />}
-                    <span className="text-sm font-medium text-white truncate">{task.name}</span>
+                    <span className="text-sm font-medium text-artha-text truncate">{task.name}</span>
                   </div>
                   <p className="text-xs text-artha-muted mt-0.5 truncate">{task.prompt}</p>
                   <div className="flex items-center gap-3 mt-2 text-xs text-artha-muted">
@@ -251,7 +259,7 @@ export default function SchedulerPanel() {
                   <button
                     onClick={() => handleToggle(task)}
                     title={task.is_enabled ? 'Pause' : 'Resume'}
-                    className="p-1.5 rounded-lg hover:bg-white/10 text-artha-muted hover:text-white transition-colors"
+                    className="p-1.5 rounded-lg hover:bg-artha-text/8 text-artha-muted hover:text-artha-text transition-colors"
                   >
                     {task.is_enabled ? <Pause size={14} /> : <Play size={14} />}
                   </button>

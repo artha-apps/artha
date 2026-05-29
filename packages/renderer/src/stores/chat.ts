@@ -112,6 +112,9 @@ interface ChatState {
   activeSkill: ActiveSkillBadge | null;
   pendingAttachments: MessageAttachment[];
   scopes: SessionScope[];
+  /** Set of FeatureGuide keys the user has dismissed. Persisted to
+   *  localStorage so guides don't re-appear after a reload. */
+  seenGuides: Set<string>;
 
   // Actions
   setSessions: (s: Session[]) => void;
@@ -131,9 +134,37 @@ interface ChatState {
   setStreaming: (streaming: boolean) => void;
   setActiveWorkflowId: (id: string | null) => void;
   setActiveSkill: (skill: ActiveSkillBadge | null) => void;
+  /** Mark a feature guide as seen — collapses the inline card. */
+  dismissGuide: (featureKey: string) => void;
+  /** Re-open a feature guide (called from the panel header "?" button). */
+  reopenGuide: (featureKey: string) => void;
+}
+
+const SEEN_GUIDES_KEY = 'artha.seenGuides.v1';
+
+function loadSeenGuides(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(SEEN_GUIDES_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSeenGuides(set: Set<string>) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SEEN_GUIDES_KEY, JSON.stringify([...set]));
+  } catch {
+    /* quota exceeded or storage blocked — non-fatal */
+  }
 }
 
 export const useChatStore = create<ChatState>((set) => ({
+  // ── Initial state ──────────────────────────────────────────────────────────
   sessions: [],
   activeSessionId: null,
   messages: [],
@@ -149,7 +180,9 @@ export const useChatStore = create<ChatState>((set) => ({
   activeSkill: null,
   pendingAttachments: [],
   scopes: [],
+  seenGuides: loadSeenGuides(),
 
+  // ── Actions ────────────────────────────────────────────────────────────────
   setSessions: (sessions) => set({ sessions }),
   setScopes: (scopes) => set({ scopes }),
   // Switching sessions clears ALL in-flight state, including isStreaming — so a
@@ -237,4 +270,21 @@ export const useChatStore = create<ChatState>((set) => ({
   setStreaming: (streaming) => set({ isStreaming: streaming }),
   setActiveWorkflowId: (id) => set({ activeWorkflowId: id }),
   setActiveSkill: (skill) => set({ activeSkill: skill }),
+
+  dismissGuide: (featureKey) =>
+    set((s) => {
+      const next = new Set(s.seenGuides);
+      next.add(featureKey);
+      saveSeenGuides(next);
+      return { seenGuides: next };
+    }),
+
+  reopenGuide: (featureKey) =>
+    set((s) => {
+      if (!s.seenGuides.has(featureKey)) return s;
+      const next = new Set(s.seenGuides);
+      next.delete(featureKey);
+      saveSeenGuides(next);
+      return { seenGuides: next };
+    }),
 }));

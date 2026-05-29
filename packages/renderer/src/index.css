@@ -2,25 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Artha — light institutional palette, matching artha.space landing.
+   Variable names are kept stable so component utility classes don't churn. */
 :root {
-  --artha-blue:     #1B4F72;
-  --artha-accent:   #2E86C1;
-  --artha-surface:  #0f1117;
-  --artha-surface2: #161b22;
-  --artha-border:   #21262d;
-  --artha-text:     #e6edf3;
-  --artha-muted:    #8b949e;
+  --artha-bg:            #FAFAF7;  /* page background (warm off-white) */
+  --artha-surface:       #FFFFFF;  /* cards, elevated panels */
+  --artha-surface2:      #F4F1EA;  /* secondary surface (subtle warmth) */
+  --artha-border:        #E8E4DA;  /* hairline borders */
+  --artha-border-strong: #D1CCC0;  /* hover / emphasized borders */
+  --artha-text:          #0A1628;  /* deep navy primary text */
+  --artha-muted:         #5B6577;  /* secondary text */
+  --artha-subtle:        #8A93A3;  /* tertiary text / labels */
+  --artha-accent:        #0035ED;  /* Ripple blue — used sparingly */
+  --artha-accent-hover:  #0028B8;
+  --artha-danger:        #B42318;
+  --artha-success:       #15803D;
+  --artha-warn:          #B45309;
+  /* Compatibility — old variables that may still be referenced. */
+  --artha-blue:          #0A1628;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; overflow: hidden; }
-body { background: var(--artha-surface); color: var(--artha-text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 
-/* Custom scrollbar */
-::-webkit-scrollbar { width: 6px; }
+body {
+  background: var(--artha-bg);
+  color: var(--artha-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-feature-settings: 'ss01', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+code, pre, .font-mono {
+  font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, 'Liberation Mono', monospace;
+}
+
+/* Subtle scrollbar in the brand palette. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--artha-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: var(--artha-border-strong); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--artha-muted); }
 
 /* Drag region for macOS title bar */
 .drag-region { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
+
+/* Selection — restrained accent. */
+::selection { background: rgba(0, 53, 237, 0.16); color: var(--artha-text); }
+
+/* Focus ring — consistent with the landing site. */
+:focus-visible {
+  outline: 2px solid var(--artha-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}

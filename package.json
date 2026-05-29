@@ -51,7 +51,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "Noopurtrivedi",
+        "owner": "artha-apps",
         "repo": "artha"
       }
     ],

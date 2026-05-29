@@ -30,13 +30,22 @@ import LANServerPanel from './components/Settings/LANServerPanel';
 import DesktopControlPanel from './components/Settings/DesktopControlPanel';
 import TeamPanel from './components/Settings/TeamPanel';
 import SettingsPanel from './components/Settings/SettingsPanel';
+import { TooltipProvider } from './components/ui/Tooltip';
 
+// Expose the type-safe ArthaAPI that the preload script injects onto `window`.
+// All IPC calls go through `window.artha.*` — there is no direct Node.js access
+// from the renderer.
 declare global {
   interface Window {
     artha: import('../../app/src/preload').ArthaAPI;
   }
 }
 
+/**
+ * App — root component. Registers all IPC→store bridges in a single long-lived
+ * effect and renders the shell. The real layout logic lives in the individual
+ * panel components; App is responsible only for wiring and top-level routing.
+ */
 export default function App() {
   const { appendToken, resetStream, finaliseStream, addToolEvent, addCitations, setPendingPlan, setPendingClarify, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId, setActiveSkill } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
@@ -93,14 +102,15 @@ export default function App() {
     // the user in the loop without forcing them to find a toggle.
     const offAutoOpen = window.artha.browser.onAutoOpen(() => setBrowserOpen(true));
 
-    // Load sessions
+    // Hydrate the sidebar session list on first mount.
     window.artha.sessions.list().then(setSessions);
 
     return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offClarify(); offTitle(); offAutoOpen(); };
   }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-artha-surface text-white">
+    <TooltipProvider delayDuration={400} skipDelayDuration={150}>
+    <div className="flex h-screen w-screen overflow-hidden bg-artha-bg text-artha-text">
       {/* macOS-style drag region */}
       <div className="drag-region fixed top-0 left-0 right-0 h-8 z-50" />
 
@@ -140,5 +150,6 @@ export default function App() {
 
       {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
     </div>
+    </TooltipProvider>
   );
 }
