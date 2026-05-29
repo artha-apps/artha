@@ -18,6 +18,7 @@ import { useChatStore } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
 import ToolCallInline from './ToolCallInline';
 import Citations from './Citations';
+import AtAutocomplete, { type AtSuggestion } from './AtAutocomplete';
 import { Tooltip } from '../ui/Tooltip';
 
 /** First-run hints shown on the empty state and the new-session screen. */
@@ -103,6 +104,9 @@ export default function ChatWindow() {
   const [skills, setSkills] = useState<SkillOption[]>([]);
   const [ragIndexes, setRagIndexes] = useState<{ name: string; doc_count: number }[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
+  // `@`-autocomplete dismissal. The popover is otherwise derived from the
+  // input pattern; this lets Esc hide it without erasing the user's typing.
+  const [atDismissed, setAtDismissed] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [popplerWarning, setPopplerWarning] = useState(false);
   // Parallel sub-agent run indicator: the sub-task prompts + which have finished.
@@ -168,6 +172,25 @@ export default function ChatWindow() {
     textareaRef.current?.focus();
   };
 
+  // `@`-autocomplete trigger: input ends with `@partial` at a word boundary.
+  // v1 fires only at the trailing edge of input — full cursor-aware insertion
+  // can come later. `showAt` is suppressed while the slash menu owns the keys.
+  const atMatch = input.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+  const atQuery: string | null = atMatch ? (atMatch[1] ?? '') : null;
+  const showAt = atQuery !== null && !showSlash && !atDismissed;
+
+  /** Splice the picked reference back into the textarea, replacing the
+   *  trailing `@partial` token with the value + a trailing space. Preserves
+   *  any leading whitespace that anchored the match. */
+  const pickAtSuggestion = (s: AtSuggestion): void => {
+    setInput(prev => prev.replace(
+      /(^|\s)@[a-zA-Z0-9_-]*$/,
+      (_full, lead: string) => `${lead}${s.value} `,
+    ));
+    setAtDismissed(false);
+    textareaRef.current?.focus();
+  };
+
   const autoResize = (el: HTMLTextAreaElement) => {
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
@@ -175,6 +198,9 @@ export default function ChatWindow() {
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
+    // Any keystroke after Esc-dismiss re-enables the `@` popover so it can
+    // re-open as the user keeps typing a new reference.
+    if (atDismissed) setAtDismissed(false);
     autoResize(e.target);
   };
 
@@ -334,8 +360,11 @@ export default function ChatWindow() {
   };
 
   /** Composer keydown — when the slash-menu is open, arrows/enter/tab drive it;
-   *  otherwise Enter (without shift) sends the message. */
+   *  otherwise Enter (without shift) sends the message. The `@`-popover owns
+   *  its own keys via a window capture listener (see AtAutocomplete) so we
+   *  bail early when it's visible to avoid double-handling. */
   const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showAt) return;
     if (showSlash) {
       const max = slashResults.length - 1;
       const idx = Math.min(slashIndex, max);
@@ -495,6 +524,15 @@ export default function ChatWindow() {
       {/* Input */}
       <div className="px-6 pb-5 pt-2">
         <div className="max-w-3xl mx-auto relative">
+
+          {/* `@`-reference popover — projects, in-scope folders/files, tool tokens. */}
+          {showAt && atQuery !== null && (
+            <AtAutocomplete
+              query={atQuery}
+              onSelect={pickAtSuggestion}
+              onClose={() => setAtDismissed(true)}
+            />
+          )}
 
           {/* Slash-command menu — lists enabled skills as the user types "/…" */}
           {showSlash && (

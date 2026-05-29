@@ -11,7 +11,7 @@
  * internal-UI rework. Search filters the left nav by section/panel name.
  */
 import { useEffect, useMemo, useState, type ComponentType } from 'react';
-import { Search, X, Cpu, Sparkles, Wrench, Globe, Route, Brain, FolderSearch, Package, Archive, Link, Wifi, Code2, Monitor, Store, Users, Clock, History, ShieldCheck, Settings as SettingsIcon } from 'lucide-react';
+import { Search, X, Cpu, Sparkles, Wrench, Globe, Route, Brain, FolderSearch, Package, Archive, Link, Wifi, Code2, Monitor, Store, Users, Clock, History, ShieldCheck, Settings as SettingsIcon, type LucideIcon } from 'lucide-react';
 import { useChatStore, type ActiveView } from '../../stores/chat';
 import ModelsPanel from '../Settings/ModelsPanel';
 import SkillsPanel from '../Settings/SkillsPanel';
@@ -37,7 +37,7 @@ import SettingsPanel from '../Settings/SettingsPanel';
 interface NavEntry {
   id: Exclude<ActiveView, 'chat'>;
   label: string;
-  icon: ComponentType<{ size?: number; className?: string }>;
+  icon: LucideIcon;
   Panel: ComponentType;
 }
 
