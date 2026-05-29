@@ -86,7 +86,7 @@ export interface SessionScope {
  *  the Workspace Settings modal scoped to that panel. Keeping the union lets
  *  legacy call-sites (`setActiveView('models')`) deep-link into the modal
  *  without changing their signature. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license';
 
 /** Three top-level rooms inside the Chat view. Tab selection persists in
  *  localStorage so reloads land where you left off. */

@@ -257,12 +257,38 @@ const api = {
 
   // ── LAN collaboration server ──────────────────────────────────────────────
   // Exposes the agent over the local network (0.0.0.0:7842) for teammates.
+  // `start` may return an error string when the current license tier does not
+  // include the LAN server (Free → must upgrade).
   lan: {
-    start: () => ipcRenderer.invoke('lan:start') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
+    start: () => ipcRenderer.invoke('lan:start') as Promise<{ running: boolean; url: string | null; localIp: string | null; error?: string }>,
     stop: () => ipcRenderer.invoke('lan:stop') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
     getStatus: () => ipcRenderer.invoke('lan:getStatus') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
     setAutostart: (enabled: boolean) => ipcRenderer.invoke('lan:setAutostart', enabled) as Promise<boolean>,
     getAutostart: () => ipcRenderer.invoke('lan:getAutostart') as Promise<boolean>,
+  },
+
+  // ── License ──────────────────────────────────────────────────────────────
+  // Offline Ed25519-signed keys gate Pro/Enterprise capabilities (LAN server,
+  // shared memories, RBAC, seat counts). The raw key never leaves the main
+  // process after `apply` — the renderer only sees derived entitlements.
+  license: {
+    get: () => ipcRenderer.invoke('license:get') as Promise<{
+      entitlements: {
+        tier: 'free' | 'pro' | 'enterprise';
+        seats: number; lanServer: boolean; sharedMemory: boolean;
+        orgHub: boolean; rbac: boolean; auditExport: boolean;
+        org: string | null; expiresAt: number | null;
+      };
+      hasKey: boolean;
+    }>,
+    apply: (rawKey: string) => ipcRenderer.invoke('license:apply', rawKey) as Promise<
+      | { ok: true; entitlements: { tier: 'free' | 'pro' | 'enterprise'; seats: number; lanServer: boolean; sharedMemory: boolean; orgHub: boolean; rbac: boolean; auditExport: boolean; org: string | null; expiresAt: number | null } }
+      | { ok: false; error: string }
+    >,
+    clear: () => ipcRenderer.invoke('license:clear') as Promise<{
+      ok: true;
+      entitlements: { tier: 'free'; seats: number; lanServer: boolean; sharedMemory: boolean; orgHub: boolean; rbac: boolean; auditExport: boolean; org: null; expiresAt: null };
+    }>,
   },
 
   // ── Desktop control ───────────────────────────────────────────────────────
@@ -454,8 +480,10 @@ const api = {
       key_id: string; name: string; created_at: number;
       last_used_at: number | null; is_enabled: number;
     }[]>,
-    create: (name: string) =>
-      ipcRenderer.invoke('apikeys:create', name) as Promise<{ key_id: string; plaintext: string }>,
+    // Two call shapes for back-compat: a plain name (legacy) or an object that
+    // binds the key to a teammate. Bound keys carry identity into LAN auth.
+    create: (args: string | { name: string; memberId?: string }) =>
+      ipcRenderer.invoke('apikeys:create', args) as Promise<{ key_id: string; plaintext: string }>,
     toggle: (keyId: string, enabled: boolean) =>
       ipcRenderer.invoke('apikeys:toggle', keyId, enabled) as Promise<boolean>,
     revoke: (keyId: string) =>

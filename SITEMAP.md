@@ -1,6 +1,6 @@
 # Artha — Workspace Sitemap
 
-> Last updated: 2026-05-27 (reconciled file map with tree; agent live-environment context injection)
+> Last updated: 2026-05-28 (added licensing / tier entitlements, forked onboarding, org-hub packaging)
 
 ## Root
 
@@ -11,9 +11,15 @@
 | `REQUIREMENTS.md` | Living product spec / implementation log |
 | `SITEMAP.md` | This file |
 | `README.md` | Public-facing overview (install, usage, contributing) |
+| `Dockerfile.hub` | Interim container build for the org hub — wraps the Electron app in `xvfb` so the LAN server runs headlessly until the Phase 2 native-headless service ships |
 | `assets/` | App icons — `icon.icns` (macOS), `icon.ico` (Windows), `icon.png` (Linux) |
+| `scripts/sign-license.mjs` | Offline seller-side CLI — `--genkeys` mints the Ed25519 keypair once; `--tier/--seats/--org/--days` issues a signed license token. Private key stays in `~/.artha-license-key.pem` (gitignored) and never ships |
 | `.github/workflows/ci.yml` | CI: typecheck + lint + test on push/PR |
 | `.github/workflows/release.yml` | Release: build DMG/EXE/DEB and publish to GitHub Releases on tag push |
+| `docs/deploy/org-hub.md` | Runbook for standing up the Enterprise org hub — dedicated-host (Option A, recommended) + interim Docker (Option B), sizing, network, updates, backups, license issuance, member quick-connect |
+| `docs/gtm/onboarding/single-client.md` | SOP for B2C / single-customer onboarding — persona=Individual, optional Pro license, upgrade triggers |
+| `docs/gtm/onboarding/institution.md` | SOP for B2B / large-institution onboarding — mint org license, customer-operated hub deploy, seat provisioning, renewals |
+| `docs/roadmap/phase-2-deferred.md` | The four items Phase 1 deliberately deferred — headless server extraction, SQLite→Postgres, SSO/SAML/OIDC + SCIM, in-app thin-client mode. For each: why deferred, what unblocks it, Phase 2 scope, and which Phase 1 decisions already align so no rework is needed |
 
 ---
 
@@ -76,6 +82,13 @@
 | **types/** | |
 | `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree-fork/nut-js` optional native dep |
 | `src/types/rag-extractors.d.ts` | Ambient shims for the pdf-parse internal entry + mammoth (avoids debug-mode fixture read / missing types) |
+| **license/** | |
+| `src/license/entitlements.ts` | `Tier` (`free` \| `pro` \| `enterprise`), `Entitlements`, `TIER_ENTITLEMENTS` matrix, `FREE_ENTITLEMENTS` fallback. Single source of truth for what each SKU unlocks |
+| `src/license/verify.ts` | Ed25519 verification + cached `getEntitlements()` — parses the signed token, rejects tampered/expired, falls back to Free on any failure. Uses Node built-in `crypto`; no network call |
+| `src/license/public-key.ts` | Bundled PEM public verification key. Placeholder shipped; rotated via `scripts/sign-license.mjs --genkeys` |
+| `src/license/verify.test.ts` | Vitest suite — mints a keypair in-process and tests valid/tampered/expired/wrong-key/garbage paths + entitlement derivation |
+| **scripts/** (app-scoped) | |
+| `scripts/hub-entrypoint.sh` | Container entrypoint for `Dockerfile.hub` — boots `xvfb` and seeds the license token from `ARTHA_LICENSE_KEY` on first run |
 
 ---
 
@@ -103,7 +116,8 @@
 | **components/ExecutionLog/** | |
 | `ExecutionLog.tsx` | Live step-by-step view of the ReAct loop's actions |
 | **components/Onboarding/** | |
-| `Onboarding.tsx` | First-run setup — detects Ollama + hardware, pulls a recommended model with progress |
+| `Onboarding.tsx` | First-run setup — persona picker (Individual vs Organization admin), then Ollama+model flow for individuals with optional Pro-license paste; routes organization admins to `OrgSetup` |
+| `OrgSetup.tsx` | Three-step admin sub-flow — paste org license, start the LAN/hub server, provision seats (mints a `team_members` row + bound API key per teammate, renders copyable connection cards) |
 | **components/Sidebar/** | |
 | `Sidebar.tsx` | Flat chat-session list + New Chat; nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Team, Settings (folders are attached per chat in the composer) |
 | **components/Settings/** | |
@@ -121,6 +135,7 @@
 | `LANServerPanel.tsx` | Start/stop the LAN collaboration server — copyable URL, inline QR, curl/fetch examples, autostart |
 | `DesktopControlPanel.tsx` | Toggle desktop control (mouse/keyboard/screenshot), test-screenshot preview, tool list |
 | `TeamPanel.tsx` | Team mode — members, LAN API keys, shared memories |
+| `LicensePanel.tsx` | Apply / replace / clear the offline-signed license key; renders current tier, seats, org, expiry. Surfaces under Workspace Settings → Team → License |
 | `SettingsPanel.tsx` | App settings — notifications toggle |
 | `ProvenancePanel.tsx` | Source attribution for agent answers (`.artha-receipt.json` sidecar) |
 | `TimeTravelPanel.tsx` | Session replay / history — fork a run from any past step |

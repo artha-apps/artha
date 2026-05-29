@@ -48,6 +48,8 @@ import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
 import { recomputePrimaryProject } from '../db/scopes';
+import { Entitlements, FREE_ENTITLEMENTS } from '../license/entitlements';
+import { getEntitlements, invalidateEntitlements, parseAndVerify } from '../license/verify';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
@@ -133,6 +135,23 @@ function stopIdeMcpServer(): { running: boolean } {
   return { running: false };
 }
 
+// ── Licensing helpers ──────────────────────────────────────────────────────
+// The raw license key lives on settings_json.license_key. These two helpers
+// give every module-level function (LAN server, autostart) read access without
+// pulling the inline closures from registerIpcHandlers. Cached entitlements
+// in ../license/verify keep this hot path effectively free.
+function getRawLicenseKey(): string | null {
+  try {
+    const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+    const k = (JSON.parse(row?.settings_json ?? '{}') as { license_key?: string }).license_key;
+    return typeof k === 'string' && k ? k : null;
+  } catch { return null; }
+}
+
+function currentEntitlements(): Entitlements {
+  return getEntitlements(getRawLicenseKey);
+}
+
 // ── LAN API-key auth helper ─────────────────────────────────────────────────
 // The LAN server requires a Bearer token on every request when at least one
 // API key has been registered. We hash incoming tokens with SHA-256 and
@@ -142,24 +161,39 @@ function hashApiKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
-function isLanRequestAuthorised(req: http.IncomingMessage): boolean {
+/** Caller identity resolved from a Bearer token. memberId is null for keys
+ *  issued before team-mode (no team_members linkage); role defaults to 'admin'
+ *  on the no-keys-registered open-access path so future admin-only routes
+ *  remain reachable on a fresh box. */
+export type LanIdentity = { memberId: string | null; memberName: string | null; role: 'admin' | 'member' };
+
+function authoriseLanRequest(req: http.IncomingMessage): LanIdentity | null {
   try {
     const db = getDb();
-    const keys = db.prepare(`SELECT key_hash FROM api_keys WHERE is_enabled=1`).all() as { key_hash: string }[];
-    // No keys registered → open access (owner hasn't locked down the server yet)
-    if (keys.length === 0) return true;
+    const keys = db.prepare(
+      `SELECT key_hash, member_id, role FROM api_keys WHERE is_enabled=1`,
+    ).all() as { key_hash: string; member_id: string | null; role: string | null }[];
+    // No keys registered → open access (owner hasn't locked down yet). Phase 2
+    // SSO will tighten this; for now it preserves the existing dev-friendly
+    // behaviour where you can curl /chat immediately after starting the server.
+    if (keys.length === 0) return { memberId: null, memberName: null, role: 'admin' };
     const auth = (req.headers['authorization'] ?? '') as string;
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (!token) return false;
+    if (!token) return null;
     const hash = hashApiKey(token);
-    const matched = keys.some(k => k.key_hash === hash);
-    if (matched) {
-      // Best-effort last-used timestamp update
-      try { db.prepare(`UPDATE api_keys SET last_used_at=unixepoch() WHERE key_hash=?`).run(hash); } catch { /* ignore */ }
+    const matched = keys.find(k => k.key_hash === hash);
+    if (!matched) return null;
+    // Best-effort last-used timestamp update.
+    try { db.prepare(`UPDATE api_keys SET last_used_at=unixepoch() WHERE key_hash=?`).run(hash); } catch { /* ignore */ }
+    let memberName: string | null = null;
+    if (matched.member_id) {
+      const m = db.prepare(`SELECT display_name FROM team_members WHERE member_id=?`).get(matched.member_id) as { display_name: string } | undefined;
+      memberName = m?.display_name ?? null;
     }
-    return matched;
+    const role: 'admin' | 'member' = matched.role === 'admin' ? 'admin' : 'member';
+    return { memberId: matched.member_id, memberName, role };
   } catch {
-    return false; // fail closed
+    return null; // fail closed
   }
 }
 
@@ -206,8 +240,20 @@ function lanStatus(): { running: boolean; url: string | null; localIp: string | 
  *   GET  /skills — full list of enabled skill objects
  *   POST /chat   — forward a message to the orchestrator; streams NDJSON reply
  */
-function startLanServer(): { running: boolean; url: string | null; localIp: string | null } {
+function startLanServer(): { running: boolean; url: string | null; localIp: string | null; error?: string } {
   if (lanServer) return lanStatus();
+  // Gate: Free tier may NOT bind the LAN port. This is the central Free→Pro
+  // monetisation wall; the persona-onboarding flow paints a clear upgrade CTA
+  // when this error string surfaces in the UI.
+  const ents = currentEntitlements();
+  if (!ents.lanServer) {
+    return {
+      running: false,
+      url: null,
+      localIp: null,
+      error: 'The LAN/team server requires a Pro or Enterprise license. Apply a license in Settings → License.',
+    };
+  }
   lanLocalIp = detectLocalIp();
 
   const server = http.createServer((req, res) => {
@@ -225,8 +271,12 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
       return;
     }
 
-    // All other routes require a valid Bearer token if any keys exist
-    if (!isLanRequestAuthorised(req)) {
+    // All other routes require a valid Bearer token if any keys exist. The
+    // resolved identity is captured for future per-member context; admin-only
+    // routes (none yet in Phase 1) will require `role === 'admin'` when
+    // currentEntitlements().rbac is true.
+    const identity = authoriseLanRequest(req);
+    if (!identity) {
       json(401, { error: 'Unauthorized. Include a valid Bearer token in the Authorization header.' });
       return;
     }
@@ -325,10 +375,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // pointing at localhost:3847/mcp) have a live server to reach immediately.
   startIdeMcpServer();
 
-  // Auto-start the LAN collaboration server if the user opted in.
+  // Auto-start the LAN collaboration server if the user opted in AND their
+  // license unlocks it. A Free user who flipped autostart on then downgraded
+  // will silently no-op here instead of crashing or binding the port.
   try {
-    const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
-    if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) startLanServer();
+    if (currentEntitlements().lanServer) {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+      if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) startLanServer();
+    }
   } catch (err) {
     console.warn('[Artha] LAN autostart check failed:', err);
   }
@@ -1078,6 +1132,45 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify({ ...existing, ...patch }));
   });
 
+  // ── License ────────────────────────────────────────────────────────────
+  // Offline Ed25519-signed keys gate Pro/Enterprise capabilities. The raw key
+  // is stored on settings_json.license_key; verification is local-only (see
+  // ../license/verify). The renderer never receives the raw key back after
+  // apply — only the derived entitlements + organisation + expiry.
+  ipcMain.handle('license:get', () => {
+    const ents = currentEntitlements();
+    return {
+      entitlements: ents,
+      hasKey: !!getRawLicenseKey(),
+    };
+  });
+
+  ipcMain.handle('license:apply', (_e, rawKey: string) => {
+    const trimmed = (rawKey ?? '').trim();
+    if (!trimmed) {
+      return { ok: false, error: 'License key is empty.' };
+    }
+    const payload = parseAndVerify(trimmed);
+    if (!payload) {
+      return { ok: false, error: 'Invalid or expired license key. Check that you pasted the full line.' };
+    }
+    const db = getDb();
+    const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
+    db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`)
+      .run(JSON.stringify({ ...existing, license_key: trimmed }));
+    invalidateEntitlements();
+    return { ok: true, entitlements: currentEntitlements() };
+  });
+
+  ipcMain.handle('license:clear', () => {
+    const db = getDb();
+    const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
+    delete existing.license_key;
+    db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify(existing));
+    invalidateEntitlements();
+    return { ok: true, entitlements: FREE_ENTITLEMENTS };
+  });
+
   // ── Bundles ─────────────────────────────────────────────────────────────
   ipcMain.handle('bundles:export', async (_e, runId: string, docId?: string) => {
     const result = await dialog.showSaveDialog(window, {
@@ -1607,6 +1700,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('team:addMember', (_e, m: { displayName: string; email?: string; role?: 'admin' | 'member' }) => {
     const db = getDb();
+    // Seat enforcement: the license-encoded seat count caps the team roster.
+    // Pro/Enterprise customers can lift this by re-issuing a key with a higher
+    // `seats`; Free customers stay at 1.
+    const ents = currentEntitlements();
+    const count = (db.prepare(`SELECT COUNT(*) AS n FROM team_members`).get() as { n: number }).n;
+    if (count >= ents.seats) {
+      throw new Error(`Seat limit reached (${count}/${ents.seats}). Upgrade your license to add more members.`);
+    }
     const id = crypto.randomUUID();
     db.prepare(
       `INSERT INTO team_members (member_id, display_name, email, role) VALUES (?, ?, ?, ?)`
@@ -1637,15 +1738,33 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     ).all();
   });
 
-  ipcMain.handle('apikeys:create', (_e, name: string): { key_id: string; plaintext: string } => {
+  // Accepts either the legacy string-only form (`apikeys:create("My key")`) or
+  // the new object form that binds the key to a teammate
+  // (`apikeys:create({ name, memberId })`). The bound member's role is cached
+  // on the row so LAN auth can resolve identity without a join.
+  ipcMain.handle('apikeys:create', (_e, args: string | { name: string; memberId?: string }): { key_id: string; plaintext: string } => {
+    const name = (typeof args === 'string' ? args : args?.name) ?? 'API Key';
+    const memberId = typeof args === 'object' && args ? (args.memberId ?? null) : null;
     const db = getDb();
+    // Seat enforcement: a "seat" = one enabled API key.
+    const ents = currentEntitlements();
+    const enabledCount = (db.prepare(`SELECT COUNT(*) AS n FROM api_keys WHERE is_enabled=1`).get() as { n: number }).n;
+    if (enabledCount >= ents.seats) {
+      throw new Error(`Seat limit reached (${enabledCount}/${ents.seats}). Upgrade your license to issue more keys.`);
+    }
+    let role: 'admin' | 'member' = 'member';
+    if (memberId) {
+      const m = db.prepare(`SELECT role FROM team_members WHERE member_id=?`).get(memberId) as { role: string } | undefined;
+      if (!m) throw new Error(`Unknown member_id "${memberId}".`);
+      role = m.role === 'admin' ? 'admin' : 'member';
+    }
     const { randomBytes } = require('crypto') as typeof import('crypto');
     const plaintext = randomBytes(32).toString('base64url'); // 43-char URL-safe token
     const keyHash = hashApiKey(plaintext);
     const id = crypto.randomUUID();
     db.prepare(
-      `INSERT INTO api_keys (key_id, name, key_hash) VALUES (?, ?, ?)`
-    ).run(id, name.trim() || 'API Key', keyHash);
+      `INSERT INTO api_keys (key_id, name, key_hash, member_id, role) VALUES (?, ?, ?, ?, ?)`,
+    ).run(id, name.trim() || 'API Key', keyHash, memberId, role);
     return { key_id: id, plaintext };
   });
 
