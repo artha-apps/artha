@@ -97,21 +97,27 @@ export default function AtAutocomplete({ query, onSelect, onClose }: AtAutocompl
   // Reset highlight when the suggestion set shrinks/changes.
   useEffect(() => { setSelectedIdx(0); }, [query, items.length]);
 
-  // Keyboard navigation. Bound to window so the textarea keeps focus.
+  // Keyboard navigation. Bound to window in CAPTURE phase + we stop
+  // propagation/immediate-propagation so React's textarea onKeyDown (which
+  // would otherwise treat Enter as "send") never fires while the popover
+  // is open and a handled key is pressed.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!items.length) return;
-      if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIdx(i => (i + 1) % items.length); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedIdx(i => (i - 1 + items.length) % items.length); }
+      const handled =
+        e.key === 'ArrowDown' || e.key === 'ArrowUp' ||
+        e.key === 'Enter'     || e.key === 'Tab'    ||
+        e.key === 'Escape';
+      if (!handled) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      if (e.key === 'ArrowDown') setSelectedIdx(i => (i + 1) % items.length);
+      else if (e.key === 'ArrowUp') setSelectedIdx(i => (i - 1 + items.length) % items.length);
       else if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
         const pick = items[selectedIdx];
-        if (pick) {
-          pick.onPick?.();
-          onSelect(pick);
-        }
+        if (pick) { pick.onPick?.(); onSelect(pick); }
       } else if (e.key === 'Escape') {
-        e.preventDefault();
         onClose();
       }
     };

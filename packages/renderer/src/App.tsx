@@ -1,6 +1,15 @@
 /**
  * App root — wires IPC event listeners and renders the shell layout.
- * Layout: [Sidebar | ChatWindow | (BrowserPane OR ExecutionLog)]
+ *
+ * Layout after the IA reshuffle:
+ *   [Sidebar | TabBar + per-tab canvas]
+ *                          ↳ Chat  → ChatWindow + (BrowserPane | ExecutionLog)
+ *                          ↳ Workflows → WorkflowsTab
+ *                          ↳ Code → CodeTab (file tree + ChatWindow)
+ *
+ * The 17 settings panels live inside the WorkspaceSettings modal (⌘,). Legacy
+ * `activeView` values other than 'chat' deep-link into that modal scrolled to
+ * the matching section, so old call-sites keep working without refactor.
  */
 import { useEffect, useState } from 'react';
 import { useChatStore } from './stores/chat';
@@ -10,26 +19,12 @@ import ChatWindow from './components/Chat/ChatWindow';
 import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
 import ClarificationModal from './components/Chat/ClarificationModal';
-import ModelsPanel from './components/Settings/ModelsPanel';
-import MCPToolsPanel from './components/Settings/MCPToolsPanel';
-import SkillsPanel from './components/Settings/SkillsPanel';
-import RAGPanel from './components/Settings/RAGPanel';
-import WebPanel from './components/Settings/WebPanel';
 import BrowserPane from './components/Browser/BrowserPane';
 import { useBrowserStore } from './stores/browser';
-import RouterPanel from './components/Settings/RouterPanel';
-import TimeTravelPanel from './components/Settings/TimeTravelPanel';
-import ProvenancePanel from './components/Settings/ProvenancePanel';
-import BundlesPanel from './components/Settings/BundlesPanel';
-import ArtifactsPanel from './components/Settings/ArtifactsPanel';
-import MarketplacePanel from './components/Settings/MarketplacePanel';
-import MemoryPanel from './components/Settings/MemoryPanel';
-import IDEIntegrationPanel from './components/Settings/IDEIntegrationPanel';
-import CloudIntegrationsPanel from './components/Settings/CloudIntegrationsPanel';
-import LANServerPanel from './components/Settings/LANServerPanel';
-import DesktopControlPanel from './components/Settings/DesktopControlPanel';
-import TeamPanel from './components/Settings/TeamPanel';
-import SettingsPanel from './components/Settings/SettingsPanel';
+import TabBar from './components/TabBar/TabBar';
+import WorkflowsTab from './components/Workflows/WorkflowsTab';
+import CodeTab from './components/Code/CodeTab';
+import WorkspaceSettings from './components/WorkspaceSettings/WorkspaceSettings';
 import { TooltipProvider } from './components/ui/Tooltip';
 
 // Expose the type-safe ArthaAPI that the preload script injects onto `window`.
@@ -47,7 +42,13 @@ declare global {
  * panel components; App is responsible only for wiring and top-level routing.
  */
 export default function App() {
-  const { appendToken, resetStream, finaliseStream, addToolEvent, addCitations, setPendingPlan, setPendingClarify, setSessions, sessions, activeView, setStreaming, setActiveWorkflowId, setActiveSkill } = useChatStore();
+  const {
+    appendToken, resetStream, finaliseStream, addToolEvent, addCitations,
+    setPendingPlan, setPendingClarify, setSessions, sessions,
+    setStreaming, setActiveWorkflowId, setActiveSkill,
+    activeTab, setProjects, openWorkspaceSettings, closeWorkspaceSettings,
+    workspaceSettingsOpen,
+  } = useChatStore();
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
 
   // First-run onboarding gate. `null` = still loading the flag; show nothing
@@ -102,54 +103,62 @@ export default function App() {
     // the user in the loop without forcing them to find a toggle.
     const offAutoOpen = window.artha.browser.onAutoOpen(() => setBrowserOpen(true));
 
-    // Hydrate the sidebar session list on first mount.
+    // Hydrate sidebar session list + project list on first mount.
     window.artha.sessions.list().then(setSessions);
+    window.artha.projects.list().then(setProjects).catch(() => { /* fresh DB */ });
 
     return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offClarify(); offTitle(); offAutoOpen(); };
   }, []);
 
+  // ── Global keyboard shortcuts ────────────────────────────────────────────
+  // ⌘, (Mac) / Ctrl+, (everywhere else) toggles Workspace Settings.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        if (workspaceSettingsOpen) closeWorkspaceSettings();
+        else openWorkspaceSettings(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [workspaceSettingsOpen, openWorkspaceSettings, closeWorkspaceSettings]);
+
   return (
     <TooltipProvider delayDuration={400} skipDelayDuration={150}>
-    <div className="flex h-screen w-screen overflow-hidden bg-artha-bg text-artha-text">
-      {/* macOS-style drag region */}
-      <div className="drag-region fixed top-0 left-0 right-0 h-8 z-50" />
+      <div className="flex h-screen w-screen overflow-hidden bg-artha-bg text-artha-text">
+        {/* macOS-style drag region */}
+        <div className="drag-region fixed top-0 left-0 right-0 h-8 z-50" />
 
-      <Sidebar />
+        <Sidebar />
 
-      <main className="flex flex-1 overflow-hidden pt-8">
-        {activeView === 'chat' && (
-          <>
-            <ChatWindow />
-            {isBrowserOpen
-              ? <BrowserPane onClose={() => setBrowserOpen(false)} />
-              : <ExecutionLog />}
-          </>
-        )}
-        {activeView === 'models' && <ModelsPanel />}
-        {activeView === 'skills' && <SkillsPanel />}
-        {activeView === 'mcp' && <MCPToolsPanel />}
-        {activeView === 'web' && <WebPanel />}
-        {activeView === 'router' && <RouterPanel />}
-        {activeView === 'timetravel' && <TimeTravelPanel />}
-        {activeView === 'provenance' && <ProvenancePanel />}
-        {activeView === 'bundles' && <BundlesPanel />}
-        {activeView === 'artifacts' && <ArtifactsPanel />}
-        {activeView === 'marketplace' && <MarketplacePanel />}
-        {activeView === 'memory' && <MemoryPanel />}
-        {activeView === 'ide' && <IDEIntegrationPanel />}
-        {activeView === 'cloud' && <CloudIntegrationsPanel />}
-        {activeView === 'lan' && <LANServerPanel />}
-        {activeView === 'desktop' && <DesktopControlPanel />}
-        {activeView === 'team' && <TeamPanel />}
-        {activeView === 'rag' && <RAGPanel />}
-        {activeView === 'settings' && <SettingsPanel />}
-      </main>
+        <main className="flex flex-1 flex-col overflow-hidden pt-8">
+          {/* Tab bar — only shows when the workspace settings modal isn't
+              the active surface. activeView !== 'chat' here means a legacy
+              call-site opened the modal; tabs stay visible behind the modal
+              backdrop because the canvas content underneath is unchanged. */}
+          <TabBar />
 
-      <PlanApproval />
-      <ClarificationModal />
+          {/* Per-tab canvas ------------------------------------------------ */}
+          {activeTab === 'chat' && (
+            <div className="flex flex-1 overflow-hidden">
+              <ChatWindow />
+              {isBrowserOpen
+                ? <BrowserPane onClose={() => setBrowserOpen(false)} />
+                : <ExecutionLog />}
+            </div>
+          )}
+          {activeTab === 'workflows' && <WorkflowsTab />}
+          {activeTab === 'code'      && <CodeTab />}
+        </main>
 
-      {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
-    </div>
+        {/* Modal layer — sits above the canvas regardless of tab. */}
+        <WorkspaceSettings />
+        <PlanApproval />
+        <ClarificationModal />
+
+        {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
+      </div>
     </TooltipProvider>
   );
 }
