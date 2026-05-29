@@ -363,10 +363,16 @@ export async function initDatabase(): Promise<void> {
     -- is shown to the user once on creation and never stored in plaintext —
     -- only a SHA-256 hex digest is persisted here. The LAN server hashes
     -- incoming tokens and compares against key_hash.
+    -- member_id / role link a key to its team_members row so the LAN server
+    -- can resolve "which teammate is calling" from the Bearer token alone.
+    -- role is cached here to avoid a join on every authorised request; it's
+    -- kept in sync by apikeys:create when the key is issued for a member.
     CREATE TABLE IF NOT EXISTS api_keys (
       key_id       TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
       name         TEXT NOT NULL,
       key_hash     TEXT NOT NULL UNIQUE,
+      member_id    TEXT,
+      role         TEXT,
       created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
       last_used_at INTEGER,
       is_enabled   INTEGER NOT NULL DEFAULT 1
@@ -523,6 +529,20 @@ export async function initDatabase(): Promise<void> {
     }
   } catch (err) {
     console.warn('[Artha] memory is_shared migration skipped:', err);
+  }
+
+  // Migration v7→v8: member_id + role on api_keys — link a Bearer-token key to
+  // the team_members row that owns it, so the LAN server can resolve identity
+  // (and role for RBAC on Enterprise) from the token alone. Nullable for keys
+  // issued before team mode existed.
+  try {
+    const akCols = db.prepare(`PRAGMA table_info(api_keys)`).all() as { name: string }[];
+    if (akCols.length) {
+      if (!akCols.some(c => c.name === 'member_id')) db.exec(`ALTER TABLE api_keys ADD COLUMN member_id TEXT`);
+      if (!akCols.some(c => c.name === 'role')) db.exec(`ALTER TABLE api_keys ADD COLUMN role TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] api_keys member_id/role migration skipped:', err);
   }
 
   console.log('[Artha] Database initialised at', dbPath);

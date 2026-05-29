@@ -37,6 +37,9 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# License signing key — NEVER commit. Seller-only, lives at ~/.artha-license-key.pem.
+*.pem
+
 # LLM models (large files — use .artha/models/)
 *.gguf
 *.bin

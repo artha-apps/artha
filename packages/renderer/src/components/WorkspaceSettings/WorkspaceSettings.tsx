@@ -11,7 +11,7 @@
  * internal-UI rework. Search filters the left nav by section/panel name.
  */
 import { useEffect, useMemo, useState, type ComponentType } from 'react';
-import { Search, X, Cpu, Sparkles, Wrench, Globe, Route, Brain, FolderSearch, Package, Archive, Link, Wifi, Code2, Monitor, Store, Users, Clock, History, ShieldCheck, Settings as SettingsIcon, type LucideIcon } from 'lucide-react';
+import { Search, X, Cpu, Sparkles, Wrench, Globe, Route, Brain, FolderSearch, Package, Archive, Link, Wifi, Code2, Monitor, Store, Users, Clock, History, ShieldCheck, Settings as SettingsIcon, KeyRound, type LucideIcon } from 'lucide-react';
 import { useChatStore, type ActiveView } from '../../stores/chat';
 import ModelsPanel from '../Settings/ModelsPanel';
 import SkillsPanel from '../Settings/SkillsPanel';
@@ -28,6 +28,7 @@ import IDEIntegrationPanel from '../Settings/IDEIntegrationPanel';
 import DesktopControlPanel from '../Settings/DesktopControlPanel';
 import MarketplacePanel from '../Settings/MarketplacePanel';
 import TeamPanel from '../Settings/TeamPanel';
+import LicensePanel from '../Settings/LicensePanel';
 import SchedulerPanel from '../Settings/SchedulerPanel';
 import TimeTravelPanel from '../Settings/TimeTravelPanel';
 import ProvenancePanel from '../Settings/ProvenancePanel';
@@ -89,6 +90,7 @@ const SECTIONS: NavSection[] = [
     label: 'Team',
     entries: [
       { id: 'team',      label: 'Team',       icon: Users,       Panel: TeamPanel },
+      { id: 'license',   label: 'License',    icon: KeyRound,    Panel: LicensePanel },
     ],
   },
   {
