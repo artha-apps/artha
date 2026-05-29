@@ -129,6 +129,9 @@ const api = {
     list: () => ipcRenderer.invoke('sessions:list'),
     create: (projectId?: string | null) => ipcRenderer.invoke('sessions:create', projectId),
     delete: (id: string) => ipcRenderer.invoke('sessions:delete', id),
+    /** Sessions filtered to one project (or `null` for no-project). */
+    listByProject: (projectId: string | null) =>
+      ipcRenderer.invoke('sessions:listByProject', projectId),
     getMessages: (sessionId: string) =>
       ipcRenderer.invoke('sessions:getMessages', sessionId),
     onTitleUpdated: (cb: (payload: { sessionId: string; title: string }) => void) => {
@@ -144,6 +147,10 @@ const api = {
   scopes: {
     list: (sessionId: string) => ipcRenderer.invoke('scopes:list', sessionId) as Promise<SessionScope[]>,
     addFolder: (sessionId: string) => ipcRenderer.invoke('scopes:addFolder', sessionId) as Promise<SessionScope | null>,
+    /** Programmatic add-by-path — no dialog. Idempotent. Used to auto-attach
+     *  the active project's root to fresh sessions. */
+    addFolderPath: (sessionId: string, rootPath: string) =>
+      ipcRenderer.invoke('scopes:addFolderPath', sessionId, rootPath) as Promise<SessionScope | null>,
     addFile: (sessionId: string) => ipcRenderer.invoke('scopes:addFile', sessionId) as Promise<SessionScope[]>,
     remove: (scopeId: string) => ipcRenderer.invoke('scopes:remove', scopeId) as Promise<boolean>,
     // Rebuild a folder scope's RAG index. Returns chunk count.
@@ -314,12 +321,14 @@ const api = {
   },
 
   // ── System ───────────────────────────────────────────────────────────────
-  // Probes for optional native dependencies the app shells out to.
+  // Native-dep probes + small shell shortcuts.
   system: {
     // PDF reading needs Poppler's `pdftoppm`; the chat composer checks this
     // before opening the PDF picker so it can show an install hint.
     checkPoppler: () =>
       ipcRenderer.invoke('system:checkPoppler') as Promise<{ installed: boolean; path?: string }>,
+    /** Open Finder / Explorer at the given path. No-op on bad input. */
+    revealInFolder: (p: string) => ipcRenderer.invoke('system:revealInFolder', p),
   },
 
   // ── Router ───────────────────────────────────────────────────────────────

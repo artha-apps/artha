@@ -96,7 +96,19 @@ export default function ChatWindow() {
     messages, streamingContent, isStreaming, activeSessionId,
     addUserMessage, activeWorkflowId, setStreaming, pendingCitations, activeSkill,
     pendingAttachments, setPendingAttachments, scopes, setScopes,
+    projects, activeProjectId,
   } = useChatStore();
+  // Project-aware suggested prompts. When the user is in a project, the
+  // hard-coded macOS prompts ("Organize my Desktop") feel wrong — swap to
+  // project-anchored phrasing instead. Falls back to the macOS set when no
+  // project is active so non-project chats still get useful starters.
+  const activeProject = projects.find(p => p.project_id === activeProjectId) ?? null;
+  const displayedPrompts = activeProject ? [
+    { icon: '📂', text: `Summarise what's in ${activeProject.name}` },
+    { icon: '🔍', text: `Find the most recently changed files in ${activeProject.name}` },
+    { icon: '🧠', text: `What did I work on yesterday in ${activeProject.name}?` },
+    { icon: '📝', text: `Draft a short README for ${activeProject.name}` },
+  ] : SUGGESTED_PROMPTS;
   const [scopeBusy, setScopeBusy] = useState(false);
   const [reindexingScope, setReindexingScope] = useState<string | null>(null);
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
@@ -390,7 +402,7 @@ export default function ChatWindow() {
           <p className="text-artha-muted text-sm">Your local AI agent. Fully private, runs on your Mac.</p>
         </div>
         <div className="grid grid-cols-2 gap-2 w-full max-w-md">
-          {SUGGESTED_PROMPTS.map(({ icon, text }) => (
+          {displayedPrompts.map(({ icon, text }) => (
             <button key={text} onClick={() => send(text)}
               className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent hover:bg-artha-surface2 transition-all text-sm text-left text-artha-muted hover:text-artha-text shadow-soft">
               <span className="text-base leading-none mt-0.5 shrink-0">{icon}</span>
@@ -438,7 +450,7 @@ export default function ChatWindow() {
             <div className="flex flex-col items-center gap-6 pt-8">
               <p className="text-artha-muted text-sm">What would you like to do?</p>
               <div className="grid grid-cols-2 gap-2 w-full max-w-md">
-                {SUGGESTED_PROMPTS.map(({ icon, text }) => (
+                {displayedPrompts.slice(0, 4).map(({ icon, text }) => (
                   <button key={text} onClick={() => send(text)}
                     className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent hover:bg-artha-surface2 transition-all text-sm text-left text-artha-muted hover:text-artha-text shadow-soft">
                     <span className="text-base leading-none mt-0.5 shrink-0">{icon}</span>

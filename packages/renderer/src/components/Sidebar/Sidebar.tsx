@@ -21,7 +21,7 @@ import ProjectSwitcher from './ProjectSwitcher';
 export default function Sidebar() {
   const {
     sessions, activeSessionId, setActiveSession, setMessages, setSessions,
-    activeView, projects, activeProjectId, setActiveProjectId, setProjects,
+    activeView, projects, activeProjectId, selectProject, setProjects,
     openWorkspaceSettings, setActiveTab,
   } = useChatStore();
 
@@ -41,9 +41,19 @@ export default function Sidebar() {
     ? sessions.filter(s => !s.project_id)
     : sessions.filter(s => s.project_id === activeProjectId);
 
-  /** Create a new session inside the active project and activate it. */
+  /** Create a new session inside the active project and activate it. When
+   *  the chat belongs to a project, auto-attach the project's root folder
+   *  as a session scope — that's what "inside this project" should mean. */
   const newChat = async () => {
     const session = await window.artha.sessions.create(activeProjectId);
+    // Auto-attach the project root so the agent's filesystem sandbox + context
+    // injection align with the visible project chip. Idempotent on the IPC.
+    if (activeProjectId) {
+      const proj = projects.find(p => p.project_id === activeProjectId);
+      if (proj) {
+        await window.artha.scopes.addFolderPath(session.session_id, proj.root_path).catch(() => { /* non-fatal */ });
+      }
+    }
     const updated = await window.artha.sessions.list();
     setSessions(updated);
     setActiveSession(session.session_id);
@@ -94,10 +104,20 @@ export default function Sidebar() {
             <div className="space-y-0.5">
               {projects.map(p => {
                 const isActive = p.project_id === activeProjectId;
+                // Clicking a project switches context AND lands the user on
+                // that project's most recent chat (via selectProject) — same
+                // behaviour as the ProjectSwitcher dropdown for consistency.
+                const pickFromList = async () => {
+                  const nextSessionId = selectProject(p.project_id);
+                  if (nextSessionId) {
+                    const msgs = await window.artha.sessions.getMessages(nextSessionId);
+                    setMessages(msgs);
+                  }
+                };
                 return (
                   <button
                     key={p.project_id}
-                    onClick={() => setActiveProjectId(p.project_id)}
+                    onClick={pickFromList}
                     className={`no-drag flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-xs text-left transition-colors truncate
                       ${isActive
                         ? 'bg-artha-surface text-artha-text border border-artha-border-strong'

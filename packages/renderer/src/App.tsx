@@ -24,6 +24,7 @@ import { useBrowserStore } from './stores/browser';
 import TabBar from './components/TabBar/TabBar';
 import WorkflowsTab from './components/Workflows/WorkflowsTab';
 import CodeTab from './components/Code/CodeTab';
+import ProjectHome from './components/ProjectHome/ProjectHome';
 import WorkspaceSettings from './components/WorkspaceSettings/WorkspaceSettings';
 import { TooltipProvider } from './components/ui/Tooltip';
 
@@ -47,8 +48,12 @@ export default function App() {
     setPendingPlan, setPendingClarify, setSessions, sessions,
     setStreaming, setActiveWorkflowId, setActiveSkill,
     activeTab, setProjects, openWorkspaceSettings, closeWorkspaceSettings,
-    workspaceSettingsOpen,
+    workspaceSettingsOpen, activeProjectId, activeSessionId,
   } = useChatStore();
+  // Project home shows when the user has picked a project but isn't in a
+  // specific chat yet — surfaces the rolling summary, RAG status, and
+  // recent chats. Otherwise the canvas is the conversation.
+  const showProjectHome = activeProjectId !== null && !activeSessionId;
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
 
   // First-run onboarding gate. `null` = still loading the flag; show nothing
@@ -142,7 +147,10 @@ export default function App() {
           {/* Per-tab canvas ------------------------------------------------ */}
           {activeTab === 'chat' && (
             <div className="flex flex-1 overflow-hidden">
-              <ChatWindow />
+              {showProjectHome ? <ProjectHome /> : <ChatWindow />}
+              {/* Execution log / browser pane stays mounted alongside chat;
+                  it's a sidekick rail, not a tab — and it's also useful when
+                  Project home is showing for inspecting prior tool runs. */}
               {isBrowserOpen
                 ? <BrowserPane onClose={() => setBrowserOpen(false)} />
                 : <ExecutionLog />}

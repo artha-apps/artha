@@ -163,11 +163,15 @@ export default function WorkspaceSettings() {
   const ActivePanel = ENTRIES_BY_ID[activeId]?.Panel ?? ModelsPanel;
 
   return (
+    // Backdrop starts BELOW the TabBar (top: 88px) so the user still sees
+    // which tab they came from — closing the modal lands them back in the
+    // same room. Standard ⌘, modal pattern from Cursor/Linear.
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-artha-text/30 backdrop-blur-sm p-6"
+      className="fixed left-0 right-0 bottom-0 z-50 flex items-center justify-center bg-artha-text/30 backdrop-blur-sm p-6"
+      style={{ top: 88 }}
       onClick={(e) => { if (e.target === e.currentTarget) closeWorkspaceSettings(); }}
     >
-      <div className="w-full max-w-6xl h-[88vh] rounded-2xl border border-artha-border bg-artha-surface shadow-modal overflow-hidden flex">
+      <div className="w-full max-w-6xl h-[calc(88vh-88px)] rounded-2xl border border-artha-border bg-artha-surface shadow-modal overflow-hidden flex">
 
         {/* ── Left nav ─────────────────────────────────────────────────── */}
         <aside className="w-60 border-r border-artha-border bg-artha-surface2/60 flex flex-col">

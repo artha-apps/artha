@@ -506,6 +506,24 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return buildShallowTree(rootPath, { maxEntries: maxEntries ?? 80, maxDepth: 2 });
   });
 
+  /** Reveal a path in Finder / Explorer / nautilus. Used by the Project
+   *  home page. No-op on invalid paths. */
+  ipcMain.handle('system:revealInFolder', (_e, p: string) => {
+    if (!p) return;
+    try { shell.showItemInFolder(p); } catch { /* ignore — path missing */ }
+  });
+
+  /** Sessions belonging to one project (or `null` for general/no-project).
+   *  Drives the Project home page's "Recent chats" list. Same shape as
+   *  `sessions:list` for a drop-in render. */
+  ipcMain.handle('sessions:listByProject', (_e, projectId: string | null) => {
+    const db = getDb();
+    if (projectId === null || projectId === undefined) {
+      return db.prepare(`SELECT * FROM chat_sessions WHERE project_id IS NULL ORDER BY last_activity DESC`).all();
+    }
+    return db.prepare(`SELECT * FROM chat_sessions WHERE project_id=? ORDER BY last_activity DESC`).all(projectId);
+  });
+
   /** Create a project from a folder pick. Delegates to the same
    *  `findOrCreateFolderWorkspace()` used when a chat attaches a folder, so
    *  one project per folder is preserved and a RAG index is auto-built. */
@@ -604,6 +622,27 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('scopes:list', (_e, sessionId: string) => {
     return getDb().prepare(`SELECT * FROM session_scopes WHERE session_id=? ORDER BY added_at ASC, rowid ASC`).all(sessionId);
+  });
+
+  /** Programmatic sibling of `scopes:addFolder` — no dialog, takes an absolute
+   *  path. Used to auto-attach the active project's root folder to a fresh
+   *  session so chats inside a project default to that project's sandbox. */
+  ipcMain.handle('scopes:addFolderPath', (_e, sessionId: string, rootPath: string) => {
+    if (!sessionId || !rootPath) return null;
+    const db = getDb();
+    const { ragIndexId } = findOrCreateFolderWorkspace(rootPath);
+    const scopeId = crypto.randomUUID();
+    try {
+      db.prepare(`INSERT INTO session_scopes (scope_id, session_id, path, kind, rag_index_id) VALUES (?,?,?,?,?)`)
+        .run(scopeId, sessionId, rootPath, 'folder', ragIndexId);
+    } catch {
+      // UNIQUE(session_id, path) violation — already attached. Idempotent
+      // return so the caller can treat both "added" and "already there"
+      // identically.
+      return db.prepare(`SELECT * FROM session_scopes WHERE session_id=? AND path=?`).get(sessionId, rootPath);
+    }
+    recomputePrimaryProject(sessionId);
+    return db.prepare(`SELECT * FROM session_scopes WHERE scope_id=?`).get(scopeId);
   });
 
   ipcMain.handle('scopes:addFolder', async (_e, sessionId: string) => {

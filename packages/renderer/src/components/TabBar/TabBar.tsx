@@ -8,7 +8,7 @@
  * story is a feature — it should always be visible).
  */
 import { MessageSquare, Workflow, Code2, Lock } from 'lucide-react';
-import { useChatStore, type ActiveTab } from '../../stores/chat';
+import { useChatStore, type ActiveTab, type Project } from '../../stores/chat';
 import { Tooltip } from '../ui/Tooltip';
 
 interface TabDef {
@@ -28,7 +28,7 @@ const TABS: TabDef[] = [
 /** Single row of tabs + the always-visible scope badge. */
 export default function TabBar() {
   const { activeTab, setActiveTab, projects, activeProjectId } = useChatStore();
-  const activeProject = projects.find(p => p.project_id === activeProjectId) ?? null;
+  const activeProject = projects.find((p: Project) => p.project_id === activeProjectId) ?? null;
 
   return (
     <div className="flex items-center justify-between px-3 py-1.5 border-b border-artha-border bg-artha-surface2/40">

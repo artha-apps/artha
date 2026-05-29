@@ -168,6 +168,10 @@ interface ChatState {
   /** Close the modal and return to the Chat view. */
   closeWorkspaceSettings: () => void;
   setActiveProjectId: (id: string | null) => void;
+  /** Pick a project AND auto-land on its most recent session (or empty
+   *  state if there are none). Returns the picked session id, so the caller
+   *  can hydrate messages over IPC. */
+  selectProject: (id: string | null) => string | null;
   setProjects: (projects: Project[]) => void;
   setStreaming: (streaming: boolean) => void;
   setActiveWorkflowId: (id: string | null) => void;
@@ -361,6 +365,37 @@ export const useChatStore = create<ChatState>((set) => ({
   setActiveProjectId: (id) => {
     saveActiveProjectId(id);
     set({ activeProjectId: id });
+  },
+  // Pick a project AND land on its most recent session (or empty if none).
+  // Loads scopes for the picked session via the same path Sidebar.openSession
+  // uses, so the user sees the right sandbox immediately.
+  // Returns the picked session id (or null) so the caller can drive any
+  // further IPC (message hydration etc.) without re-walking the array.
+  // The use of `get()` (Zustand's selector) here breaks the otherwise
+  // circular type chain (`useChatStore` → action → `useChatStore`) that
+  // would force an explicit annotation on the action signature.
+  selectProject: (id): string | null => {
+    saveActiveProjectId(id);
+    const all: Session[] = useChatStore.getState().sessions;
+    const candidates: Session[] = id === null
+      ? all.filter((s: Session) => !s.project_id)
+      : all.filter((s: Session) => s.project_id === id);
+    // sessions:list comes back sorted by last_activity DESC, so [0] is "most recent".
+    const next: Session | null = candidates[0] ?? null;
+    set({
+      activeProjectId: id,
+      activeSessionId: next?.session_id ?? null,
+      messages: [],
+      streamingContent: '',
+      isStreaming: false,
+      executionLog: [],
+      pendingToolEvents: [],
+      pendingCitations: [],
+      activeWorkflowId: null,
+      activeSkill: null,
+      scopes: [],
+    });
+    return next?.session_id ?? null;
   },
   setProjects: (projects) => set({ projects }),
   setStreaming: (streaming) => set({ isStreaming: streaming }),

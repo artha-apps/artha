@@ -14,7 +14,9 @@ import { useChatStore } from '../../stores/chat';
 
 /** Compact project chip + dropdown. Closes on outside click and Esc. */
 export default function ProjectSwitcher() {
-  const { projects, activeProjectId, setActiveProjectId, setProjects } = useChatStore();
+  const {
+    projects, activeProjectId, selectProject, setProjects, setMessages,
+  } = useChatStore();
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -36,20 +38,34 @@ export default function ProjectSwitcher() {
     };
   }, [open]);
 
-  const pick = (projectId: string | null) => {
-    setActiveProjectId(projectId);
+  // Switching project also lands the user on that project's most recent
+  // chat (or its empty state), so the canvas changes instead of stranding
+  // them on a session that no longer belongs to the visible scope.
+  const pick = async (projectId: string | null) => {
+    const nextSessionId = selectProject(projectId);
     setOpen(false);
+    if (nextSessionId) {
+      const msgs = await window.artha.sessions.getMessages(nextSessionId);
+      setMessages(msgs);
+    }
   };
 
   // "+ New project" → main shows a folder picker; we refresh the list and
-  // auto-activate the new project on success.
+  // auto-activate the new project on success (via selectProject so it lands
+  // on the project's most recent chat or its empty state).
   const newProject = async () => {
     setCreating(true);
     try {
       const created = await window.artha.projects.create();
       const refreshed = await window.artha.projects.list();
       setProjects(refreshed);
-      if (created) setActiveProjectId(created.project_id);
+      if (created) {
+        const nextSessionId = selectProject(created.project_id);
+        if (nextSessionId) {
+          const msgs = await window.artha.sessions.getMessages(nextSessionId);
+          setMessages(msgs);
+        }
+      }
       setOpen(false);
     } finally {
       setCreating(false);

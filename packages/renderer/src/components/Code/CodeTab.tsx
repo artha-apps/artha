@@ -35,9 +35,11 @@ export default function CodeTab() {
     }
   };
 
-  // Re-fetch tree whenever the active project changes.
-  // (refresh closes over `active` but is stable enough for this; deliberate.)
-  useEffect(() => { void refresh(); }, [activeProjectId]); // eslint-disable-line
+  // Re-fetch tree whenever the active project changes. `refresh` closes over
+  // `active` but the dep we actually care about is the project id — adding
+  // `refresh` here would loop on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void refresh(); }, [activeProjectId]);
 
   // ── No-project state ─────────────────────────────────────────────────
   if (!active) {
