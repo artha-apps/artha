@@ -34,11 +34,17 @@ const ALLOWED_CONTENT_TYPES = [
   'text/markdown',
 ];
 
+/** Runtime configuration for the web tools, persisted under `settings.web`
+ *  in the user row of the SQLite DB. Exposed in Settings → Web. */
 export interface WebConfig {
+  /** Ordered list of SearXNG base URLs. Tried in sequence until one succeeds. */
   searxng_instances: string[];
+  /** How long fetched pages are cached in SQLite before a fresh request is made. */
   cache_ttl_seconds: number;
+  /** When true, `web_fetch` checks /robots.txt before fetching any page. */
   respect_robots: boolean;
-  robots_override_hosts: string[]; // hosts allowed to bypass robots
+  /** Hostnames allowed to bypass the robots check (e.g. a private intranet). */
+  robots_override_hosts: string[];
   timeout_ms: number;
   max_bytes: number;
   /** Optional Brave Search API key. When set, Brave is tried before SearXNG.
@@ -83,10 +89,14 @@ export interface Citation {
 
 const pendingCitations = new Map<string, Citation[]>();
 
+/** Begin collecting citations for `token`. Call once per workflow at loop start. */
 export function startCitationCollection(token: string): void {
   pendingCitations.set(token, []);
 }
 
+/** Return all citations accumulated for `token`, de-duped by URL, and clear the
+ *  slot. The orchestrator calls this after the workflow finishes to attach sources
+ *  to the assistant message bubble. */
 export function drainCitations(token: string): Citation[] {
   const list = pendingCitations.get(token) ?? [];
   pendingCitations.delete(token);
@@ -101,6 +111,9 @@ export function drainCitations(token: string): Citation[] {
 
 let activeToken: string | null = null;
 
+/** Set (or clear) which workflow token `record()` accumulates citations under.
+ *  The orchestrator sets this at the start and end of each ReAct loop so that
+ *  concurrent tool calls in separate chats don't cross-contaminate. */
 export function setActiveCitationToken(token: string | null): void {
   activeToken = token;
 }
@@ -220,11 +233,15 @@ async function isAllowedByRobots(targetUrl: URL): Promise<boolean> {
 
 // ── web_fetch implementation ─────────────────────────────────────────────────
 
+/** JSON payload returned to the agent by `web_fetch`. The `truncated` flag lets
+ *  the model know there is more content available if it needs to increase `max_chars`. */
 interface FetchResult {
   url: string;
   title: string;
+  /** Cleaned markdown (readable mode) or raw HTML/text (raw mode). */
   content: string;
   content_type: string;
+  /** Unix timestamp (seconds) when this page was fetched or served from cache. */
   fetched_at: number;
   from_cache: boolean;
   truncated: boolean;
@@ -447,6 +464,8 @@ export function isWebTool(name: string): boolean {
 
 // ── Cache admin ──────────────────────────────────────────────────────────────
 
+/** Delete all rows from `web_cache`. Returns the number of rows removed.
+ *  Exposed for the Settings → Web "Clear cache" button. */
 export function clearWebCache(): number {
   const db = getDb();
   const before = db.prepare(`SELECT COUNT(*) as n FROM web_cache`).get() as { n: number };

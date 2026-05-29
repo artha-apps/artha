@@ -6,6 +6,13 @@
  *
  * The real retrieval path needs Electron + the DB + Ollama embeddings, so we
  * mock the indexer and DB to assert *which* indexes the tool reaches for.
+ *
+ * Verifies:
+ *   - rag_search passes the scoped index list to searchAllIndexes when scoped
+ *   - rag_search passes null (all indexes) for an unscoped chat
+ *   - an empty scope array is treated identically to null (search all)
+ *   - top_k is clamped into [1, 20]
+ *   - rag_list_indexes uses an IN() clause when scoped, no filter otherwise
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -34,6 +41,7 @@ beforeEach(() => {
   dbState.rows = [];
 });
 
+// ── rag_search ────────────────────────────────────────────────────────────────
 describe('rag_search scoping', () => {
   it('confines retrieval to the chat folders\' indexes when scoped', async () => {
     await invokeRagTool('rag_search', { query: 'invoices' }, ['idxA', 'idxB']);
@@ -56,6 +64,7 @@ describe('rag_search scoping', () => {
   });
 });
 
+// ── rag_list_indexes ──────────────────────────────────────────────────────────
 describe('rag_list_indexes scoping', () => {
   it('lists only the chat folders\' indexes when scoped', async () => {
     dbState.rows = [{ name: 'Folder: Reports', doc_count: 12 }];

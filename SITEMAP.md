@@ -1,6 +1,6 @@
 # Artha — Workspace Sitemap
 
-> Last updated: 2026-05-26 (per-chat folder/file scopes + filesystem sandbox)
+> Last updated: 2026-05-27 (reconciled file map with tree; agent live-environment context injection)
 
 ## Root
 
@@ -23,36 +23,59 @@
 |------|---------|
 | `src/main.ts` | Entry point — BrowserWindow creation, IPC setup, auto-updater, tray |
 | `src/preload.ts` | Context bridge — exposes `window.artha.*` API to renderer (zero Node access in renderer) |
-| `src/db/schema.ts` | SQLite schema — all `CREATE TABLE` + `ALTER TABLE` migrations (incl. `session_scopes`) |
-| `src/db/db.ts` | `getDb()` singleton — opens / migrates the database on first call |
+| `src/notify.ts` | `sendNotification()` — Electron native notifications with focus-on-click |
+| `tsconfig.json` | TypeScript config for main process (CommonJS, Node 20 types) |
+| **db/** | |
+| `src/db/schema.ts` | SQLite schema + `getDb()` singleton — all `CREATE TABLE` + additive `ALTER TABLE` migrations; opens/migrates the DB on first call |
 | `src/db/scopes.ts` | Per-chat scope helpers — `getSessionScopes`/`getSessionAllowedRoots`/`getSessionPrimaryFolder`/`recomputePrimaryProject`; backs the folder/file sandbox + context |
 | **agent/** | |
-| `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory injection, tool dispatch |
-| `src/agent/skills.ts` | `SkillsService` — loads YAML skill files, filters tool schemas per skill |
-| `src/agent/planner.ts` | `Planner` — converts goal → `AgentPlan` with sub-tasks |
-| `src/agent/router.ts` | `ModelRouter` — picks model based on goal complexity / cost preference |
+| `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory + live-environment context injection (date/time/timezone/OS/user), tool dispatch |
+| `src/agent/folderTree.ts` | `buildShallowTree()` — renders a shallow, noise-filtered directory tree for the working-scope context block |
+| **skills/** | |
+| `src/skills/registry.ts` | `SkillRegistry` singleton — loads/creates/toggles YAML skill files, resolves `/slug` + auto-match, filters tool schemas per skill |
+| `src/skills/util.ts` | Pure skill helpers — slug normalisation, `/slug` parsing, import parsing, tool-allowlist filtering (unit-tested) |
+| **bundles/** | |
+| `src/bundles/bundle.ts` | Skill-bundle import/export — HMAC-signed manifest, golden-content hashing, `ENV:` secret stripping |
+| **router/** | |
+| `src/router/benchmark.ts` | Model capability probes (plan / tool-args / …) that score local Ollama models for the model router |
 | **ipc/** | |
-| `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, …) |
+| `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, lan, cloud, …) |
 | **llm/** | |
 | `src/llm/client.ts` | `getActiveLLMClient()` — returns an OpenAI-compat client for the active model; respects context_window |
+| `src/llm/streamMerge.ts` | Merges streamed tool-call deltas (id+name on first chunk, args appended after) into complete tool calls |
 | **mcp/** | |
-| `src/mcp/registry.ts` | `McpRegistry` — manages MCP server processes, tool schemas, invocations |
-| `src/mcp/registry-catalog.ts` | 14 curated MCP marketplace entries (filesystem, web, productivity, …) |
+| `src/mcp/registry.ts` | `MCPRegistry` — manages MCP server processes, tool schemas, invocations |
+| `src/mcp/registry-catalog.ts` | 22 curated MCP marketplace entries (filesystem, web, productivity, …) |
 | **tools/** | |
 | `src/tools/filesystem.ts` | Built-in fs tools (list/search/read/move/copy/delete) — hard sandbox confines reads/writes to the chat's attached scopes when present |
-| `src/tools/brave.ts` | Brave Search API client (free tier fallback) |
-| `src/tools/duckduckgo.ts` | DuckDuckGo HTML scraper (zero-config fallback) |
-| `src/tools/web.ts` | `webSearchImpl` — three-tier search chain (Brave → SearXNG → DuckDuckGo) |
+| `src/tools/web.ts` | `webSearchImpl` — three-tier search chain (Brave → SearXNG → DuckDuckGo) + citation collection |
+| `src/tools/brave.ts` | Brave Search API client (free-tier tier of the search chain) |
+| `src/tools/searxng.ts` | SearXNG JSON search client (self-hosted / public-instance tier) |
+| `src/tools/duckduckgo.ts` | DuckDuckGo HTML scraper (zero-config fallback tier) |
 | `src/tools/readability.ts` | Mozilla Readability wrapper — strips boilerplate, returns clean markdown |
-| `src/tools/docs.ts` | Document generation (DOCX via `docx`, PPTX via `pptxgenjs`, XLSX via `xlsx`, PDF via `pdf-lib`) |
+| `src/tools/docs.ts` | `DOCS_TOOL_SCHEMAS` + `invokeDocsTool` — the `docs_generate` tool; resolves output path + gathers context, then delegates to the generator |
+| `src/tools/docPath.ts` | `resolveDocOutPath()` — picks a safe output path for generated docs (blocks system dirs, defaults to the chat's primary folder) |
 | `src/tools/memory.ts` | `MEMORY_TOOL_SCHEMAS` + `invokeMemoryTool` + `getMemoryContext` — SQLite entity graph |
 | `src/tools/rag.ts` | `rag_search` / `rag_list_indexes` — vector search over local docs; confined to the chat's folder indexes when scoped (else all) |
+| `src/tools/ragFormat.ts` | Formats `rag_search` hits + index lists into model-readable text (with snippet truncation) |
+| `src/tools/browser.ts` | `BROWSER_TOOL_SCHEMAS` + `invokeBrowserTool` — exposes the embedded browser controller as agent tools |
 | `src/tools/desktop.ts` | `DESKTOP_TOOL_SCHEMAS` + `invokeDesktopTool` — mouse/keyboard/screenshot via nut-js + desktopCapturer (opt-in) |
-| `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree-fork/nut-js` optional native dep |
+| **browser/** | |
+| `src/browser/controller.ts` | `BrowserController` singleton — owns the embedded WebContentsView; attach/detach/bounds + agent⇄user driving handoff |
+| `src/browser/actions.ts` | Low-level browser action primitives (navigate/click/type/readDom/screenshot/back/forward/reload/getUrl/waitForSelector) |
+| `src/browser/recovery.ts` | Crash/hang recovery policy — decides auto-reload vs crash-loop overlay |
+| **rag/** | |
+| `src/rag/indexer.ts` | `RagIndexer` — walks a folder, extracts + chunks + embeds files, persists the index |
+| `src/rag/extract.ts` | Text extraction from files (txt, pdf via pdf-parse, docx via mammoth) for indexing |
+| `src/rag/chunk.ts` | Splits document text into overlapping chunks with stable ids for embedding |
+| `src/rag/indexFormat.ts` | `Chunk` type + on-disk index (v2) read/write helpers |
+| **docs/** | |
+| `src/docs/generator.ts` | `generateDocument()` — renders DOCX (`docx`), PPTX (`pptxgenjs`), XLSX (`xlsx`), PDF (`pdf-lib`) from a spec |
 | **scheduler/** | |
 | `src/scheduler/scheduler.ts` | `SchedulerService` — cron / one-shot task runner via `node-schedule` |
-| **notify.ts** | `sendNotification()` — Electron native notifications with focus-on-click |
-| `tsconfig.json` | TypeScript config for main process (CommonJS, Node 20 types) |
+| **types/** | |
+| `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree-fork/nut-js` optional native dep |
+| `src/types/rag-extractors.d.ts` | Ambient shims for the pdf-parse internal entry + mammoth (avoids debug-mode fixture read / missing types) |
 
 ---
 
@@ -60,25 +83,35 @@
 
 | Path | Purpose |
 |------|---------|
-| `src/main.tsx` | React entry point |
+| `src/index.tsx` | React entry point |
 | `src/App.tsx` | Root component — view router, IPC event wiring (clarify, update-available) |
 | **stores/** | |
 | `src/stores/chat.ts` | Zustand store — `ActiveView` union, messages, pending attachments, clarify state, per-chat `scopes` |
+| `src/stores/browser.ts` | Zustand store for the embedded browser pane — URL, driving mode (agent/user), handoff state |
 | **lib/** | |
 | `src/lib/qrcode.ts` | Dependency-free QR encoder (byte mode + Reed-Solomon, v1–10) — `generateQrMatrix` / `qrToSvg` |
 | **components/Chat/** | |
 | `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file); message bubble list |
 | `ClarificationModal.tsx` | Pre-flight Q&A modal (pauses the agent until user answers or skips) |
 | `PlanApproval.tsx` | Approval UI for the ReAct plan before execution |
-| `ThinkingBubble.tsx` | Live streaming "thinking…" indicator |
+| `ToolCallInline.tsx` | Inline, collapsible tool-call + result display within the chat stream |
+| `Citations.tsx` | Source citations rendered under an agent message |
+| **components/Browser/** | |
+| `BrowserPane.tsx` | Host for the embedded browser viewport + close control |
+| `BrowserToolbar.tsx` | URL bar + nav controls + agent/user driving toggle |
+| `HandoffBanner.tsx` | Banner shown when the agent hands the browser to the user (resume / cancel) |
+| **components/ExecutionLog/** | |
+| `ExecutionLog.tsx` | Live step-by-step view of the ReAct loop's actions |
+| **components/Onboarding/** | |
+| `Onboarding.tsx` | First-run setup — detects Ollama + hardware, pulls a recommended model with progress |
 | **components/Sidebar/** | |
-| `Sidebar.tsx` | Flat chat-session list + New Chat; nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Settings (folders are now attached per chat in the composer) |
+| `Sidebar.tsx` | Flat chat-session list + New Chat; nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Team, Settings (folders are attached per chat in the composer) |
 | **components/Settings/** | |
 | `ModelsPanel.tsx` | Configure LLM models — API key, base URL, context window slider |
-| `McpPanel.tsx` | Add / remove MCP servers; view tool schemas |
+| `MCPToolsPanel.tsx` | MCP servers + tool schemas + tool-audit-log tabs; add / remove servers |
 | `SkillsPanel.tsx` | Create / edit / delete agent skill files |
 | `WebPanel.tsx` | Web search config — Brave key, SearXNG instances, provider status |
-| `RagPanel.tsx` | Index local documents for RAG retrieval |
+| `RAGPanel.tsx` | Index local documents for RAG retrieval |
 | `SchedulerPanel.tsx` | Create / edit / toggle / delete scheduled tasks |
 | `ArtifactsPanel.tsx` | Browse generated artifacts — open, delete |
 | `MarketplacePanel.tsx` | MCP plugin marketplace — search, category filter, install |
@@ -87,13 +120,14 @@
 | `CloudIntegrationsPanel.tsx` | Connect Google Workspace (Gmail/Calendar/Drive) via OAuth — client-id setup, connect/disconnect |
 | `LANServerPanel.tsx` | Start/stop the LAN collaboration server — copyable URL, inline QR, curl/fetch examples, autostart |
 | `DesktopControlPanel.tsx` | Toggle desktop control (mouse/keyboard/screenshot), test-screenshot preview, tool list |
+| `TeamPanel.tsx` | Team mode — members, LAN API keys, shared memories |
 | `SettingsPanel.tsx` | App settings — notifications toggle |
-| `ProvenancePanel.tsx` | Source attribution for agent answers |
-| `TimeTravelPanel.tsx` | Session replay / history |
-| `RouterPanel.tsx` | Model router config |
-| `BundlesPanel.tsx` | Skill bundle management |
+| `ProvenancePanel.tsx` | Source attribution for agent answers (`.artha-receipt.json` sidecar) |
+| `TimeTravelPanel.tsx` | Session replay / history — fork a run from any past step |
+| `RouterPanel.tsx` | Model router config — benchmark + manual overrides |
+| `BundlesPanel.tsx` | Skill bundle management — HMAC-signed export / import |
 | `vite.config.ts` | Vite config — React plugin, build output to `dist/` |
-| `tailwind.config.ts` | Tailwind config — artha colour palette |
+| `tailwind.config.js` | Tailwind config — artha colour palette |
 | `tsconfig.json` | TypeScript config for renderer (ESNext, bundler resolution) |
 
 ---

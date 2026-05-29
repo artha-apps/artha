@@ -10,13 +10,18 @@
 
 import { SearchResult, SearchOptions } from './searxng';
 
+/** Shape of a single result item inside the `web.results` array. All fields are
+ *  optional because the API silently omits them when unavailable. */
 interface BraveWebResult {
   title?: string;
   url?: string;
   description?: string;
+  /** ISO-8601-like age string, e.g. "2024-03-14T10:00:00". */
   page_age?: string;
 }
 
+/** Top-level Brave Search API response envelope. Only the `web` bucket is used;
+ *  the API also returns `news`, `videos`, etc. which Artha currently ignores. */
 interface BraveSearchResponse {
   web?: {
     results?: BraveWebResult[];
@@ -40,7 +45,8 @@ export async function braveSearch(
   });
 
   if (opts.freshness) {
-    // Brave uses 'pd' (past day), 'pw', 'pm', 'py'
+    // Brave's freshness codes differ from SearXNG's time_range strings.
+    // Map our shared SearchOptions values to Brave's compact abbreviations.
     const map: Record<NonNullable<SearchOptions['freshness']>, string> = {
       day: 'pd',
       week: 'pw',

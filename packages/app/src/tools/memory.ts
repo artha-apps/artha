@@ -14,11 +14,15 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/schema';
 
+/** Row shape of the `memory_entities` SQLite table. Kept as a local type rather
+ *  than importing from schema.ts so this module stays self-contained and testable. */
 interface MemoryEntity {
   entity_id: string;
+  /** Short human-readable key, e.g. "preferred_doc_format". Unique per project bucket. */
   name: string;
   entity_type: string;
   content: string;
+  /** JSON-encoded string array of keyword tags. */
   tags_json: string;
   source_session_id: string | null;
   created_at: number;
@@ -105,10 +109,21 @@ export const MEMORY_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
 
 const MEMORY_TOOL_NAMES = new Set(MEMORY_TOOL_SCHEMAS.map(t => t.function.name));
 
+/** Returns true when `name` is a built-in memory tool call — used by
+ *  MCPRegistry to route without a full schema import. */
 export function isMemoryTool(name: string): boolean {
   return MEMORY_TOOL_NAMES.has(name);
 }
 
+/**
+ * Synchronous dispatcher for all three memory tools. Sync (not async) because
+ * better-sqlite3 is blocking and there are no I/O awaits needed here.
+ *
+ * @param name      Tool name from the model's function call.
+ * @param args      Raw argument object as parsed from the LLM response.
+ * @param sessionId Current chat session ID, used to derive the active project
+ *                  and correctly scope memory reads/writes.
+ */
 export function invokeMemoryTool(
   name: string,
   args: Record<string, unknown>,

@@ -16,16 +16,24 @@
  */
 import { getDb } from './schema';
 
+/**
+ * Minimal scope descriptor passed to the filesystem sandbox and RAG search.
+ * Carries only what those subsystems need: the path and whether it's a folder
+ * (subtree access) or a single file (exact-path access).
+ */
 export interface ScopeRoot {
   path: string;
   kind: 'folder' | 'file';
 }
 
+/** Full DB row from `session_scopes`. Use `ScopeRoot` when you only need
+ *  path + kind for sandbox / RAG purposes. */
 export interface SessionScope {
   scope_id: string;
   session_id: string;
   path: string;
   kind: 'folder' | 'file';
+  /** Non-null only for kind='folder' scopes that have a RAG index. */
   rag_index_id: string | null;
   added_at: number;
 }

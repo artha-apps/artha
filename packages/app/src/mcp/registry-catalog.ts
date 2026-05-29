@@ -11,6 +11,7 @@
  * can be fetched from the remote JSON URL at runtime and merged in.
  */
 
+/** The set of filter-tab categories shown in the MCP Marketplace panel. */
 export type McpCategory =
   | 'filesystem'
   | 'web'

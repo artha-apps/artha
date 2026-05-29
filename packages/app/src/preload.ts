@@ -4,6 +4,11 @@
  */
 import { contextBridge, ipcRenderer } from 'electron';
 
+/**
+ * The full type of `window.artha` as seen by the renderer. Inferred from the
+ * `api` object so the renderer and main process can never drift out of sync —
+ * adding a channel here automatically widens the type.
+ */
 export type ArthaAPI = typeof api;
 
 /** A folder or file attached to a single chat (see `session_scopes`). */
@@ -16,6 +21,16 @@ export interface SessionScope {
   added_at: number;
 }
 
+/**
+ * The preload API surface exposed on `window.artha`.
+ *
+ * Convention for event-listener helpers (e.g. `onToken`, `onStreamEnd`):
+ *   - They register a listener and return an unsubscribe function.
+ *   - Callers must invoke the returned cleanup when the component unmounts;
+ *     failing to do so leaks listeners across re-renders.
+ *
+ * All `invoke` calls map 1-to-1 to an `ipcMain.handle` in `ipc/handlers.ts`.
+ */
 const api = {
   // ── Agent ────────────────────────────────────────────────────────────────
   agent: {
@@ -43,10 +58,14 @@ const api = {
       ipcRenderer.on('agent:streamEnd', () => cb());
       return () => ipcRenderer.removeAllListeners('agent:streamEnd');
     },
+    // Fired when the orchestrator resets its in-progress stream (e.g. on cancel
+    // or re-send) so the renderer can clear its partial token accumulator.
     onStreamReset: (cb: () => void) => {
       ipcRenderer.on('agent:streamReset', () => cb());
       return () => ipcRenderer.removeAllListeners('agent:streamReset');
     },
+    // Carries the workflow ID the orchestrator assigned to this run. The renderer
+    // needs it to call `cancelTask` or `approvePlan` for the in-flight workflow.
     onWorkflowStart: (cb: (workflowId: string) => void) => {
       ipcRenderer.on('agent:workflowStart', (_e, id) => cb(id));
       return () => ipcRenderer.removeAllListeners('agent:workflowStart');
