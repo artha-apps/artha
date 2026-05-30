@@ -2,14 +2,14 @@
  * /api/release — sanitized latest-release info, no GitHub URLs ever returned to
  * the browser. The page calls this instead of api.github.com.
  *
- * Repo is private: requires GITHUB_TOKEN env var (fine-scoped PAT with
- * Contents:read on Noopurtrivedi/artha).
+ * Repo (artha-apps/artha) is public, so GITHUB_TOKEN is optional — when set it
+ * raises the GitHub API rate limit, but the route works without it.
  */
 import type { NextRequest } from 'next/server';
 
 export const runtime = 'edge';
 
-const REPO = 'Noopurtrivedi/artha';
+const REPO = 'artha-apps/artha';
 
 type GHAsset = { name: string; size: number };
 type GHRelease = { tag_name: string; assets: GHAsset[] };
@@ -26,12 +26,6 @@ function platformOf(filename: string): Platform | null {
 
 export async function GET(_req: NextRequest) {
   const token = process.env.GITHUB_TOKEN;
-  if (!token) {
-    return Response.json(
-      { error: 'release_token_missing' },
-      { status: 503 },
-    );
-  }
 
   const ghRes = await fetch(
     `https://api.github.com/repos/${REPO}/releases/latest`,
@@ -39,7 +33,7 @@ export async function GET(_req: NextRequest) {
       headers: {
         'User-Agent': 'artha-space',
         Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${token}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       next: { revalidate: 300 },
     },
