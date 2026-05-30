@@ -1,11 +1,51 @@
 # Artha — Session Progress & Resume Log
 
-**Last updated:** 2026-05-21
-**Branch:** `main` — in sync with `origin/main` (everything pushed)
-**Tests:** 37 passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
-**Repo:** https://github.com/Noopurtrivedi/artha (now **PUBLIC**)
+**Last updated:** 2026-05-30
+**Branch:** `chore/security-bumps` — open **PR #6 → `main`** (security bumps + v0.1.2). `main` is at `bbe4c73`; the 0.1.2 work is on this branch until the PR merges.
+**Tests:** 73 passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
+**Repo:** https://github.com/artha-apps/artha (**PUBLIC**; migrated from `Noopurtrivedi/artha` to the **`artha-apps`** org)
+**Current version:** `0.1.2` — tagged `v0.1.2`; GitHub release published (installers downloadable).
 
 > Resume point for the next session. Read this first to know exactly where we left off.
+
+---
+
+## 2026-05-30 — v0.1.2 security release (on `chore/security-bumps`, PR #6)
+
+Dependency/security sweep, version bumped `0.1.1` → `0.1.2`, tagged and released.
+
+- **Security bumps** (`551fd11`, `5d2…`-series on 05-26): killed the HIGH `tmp` finding; landing upgraded **Next.js 14 → 16** + React 19 (`2c08ee6`); `postcss` override; `vitest 2 → 3` (vite 7, esbuild 0.27); `electron-builder 24 → 26`; `xlsx` pinned to patched SheetJS CDN build 0.20.3; swapped the dead `@nut-tree/nut-js` for the maintained `@nut-tree-fork/nut-js` (`5d62d1e`).
+- **Residual audit findings** are documented as **won't-fix-upstream** in `docs/known-issues/upstream-deps.md` (nut-js → jimp → file-type chain; not reachable in Artha's screenshot-only desktop path).
+- **Release**: `v0.1.2` tagged at the bump commit; CI built macOS/Windows/Linux installers; the GitHub release was **published** (was previously a Draft) so the artifacts are publicly downloadable. `0.1.1` was the prior "Latest".
+- **Lockfile**: `package-lock.json` version synced to `0.1.2` (committed with this doc update).
+
+**Still open:** PR #6 has not yet merged to `main`. There are parallel branches in flight — `chore/release-0.2.0` (its own PROGRESS restart summary), `feat/ia-tabs-projects-at`, `feat/license-tiers-onboarding`, `docs/planning-docs` (org migration + download-proxy fix).
+
+---
+
+## 2026-05-26 — feature wave 2 (on `main`)
+
+A large batch of capabilities landed after the launch-polish work, all typecheck-clean:
+
+- **Cloud app integrations** (`ca4303a`): Google Workspace OAuth (installed-app PKCE flow, `oauth_tokens` table) for Gmail/Calendar/Drive — `CloudIntegrationsPanel`.
+- **LAN collaboration server** (`ca4303a`): `lan:start/stop` on `0.0.0.0:7842` (NDJSON `/chat`, `/skills`, `/health`); `LANServerPanel` with copyable URL + inline QR (dependency-free QR encoder). Distinct from the IDE bridge on `3847`.
+- **Parallel subagents** (`ca4303a`): `orchestrator.runParallel` — child session per sub-task, concurrency capped at 4, combined summary; sub-task badge row in `ChatWindow`.
+- **Desktop control** (`ca4303a`, opt-in): `tools/desktop.ts` — screenshot/click/type/key/move via `@nut-tree-fork/nut-js`, gated behind `desktop_control_enabled`.
+- **Project folders** (`14bae4c`): scoped sessions + project context injection. **Project auto-RAG + cross-session project memory** (`a88daf9`, phases 2-3).
+- **Team mode** (`a0abd86`): `team_members` + `api_keys` tables (SHA-256 key hashing), LAN Bearer-token auth (fail-closed when keys exist), `is_shared` memories; `TeamPanel` (Members / API Keys / Shared Memory).
+- **70B models** (`aaff5c2`): `qwen2.5:72b`, `llama3.3:70b` added to the catalog.
+- **Per-chat folder/file scopes** (`3885dbe`): hard sandbox + folder-scoped RAG; `bbe4c73` seeds folder structure into context + reports real index status.
+- **IDE MCP server, persisted marketplace state, Poppler & GPU detection** (`decdfdb`); **Models Browse & Install catalog** + Ollama detection fixes (`1b89b4c`, `b898d17`, `80df139`); **DB engine restore** — pin Electron 41 + better-sqlite3 12 (`d03d78e`).
+- **`SITEMAP.md` and `REQUIREMENTS.md` kept current** through this wave (last refreshed `3885dbe`).
+
+---
+
+## 2026-05-24 — feature wave 1 (on `main`)
+
+- **Step 1** (`32a5962`): scheduled tasks, clarification UI, context-window config, search quality.
+- **Step 2** (`2ed8126`): multimodal, PDF vision, artifacts panel, plugin marketplace, CI.
+- **Step 3** (`adb76b1`): voice input, agent memory, native notifications, IDE integration.
+- **Step 4** (`f5f4966`): landing page, SITEMAP, Phase 1 acceptance criteria.
 
 ---
 
