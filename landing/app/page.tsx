@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useEffect, useState } from 'react';
 
 type Platform = 'mac-arm64' | 'mac-intel' | 'windows' | 'linux' | 'unknown';
@@ -30,26 +31,22 @@ function bytesToMB(n: number) {
   return `${Math.round(n / 1024 / 1024)} MB`;
 }
 
-/** Brand mark — aperture / focused frame.
- *  Outer hollow square (structure) with an inner mass offset left
- *  (intent, deliberately not centered). Single color, currentColor. */
-function Mark({ className }: { className?: string }) {
+/** Brand mark — Devanagari अ inside a sacred-geometry mandala.
+ *  Source artwork is gold on near-black, so the mark reads as a dark
+ *  medallion on the cream page background. */
+function Mark({ size = 32 }: { size?: number }) {
   return (
-    <svg
-      viewBox="0 0 64 64"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path
-        fillRule="evenodd"
-        d="M6 6 H58 V58 H6 Z M14 14 H50 V50 H14 Z"
-      />
-      <rect x="19" y="22" width="10" height="20" />
-    </svg>
+    <Image
+      src="/logo-mark.png"
+      alt=""
+      width={size}
+      height={size}
+      className="brand-mark"
+      priority
+    />
   );
 }
+
 
 const FEATURES: ReadonlyArray<readonly [string, string, string]> = [
   [
@@ -145,9 +142,13 @@ export default function Page() {
     <>
       <header className="nav">
         <div className="container nav-inner">
-          <a href="/" className="brand" aria-label="Artha home">
-            <Mark className="brand-mark" />
-            <span>Artha</span>
+          <a href="/" className="brand" aria-label="Artha — AI Coworker OS">
+            <Mark size={40} />
+            <span className="wordmark">
+              <span className="wordmark-name">ARTHA</span>
+              <span className="wordmark-rule" aria-hidden="true" />
+              <span className="wordmark-tagline">AI Coworker OS</span>
+            </span>
           </a>
           <nav>
             <ul className="nav-links">
@@ -170,7 +171,7 @@ export default function Page() {
       <main>
         <section className="hero">
           <div className="container">
-            <div className="eyebrow">Open source · Local-first · MIT</div>
+            <div className="eyebrow">Local-first · Privacy by design · v0.1.1</div>
             <h1>
               Serious work. <span className="accent">Fully local.</span>
             </h1>
@@ -233,8 +234,8 @@ export default function Page() {
                 <div className="stat-value">3</div>
               </div>
               <div>
-                <div className="stat-label">License</div>
-                <div className="stat-value">MIT</div>
+                <div className="stat-label">Document formats</div>
+                <div className="stat-value">4</div>
               </div>
             </div>
           </div>
@@ -315,11 +316,15 @@ export default function Page() {
           <div className="footer-inner">
             <div className="footer-brand">
               <div className="brand">
-                <Mark className="brand-mark" />
-                <span>Artha</span>
+                <Mark size={36} />
+                <span className="wordmark">
+                  <span className="wordmark-name">ARTHA</span>
+                  <span className="wordmark-rule" aria-hidden="true" />
+                  <span className="wordmark-tagline">AI Coworker OS</span>
+                </span>
               </div>
               <p>
-                अर्थ — Sanskrit for purpose, meaning, livelihood.
+                अर्थ — Sanskrit for work done, purpose, meaning, intent.
                 A local-first AI workspace built on the principle that your
                 data is yours.
               </p>
@@ -344,15 +349,15 @@ export default function Page() {
                 <li>
                   <a href="/privacy">Privacy</a>
                 </li>
-                <li>
-                  <a href="/license">License</a>
-                </li>
               </ul>
             </div>
           </div>
           <div className="footer-bottom">
-            <div>© 2026 Artha · MIT licensed</div>
+            <div>© 2026 Artha</div>
             <div>Built locally.</div>
+          </div>
+          <div className="footer-credit">
+            Presented by Shree Labs Inc.
           </div>
         </div>
       </footer>
