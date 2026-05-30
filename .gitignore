@@ -18,6 +18,12 @@ release/
 .env.local
 .env.*.local
 
+# Secrets / signing keys — NEVER commit (license-signing key, Apple cert, etc.)
+*.pem
+*.p12
+*.key
+.artha-license-key.pem
+
 # Artha runtime data (never commit user data)
 artha-data/
 *.artha.db
