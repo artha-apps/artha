@@ -10,6 +10,20 @@
 
 ---
 
+## ⏳ Open reminders / TODOs
+
+- **Windows code signing — revisit when total installer downloads > ~100.** The
+  Windows `.exe` is currently UNSIGNED (SmartScreen "unknown publisher" warning;
+  still installable). Needs its own **Authenticode** cert — Apple's Developer ID
+  does not apply. Recommended: **Azure Trusted Signing** (~$10/mo, CI-native).
+  Wire-up point + download-count check are documented in
+  `.github/workflows/release.yml` (search `TODO(windows-signing)`).
+  Check downloads: `gh release view <tag> --repo artha-apps/artha --json assets --jq '[.assets[].downloadCount] | add'`.
+- **Linux:** ready — `.deb` builds on `ubuntu-latest` and publishes; no signing needed.
+- **macOS:** signed + notarized via one Developer ID cert (covers both arm64 + Intel x64).
+
+---
+
 ## 2026-05-30 — v0.1.2 security release (on `chore/security-bumps`, PR #6)
 
 Dependency/security sweep, version bumped `0.1.1` → `0.1.2`, tagged and released.
