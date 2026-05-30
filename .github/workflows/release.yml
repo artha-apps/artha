@@ -43,6 +43,16 @@ jobs:
       - name: Build renderer and main
         run: npm run build
 
+      # TODO(windows-signing): the Windows .exe ships UNSIGNED, so users hit a
+      # SmartScreen "unknown publisher" warning (still installable via
+      # "More info -> Run anyway"). Apple's Developer ID cert does NOT work on
+      # Windows — it needs its own Authenticode cert.
+      # ACTION once total installer downloads exceed ~100 (check with:
+      #   gh release view <tag> --repo artha-apps/artha --json assets \
+      #     --jq '[.assets[].downloadCount] | add'  )
+      # get an Authenticode cert — Azure Trusted Signing (~$10/mo, CI-native) is
+      # the cheapest modern option — then add a Windows-only signing step here.
+      # Linux .deb needs no signing; macOS is already signed + notarized.
       - name: Publish to GitHub Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
