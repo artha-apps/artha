@@ -2,20 +2,17 @@
 
 import { useEffect, useState } from 'react';
 
-const REPO = 'Noopurtrivedi/artha';
-const RELEASES_LATEST = `https://github.com/${REPO}/releases/latest`;
-const RELEASES_API = `https://api.github.com/repos/${REPO}/releases/latest`;
-
 type Platform = 'mac-arm64' | 'mac-intel' | 'windows' | 'linux' | 'unknown';
 
 function detectPlatform(): Platform {
   if (typeof navigator === 'undefined') return 'unknown';
   const ua = navigator.userAgent;
-  const platform = (navigator as any).userAgentData?.platform ?? navigator.platform;
+  const platform =
+    (navigator as any).userAgentData?.platform ?? navigator.platform;
 
   if (/Mac/i.test(platform)) {
-    // Best-effort Apple Silicon detection — UA doesn't disclose arch reliably,
-    // so we offer both and default to arm64 (newer machines).
+    // UA doesn't disclose Apple Silicon vs Intel reliably; default to arm64
+    // (newer machines), offer Intel as a secondary download.
     return 'mac-arm64';
   }
   if (/Win/i.test(platform)) return 'windows';
@@ -23,16 +20,94 @@ function detectPlatform(): Platform {
   return 'unknown';
 }
 
-type Asset = { name: string; browser_download_url: string; size: number };
-type ReleaseInfo = { tag_name: string; assets: Asset[] } | null;
-
-function findAsset(release: ReleaseInfo, predicate: (name: string) => boolean) {
-  if (!release) return null;
-  return release.assets.find((a) => predicate(a.name)) ?? null;
-}
+type AssetMeta = { name: string; size: number };
+type ReleaseInfo = {
+  tag_name: string;
+  assets: Partial<Record<Exclude<Platform, 'unknown'>, AssetMeta>>;
+} | null;
 
 function bytesToMB(n: number) {
   return `${Math.round(n / 1024 / 1024)} MB`;
+}
+
+/** Brand mark — aperture / focused frame.
+ *  Outer hollow square (structure) with an inner mass offset left
+ *  (intent, deliberately not centered). Single color, currentColor. */
+function Mark({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 64 64"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path
+        fillRule="evenodd"
+        d="M6 6 H58 V58 H6 Z M14 14 H50 V50 H14 Z"
+      />
+      <rect x="19" y="22" width="10" height="20" />
+    </svg>
+  );
+}
+
+const FEATURES: ReadonlyArray<readonly [string, string, string]> = [
+  [
+    '01 / DOCUMENTS',
+    'Native artifacts',
+    'Generate Word, Excel, PowerPoint, and PDF files from natural language. Every artifact stays on your machine.',
+  ],
+  [
+    '02 / TOOLS',
+    'MCP-native',
+    'Any Model Context Protocol server becomes a skill your agent can use. Bring your own integrations.',
+  ],
+  [
+    '03 / RETRIEVAL',
+    'Local RAG',
+    'Index folders with Ollama embeddings. Search, cite, and chat with your files — no cloud.',
+  ],
+  [
+    '04 / MODELS',
+    'Ollama-first',
+    'Auto-detect installed models, pull new ones, and switch between Llama, Mistral, Qwen, and more.',
+  ],
+  [
+    '05 / PRIVACY',
+    'Zero telemetry',
+    'No accounts. No tracking. No background phone-home. The binary is auditable.',
+  ],
+  [
+    '06 / SAFETY',
+    'Sandboxed tools',
+    'Optional Docker sandbox for untrusted tools. Run agents without giving them your shell.',
+  ],
+];
+
+const PLATFORM_LABEL: Record<Exclude<Platform, 'unknown'>, string> = {
+  'mac-arm64': 'Download for macOS (Apple Silicon)',
+  'mac-intel': 'Download for macOS (Intel)',
+  windows: 'Download for Windows',
+  linux: 'Download for Linux (.deb)',
+};
+
+const SECONDARY_LABEL: Record<Exclude<Platform, 'unknown'>, string> = {
+  'mac-arm64': 'macOS arm64',
+  'mac-intel': 'macOS Intel',
+  windows: 'Windows',
+  linux: 'Linux .deb',
+};
+
+const PLATFORM_ORDER: Exclude<Platform, 'unknown'>[] = [
+  'mac-arm64',
+  'mac-intel',
+  'windows',
+  'linux',
+];
+
+function downloadHref(p: Platform): string {
+  if (p === 'unknown') return '/api/download/mac-arm64';
+  return `/api/download/${p}`;
 }
 
 export default function Page() {
@@ -42,244 +117,245 @@ export default function Page() {
 
   useEffect(() => {
     setPlatform(detectPlatform());
-    fetch(RELEASES_API)
+    fetch('/api/release')
       .then((r) => {
-        if (!r.ok) throw new Error(`GitHub API returned ${r.status}`);
+        if (!r.ok) throw new Error(`Release API returned ${r.status}`);
         return r.json();
       })
       .then(setRelease)
       .catch((e) => setError(String(e)));
   }, []);
 
-  const macArm = findAsset(release, (n) => /arm64.*\.dmg$/i.test(n));
-  const macX64 = findAsset(release, (n) => /\.dmg$/i.test(n) && !/arm64/i.test(n));
-  const winExe = findAsset(release, (n) => /\.exe$/i.test(n));
-  const linuxDeb = findAsset(release, (n) => /\.deb$/i.test(n));
-
-  const primary =
-    platform === 'mac-arm64'
-      ? macArm ?? macX64
-      : platform === 'mac-intel'
-        ? macX64 ?? macArm
-        : platform === 'windows'
-          ? winExe
-          : platform === 'linux'
-            ? linuxDeb
-            : null;
-
+  const primaryPlatform: Exclude<Platform, 'unknown'> =
+    platform === 'unknown' ? 'mac-arm64' : platform;
+  const primaryAsset = release?.assets?.[primaryPlatform] ?? null;
   const primaryLabel =
-    platform === 'mac-arm64'
-      ? 'Download for macOS (Apple Silicon)'
-      : platform === 'mac-intel'
-        ? 'Download for macOS (Intel)'
-        : platform === 'windows'
-          ? 'Download for Windows'
-          : platform === 'linux'
-            ? 'Download for Linux (.deb)'
-            : 'See all downloads';
+    platform === 'unknown'
+      ? 'Download Artha'
+      : PLATFORM_LABEL[primaryPlatform];
+
+  const otherLinks = PLATFORM_ORDER.flatMap((p) => {
+    if (p === primaryPlatform) return [];
+    const meta = release?.assets?.[p];
+    if (!meta) return [];
+    return [{ platform: p, label: SECONDARY_LABEL[p] }];
+  });
 
   return (
-    <main style={{ maxWidth: 880, margin: '0 auto', padding: '80px 24px' }}>
-      <header style={{ marginBottom: 64 }}>
-        <div style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 12 }}>
-          🪔 Artha
+    <>
+      <header className="nav">
+        <div className="container nav-inner">
+          <a href="/" className="brand" aria-label="Artha home">
+            <Mark className="brand-mark" />
+            <span>Artha</span>
+          </a>
+          <nav>
+            <ul className="nav-links">
+              <li>
+                <a href="#features">Features</a>
+              </li>
+              <li className="hide-sm">
+                <a href="#getting-started">Get started</a>
+              </li>
+              <li>
+                <a className="nav-cta" href={downloadHref(primaryPlatform)}>
+                  Download
+                </a>
+              </li>
+            </ul>
+          </nav>
         </div>
-        <h1
-          style={{
-            fontSize: 56,
-            fontWeight: 700,
-            letterSpacing: '-0.02em',
-            lineHeight: 1.05,
-            marginBottom: 20,
-          }}
-        >
-          Your work, done. <span style={{ color: 'var(--accent)' }}>Locally.</span>
-        </h1>
-        <p style={{ fontSize: 20, color: 'var(--muted)', maxWidth: 640 }}>
-          Open-source local-first AI agent for document workflows, MCP tools, and
-          agentic automation. No data leaves your machine. Ever.
-        </p>
       </header>
 
-      <section style={{ marginBottom: 64 }}>
-        {primary ? (
-          <a
-            href={primary.browser_download_url}
-            style={{
-              display: 'inline-block',
-              background: 'var(--accent)',
-              color: '#000',
-              padding: '16px 28px',
-              borderRadius: 10,
-              fontWeight: 600,
-              fontSize: 16,
-              marginRight: 12,
-            }}
-          >
-            {primaryLabel} ({bytesToMB(primary.size)})
-          </a>
-        ) : (
-          <a
-            href={RELEASES_LATEST}
-            style={{
-              display: 'inline-block',
-              background: 'var(--accent)',
-              color: '#000',
-              padding: '16px 28px',
-              borderRadius: 10,
-              fontWeight: 600,
-              fontSize: 16,
-              marginRight: 12,
-            }}
-          >
-            {primaryLabel}
-          </a>
-        )}
-
-        <a
-          href={`https://github.com/${REPO}`}
-          style={{
-            display: 'inline-block',
-            border: '1px solid var(--border)',
-            padding: '16px 28px',
-            borderRadius: 10,
-            fontWeight: 500,
-            fontSize: 16,
-          }}
-        >
-          View on GitHub →
-        </a>
-
-        <div style={{ marginTop: 24, fontSize: 14, color: 'var(--muted)' }}>
-          {release ? (
-            <>
-              Latest release: <strong>{release.tag_name}</strong> · Also available
-              for{' '}
-              {[
-                macArm && (
-                  <a
-                    key="ma"
-                    href={macArm.browser_download_url}
-                    style={{ color: 'var(--accent)' }}
-                  >
-                    macOS arm64
-                  </a>
-                ),
-                macX64 && (
-                  <a
-                    key="mx"
-                    href={macX64.browser_download_url}
-                    style={{ color: 'var(--accent)' }}
-                  >
-                    macOS Intel
-                  </a>
-                ),
-                winExe && (
-                  <a
-                    key="w"
-                    href={winExe.browser_download_url}
-                    style={{ color: 'var(--accent)' }}
-                  >
-                    Windows
-                  </a>
-                ),
-                linuxDeb && (
-                  <a
-                    key="l"
-                    href={linuxDeb.browser_download_url}
-                    style={{ color: 'var(--accent)' }}
-                  >
-                    Linux (.deb)
-                  </a>
-                ),
-              ]
-                .filter(Boolean)
-                .reduce<React.ReactNode[]>((acc, el, i, arr) => {
-                  acc.push(el);
-                  if (i < arr.length - 1) acc.push(' · ');
-                  return acc;
-                }, [])}
-            </>
-          ) : error ? (
-            <>
-              Couldn’t fetch release info.{' '}
-              <a href={RELEASES_LATEST} style={{ color: 'var(--accent)' }}>
-                See all downloads →
+      <main>
+        <section className="hero">
+          <div className="container">
+            <div className="eyebrow">Open source · Local-first · MIT</div>
+            <h1>
+              Serious work. <span className="accent">Fully local.</span>
+            </h1>
+            <p className="lede">
+              Artha is a local-first AI workspace that generates documents,
+              indexes your files, and runs agents — all on your hardware.
+              No cloud calls. No accounts. No telemetry.
+            </p>
+            <div className="cta-row">
+              <a
+                className="btn-primary"
+                href={downloadHref(primaryPlatform)}
+              >
+                <span>{primaryLabel}</span>
+                {primaryAsset && (
+                  <span style={{ opacity: 0.75, fontWeight: 400 }}>
+                    · {bytesToMB(primaryAsset.size)}
+                  </span>
+                )}
               </a>
-            </>
-          ) : (
-            'Loading latest release…'
-          )}
-        </div>
-      </section>
-
-      <section
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-          gap: 16,
-          marginBottom: 64,
-        }}
-      >
-        {[
-          ['📄 Documents', 'Generate DOCX, PPTX, XLSX, PDF from natural language.'],
-          ['🔌 MCP-native', 'Any MCP server becomes a skill your agent can use.'],
-          ['🧠 Local RAG', 'Index your files with Ollama embeddings. Zero cloud.'],
-          ['🦙 Ollama first', 'Auto-detect, pull, and switch local models.'],
-          ['🔒 Zero telemetry', 'No tracking. No accounts. No data exfiltration.'],
-          ['🐳 Sandboxed tools', 'Optional Docker sandbox for tool execution.'],
-        ].map(([title, body]) => (
-          <div
-            key={title}
-            style={{
-              background: 'var(--bg-elev)',
-              border: '1px solid var(--border)',
-              borderRadius: 12,
-              padding: 20,
-            }}
-          >
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>{title}</div>
-            <div style={{ fontSize: 14, color: 'var(--muted)' }}>{body}</div>
+            </div>
+            <div className="release-meta">
+              {release ? (
+                <>
+                  Latest release <strong>{release.tag_name}</strong>
+                  {otherLinks.length > 0 && (
+                    <>
+                      {' · Also for '}
+                      {otherLinks.map((l, i) => (
+                        <span key={l.platform}>
+                          <a href={downloadHref(l.platform)}>{l.label}</a>
+                          {i < otherLinks.length - 1 ? ' · ' : ''}
+                        </span>
+                      ))}
+                    </>
+                  )}
+                </>
+              ) : error ? (
+                <>Release info temporarily unavailable.</>
+              ) : (
+                'Loading latest release…'
+              )}
+            </div>
           </div>
-        ))}
-      </section>
+        </section>
 
-      <section style={{ marginBottom: 48 }}>
-        <h2 style={{ fontSize: 20, marginBottom: 12 }}>First-run notes</h2>
-        <ul
-          style={{
-            color: 'var(--muted)',
-            paddingLeft: 20,
-            fontSize: 15,
-            lineHeight: 1.9,
-          }}
-        >
-          <li>
-            Requires <a href="https://ollama.ai" style={{ color: 'var(--accent)' }}>Ollama</a> running locally. We recommend{' '}
-            <code>llama3.2:3b-instruct-q4_K_M</code> to start.
-          </li>
-          <li>
-            Installers are currently <strong>unsigned</strong>. On macOS, right-click
-            the app → Open. On Windows, click "More info" → "Run anyway".
-          </li>
-          <li>
-            Source is <a href={`https://github.com/${REPO}`} style={{ color: 'var(--accent)' }}>MIT-licensed</a>.
-            Audit the build, run from source, or trust the binary — your call.
-          </li>
-        </ul>
-      </section>
+        <section className="stats" aria-label="Project facts">
+          <div className="container">
+            <div className="stats-grid">
+              <div>
+                <div className="stat-label">On-device execution</div>
+                <div className="stat-value">100%</div>
+              </div>
+              <div>
+                <div className="stat-label">Telemetry events</div>
+                <div className="stat-value">0</div>
+              </div>
+              <div>
+                <div className="stat-label">Platforms</div>
+                <div className="stat-value">3</div>
+              </div>
+              <div>
+                <div className="stat-label">License</div>
+                <div className="stat-value">MIT</div>
+              </div>
+            </div>
+          </div>
+        </section>
 
-      <footer
-        style={{
-          borderTop: '1px solid var(--border)',
-          paddingTop: 24,
-          fontSize: 13,
-          color: 'var(--muted)',
-        }}
-      >
-        Artha (अर्थ) — Sanskrit for purpose, meaning, livelihood. Built with care.
-        MIT licensed.
+        <section className="features" id="features">
+          <div className="container">
+            <div className="section-header">
+              <h2>An AI workspace that earns trust.</h2>
+              <p>
+                Every capability built around a single rule: your files,
+                prompts, embeddings, and model outputs never leave the machine
+                they were generated on.
+              </p>
+            </div>
+            <div className="feature-grid">
+              {FEATURES.map(([label, title, body]) => (
+                <div className="feature" key={label}>
+                  <div className="feature-label">{label}</div>
+                  <h3>{title}</h3>
+                  <p>{body}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="getting-started" id="getting-started">
+          <div className="container">
+            <div className="section-header">
+              <h2>Before your first launch.</h2>
+              <p>Three things worth knowing.</p>
+            </div>
+            <ol className="notes-list">
+              <li>
+                <div className="num">01</div>
+                <div className="body">
+                  <p>
+                    Requires <a href="https://ollama.ai">Ollama</a> running
+                    locally.
+                  </p>
+                  <p>
+                    We recommend{' '}
+                    <code>llama3.2:3b-instruct-q4_K_M</code> to start — fits in
+                    8 GB of RAM and is fast on most laptops.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <div className="num">02</div>
+                <div className="body">
+                  <p>
+                    Installers are currently <strong>unsigned</strong>.
+                  </p>
+                  <p>
+                    On macOS, right-click the app and choose Open. On Windows,
+                    click &ldquo;More info&rdquo; → &ldquo;Run anyway&rdquo;.
+                    Signed builds are on the roadmap.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <div className="num">03</div>
+                <div className="body">
+                  <p>The binary is open source and auditable.</p>
+                  <p>
+                    Run it as a black box, or build from source — your call.
+                  </p>
+                </div>
+              </li>
+            </ol>
+          </div>
+        </section>
+      </main>
+
+      <footer className="footer">
+        <div className="container">
+          <div className="footer-inner">
+            <div className="footer-brand">
+              <div className="brand">
+                <Mark className="brand-mark" />
+                <span>Artha</span>
+              </div>
+              <p>
+                अर्थ — Sanskrit for purpose, meaning, livelihood.
+                A local-first AI workspace built on the principle that your
+                data is yours.
+              </p>
+            </div>
+            <div>
+              <div className="footer-col-title">Product</div>
+              <ul className="footer-links">
+                <li>
+                  <a href={downloadHref(primaryPlatform)}>Download</a>
+                </li>
+                <li>
+                  <a href="#features">Features</a>
+                </li>
+                <li>
+                  <a href="#getting-started">Get started</a>
+                </li>
+              </ul>
+            </div>
+            <div>
+              <div className="footer-col-title">Project</div>
+              <ul className="footer-links">
+                <li>
+                  <a href="/privacy">Privacy</a>
+                </li>
+                <li>
+                  <a href="/license">License</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div className="footer-bottom">
+            <div>© 2026 Artha · MIT licensed</div>
+            <div>Built locally.</div>
+          </div>
+        </div>
       </footer>
-    </main>
+    </>
   );
 }
