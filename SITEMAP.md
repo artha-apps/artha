@@ -11,9 +11,9 @@
 | `REQUIREMENTS.md` | Living product spec / implementation log |
 | `SITEMAP.md` | This file |
 | `README.md` | Public-facing overview (install, usage, contributing) |
-| `assets/` | App icons — `icon.icns` (macOS), `icon.ico` (Windows), `icon.png` (Linux) |
+| `assets/` | App icons (mandala अ mark) — `icon.icns` (macOS), `icon.ico` (Windows), `icon.png` (Linux); `entitlements.mac.plist` — hardened-runtime entitlements for macOS signing/notarization |
 | `.github/workflows/ci.yml` | CI: typecheck + lint + test on push/PR |
-| `.github/workflows/release.yml` | Release: build DMG/EXE/DEB and publish to GitHub Releases on tag push |
+| `.github/workflows/release.yml` | Release: build DMG/EXE/DEB, code-sign + notarize macOS (via `CSC_*`/`APPLE_*` secrets), and publish to `artha-apps/artha` GitHub Releases on tag push |
 
 ---
 
@@ -112,7 +112,10 @@
 | `next.config.ts` | Next.js config — static export, trailing slash, unoptimized images |
 | `tailwind.config.ts` | Tailwind config — artha colour palette matching app |
 | `tsconfig.json` | TypeScript config for Next.js |
-| `public/favicon.svg` | SVG favicon |
+| `public/logo-mark.png`, `logo-mark-512.png` | Mandala अ brand mark (used by landing header/footer via `next/image`) |
+| `public/logo-wordmark.png`, `logo-wordmark-72.png`, `logo-full.png` | ARTHA wordmark / full lockup |
+| `public/favicon-16.png`, `favicon-32.png`, `favicon-256.png`, `apple-touch-icon.png` | PNG favicons + Apple touch icon |
+| `public/og-image.png` | Open Graph / Twitter card image |
 
 ---
 
