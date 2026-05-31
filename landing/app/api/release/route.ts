@@ -35,7 +35,9 @@ export async function GET(_req: NextRequest) {
         Accept: 'application/vnd.github+json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      next: { revalidate: 300 },
+      // Short revalidate so a freshly-published release shows up within ~1 min
+      // (a public-repo GH call is cheap, and GITHUB_TOKEN raises the rate limit).
+      next: { revalidate: 60 },
     },
   );
 
