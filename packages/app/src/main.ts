@@ -105,7 +105,7 @@ async function createWindow(): Promise<void> {
     if (details.reason === 'clean-exit') return;
     rendererCrashes++;
     if (rendererCrashes <= 3 && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.reload();
+      try { mainWindow.reload(); } catch { /* window gone */ }
     }
   });
   mainWindow.webContents.on('unresponsive', () => {
@@ -131,8 +131,13 @@ async function createWindow(): Promise<void> {
     autoUpdater.on('update-available', (info) => {
       console.log(`[Artha] Update available: ${info.version} (current ${app.getVersion()})`);
       // Tell the renderer so it can show an in-app "update available" banner.
-      // Notification-only: we don't auto-download; the banner links to the site.
-      mainWindow?.webContents.send('update:available', { version: info.version });
+      // This fires async at startup, so the webContents may not be ready/alive —
+      // guard both the window and webContents (and try/catch the race) or it
+      // throws "Object has been destroyed" in the main process.
+      const wc = mainWindow?.webContents;
+      if (mainWindow && !mainWindow.isDestroyed() && wc && !wc.isDestroyed()) {
+        try { wc.send('update:available', { version: info.version }); } catch { /* ignore */ }
+      }
     });
     autoUpdater.on('update-not-available', () => {
       console.log(`[Artha] Up to date (${app.getVersion()})`);
