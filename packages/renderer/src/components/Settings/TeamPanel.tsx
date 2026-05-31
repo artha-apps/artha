@@ -39,7 +39,13 @@ interface MemoryEntity {
 }
 
 // ── Members tab ───────────────────────────────────────────────────────────────
+
+/**
+ * Lists teammates stored in the `team_members` table and provides an add form.
+ * Role is displayed as a clickable badge that toggles between admin and member.
+ */
 function MembersTab() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [members, setMembers] = useState<Member[]>([]);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -66,6 +72,7 @@ function MembersTab() {
     await load();
   };
 
+  /** Toggle the member between admin and member roles; a full reload keeps truth in DB. */
   const toggleRole = async (m: Member) => {
     const next = m.role === 'admin' ? 'member' : 'admin';
     await window.artha.team.updateMember(m.member_id, { role: next });
@@ -80,17 +87,17 @@ function MembersTab() {
         <div className="flex gap-2">
           <input value={name} onChange={e => setName(e.target.value)}
             placeholder="Display name *"
-            className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-white placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
+            className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
           <input value={email} onChange={e => setEmail(e.target.value)}
             placeholder="Email (optional)"
-            className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-white placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
+            className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
           <select value={role} onChange={e => setRole(e.target.value as 'admin' | 'member')}
-            className="px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-white focus:outline-none">
+            className="px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text focus:outline-none">
             <option value="member">Member</option>
             <option value="admin">Admin</option>
           </select>
           <button onClick={add} disabled={busy || !name.trim()}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white text-sm font-medium transition-colors">
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-artha-text text-sm font-medium transition-colors">
             {busy ? <Loader size={13} className="animate-spin" /> : <Plus size={13} />} Add
           </button>
         </div>
@@ -108,7 +115,7 @@ function MembersTab() {
                 {m.role === 'admin' ? <Shield size={14} className="text-purple-400" /> : <User size={14} className="text-cyan-400" />}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white truncate">{m.display_name}</p>
+                <p className="text-sm font-medium text-artha-text truncate">{m.display_name}</p>
                 {m.email && <p className="text-xs text-artha-muted truncate">{m.email}</p>}
               </div>
               <button onClick={() => toggleRole(m)}
@@ -132,9 +139,18 @@ function MembersTab() {
 }
 
 // ── API Keys tab ──────────────────────────────────────────────────────────────
+
+/**
+ * Manages Bearer tokens for the LAN server. The plaintext key is shown exactly
+ * once after creation (stored only as a bcrypt hash); after that only the name
+ * and metadata are visible. When the `api_keys` table is empty the LAN server
+ * operates without auth — the yellow warning banner reflects this.
+ */
 function ApiKeysTab() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [keyName, setKeyName] = useState('');
+  // `newKey` holds the one-time plaintext reveal; cleared on revoke or navigation.
   const [newKey, setNewKey] = useState<{ key_id: string; plaintext: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -160,6 +176,7 @@ function ApiKeysTab() {
 
   const revoke = async (id: string) => {
     await window.artha.apikeys.revoke(id);
+    // Also clear the one-time reveal banner if that key was revoked.
     if (newKey?.key_id === id) setNewKey(null);
     await load();
   };
@@ -200,9 +217,9 @@ function ApiKeysTab() {
       <div className="flex gap-2">
         <input value={keyName} onChange={e => setKeyName(e.target.value)}
           placeholder="Key name (e.g. Alice's laptop)"
-          className="flex-1 px-3 py-2 rounded-lg bg-artha-s2 border border-artha-border text-sm text-white placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
+          className="flex-1 px-3 py-2 rounded-lg bg-artha-s2 border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
         <button onClick={create} disabled={busy}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white text-sm font-medium transition-colors">
+          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-artha-text text-sm font-medium transition-colors">
           {busy ? <Loader size={13} className="animate-spin" /> : <Plus size={13} />} Generate
         </button>
       </div>
@@ -217,14 +234,14 @@ function ApiKeysTab() {
               className="flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
               <Key size={14} className={k.is_enabled ? 'text-cyan-400' : 'text-artha-muted'} />
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white truncate">{k.name}</p>
+                <p className="text-sm font-medium text-artha-text truncate">{k.name}</p>
                 <p className="text-xs text-artha-muted">
                   Created {fmt(k.created_at)} · Last used {fmt(k.last_used_at)}
                 </p>
               </div>
               <button onClick={() => toggle(k.key_id, k.is_enabled)}
                 title={k.is_enabled ? 'Disable' : 'Enable'}
-                className="p-1.5 rounded-lg text-artha-muted hover:text-white hover:bg-white/10 transition-colors">
+                className="p-1.5 rounded-lg text-artha-muted hover:text-artha-text hover:bg-artha-text/8 transition-colors">
                 {k.is_enabled ? <Eye size={13} /> : <EyeOff size={13} />}
               </button>
               <button onClick={() => revoke(k.key_id)}
@@ -240,12 +257,20 @@ function ApiKeysTab() {
 }
 
 // ── Shared memory tab ─────────────────────────────────────────────────────────
+
+/**
+ * Lets the user choose which memory entities are visible to LAN-server sessions.
+ * Shared entities are injected into the system prompt for every remote request,
+ * giving teammates the same persistent context the host user has.
+ */
 function SharedMemoryTab() {
   const [memories, setMemories] = useState<MemoryEntity[]>([]);
+  // `busy` holds the entity_id whose toggle is in-flight (to prevent double-tap).
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = async () => {
-    // Load ALL memories (so user can toggle sharing on any of them)
+    // Load ALL memories so the user can toggle sharing on any of them — including
+    // ones that are not yet shared. The `is_shared` field may be absent on older rows.
     const all = await window.artha.memory.list() as (MemoryEntity & { is_shared?: number })[];
     setMemories(all.map(m => ({ ...m, is_shared: m.is_shared ?? 0 })));
   };
@@ -276,7 +301,7 @@ function SharedMemoryTab() {
               className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
               <Brain size={14} className={`mt-0.5 shrink-0 ${m.is_shared ? 'text-cyan-400' : 'text-artha-muted'}`} />
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white truncate">{m.name}</p>
+                <p className="text-sm font-medium text-artha-text truncate">{m.name}</p>
                 <p className="text-xs text-artha-muted line-clamp-2">{m.content}</p>
               </div>
               <button
@@ -302,6 +327,11 @@ function SharedMemoryTab() {
 }
 
 // ── Main panel ────────────────────────────────────────────────────────────────
+
+/**
+ * Team panel shell — renders the three sub-components (MembersTab, ApiKeysTab,
+ * SharedMemoryTab) inside a shared header and tab bar.
+ */
 export default function TeamPanel() {
   const [tab, setTab] = useState<Tab>('members');
 
@@ -318,7 +348,7 @@ export default function TeamPanel() {
         <div className="flex items-center gap-3 mb-6">
           <Users size={22} className="text-cyan-400" />
           <div>
-            <h2 className="text-lg font-semibold text-white">Team</h2>
+            <h2 className="text-lg font-semibold text-artha-text">Team</h2>
             <p className="text-sm text-artha-muted">
               Manage teammates, issue LAN API keys, and choose which memories to share
             </p>
@@ -330,7 +360,7 @@ export default function TeamPanel() {
           {tabs.map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setTab(id)}
               className={`flex items-center gap-2 flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                tab === id ? 'bg-artha-surface text-white shadow-sm' : 'text-artha-muted hover:text-white'
+                tab === id ? 'bg-artha-surface text-artha-text shadow-sm' : 'text-artha-muted hover:text-artha-text'
               }`}>
               <Icon size={14} /> {label}
             </button>

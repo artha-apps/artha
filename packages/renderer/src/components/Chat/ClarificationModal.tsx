@@ -64,16 +64,16 @@ export default function ClarificationModal() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-lg mx-4 rounded-2xl border border-white/10 bg-artha-s2 shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-artha-text/30 backdrop-blur-sm">
+      <div className="w-full max-w-lg mx-4 rounded-2xl border border-artha-border bg-artha-surface shadow-modal overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-start gap-3 px-5 pt-5 pb-4 border-b border-white/8">
-          <div className="w-8 h-8 rounded-xl bg-artha-accent/15 border border-artha-accent/25 flex items-center justify-center shrink-0 mt-0.5">
+        <div className="flex items-start gap-3 px-5 pt-5 pb-4 border-b border-artha-border">
+          <div className="w-8 h-8 rounded-xl bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center shrink-0 mt-0.5">
             <HelpCircle size={15} className="text-artha-accent" />
           </div>
           <div>
-            <p className="text-sm font-semibold text-white">A few quick questions</p>
+            <p className="text-sm font-semibold text-artha-text">A few quick questions</p>
             <p className="text-xs text-artha-muted mt-0.5">
               Answering helps the agent plan better. You can skip if you prefer.
             </p>
@@ -83,7 +83,7 @@ export default function ClarificationModal() {
         {/* Goal preview */}
         <div className="px-5 pt-4">
           <p className="text-xs text-artha-muted mb-3 line-clamp-2">
-            <span className="text-white/50 font-medium">Goal: </span>
+            <span className="text-artha-subtle font-medium">Goal: </span>
             {pendingClarify.goal}
           </p>
         </div>
@@ -93,7 +93,7 @@ export default function ClarificationModal() {
           {questions.map((q, i) => (
             <div key={i} className="space-y-1.5">
               <label className="block text-xs font-medium text-artha-muted">
-                <span className="text-artha-accent/70 mr-1.5">{i + 1}.</span>{q}
+                <span className="text-artha-accent mr-1.5">{i + 1}.</span>{q}
               </label>
               <input
                 id={`clarify-answer-${i}`}
@@ -103,24 +103,24 @@ export default function ClarificationModal() {
                 onChange={e => setAnswers(prev => prev.map((a, j) => j === i ? e.target.value : a))}
                 onKeyDown={e => handleKey(e, i)}
                 placeholder="Your answer…"
-                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-artha-muted/50 focus:outline-none focus:border-artha-accent/50 transition-colors"
+                className="w-full bg-artha-bg border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-subtle focus:outline-none focus:border-artha-accent transition-colors"
               />
             </div>
           ))}
         </div>
 
         {/* Actions */}
-        <div className="flex items-center justify-between px-5 py-4 border-t border-white/8">
+        <div className="flex items-center justify-between px-5 py-4 border-t border-artha-border">
           <button
             onClick={skip}
-            className="flex items-center gap-1.5 text-xs text-artha-muted hover:text-white transition-colors"
+            className="flex items-center gap-1.5 text-xs text-artha-muted hover:text-artha-text transition-colors"
           >
             <SkipForward size={13} />
             Skip and proceed
           </button>
           <button
             onClick={submit}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-artha-accent/20 hover:bg-artha-accent/30 border border-artha-accent/30 text-artha-accent text-sm font-medium transition-colors"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-sm font-medium transition-colors"
           >
             Continue
             <ArrowRight size={14} />

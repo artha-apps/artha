@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/rebuild-native.js",
+    "build:icons": "node scripts/build-icons.js",
     "dev": "pkill -9 -f 'Electron' 2>/dev/null; pkill -9 -f 'main.js' 2>/dev/null; sleep 3; fuser -k 5173/tcp 2>/dev/null; sleep 1; concurrently --names \"vite,tsc,electron\" --prefix-colors \"cyan,yellow,magenta\" \"npm run dev -w packages/renderer\" \"npm run dev -w packages/app\" \"wait-on http://localhost:5173 && sleep 6 && NODE_ENV=development npx electron packages/app/dist/main.js --disable-gpu-sandbox\"",
     "electron": "NODE_ENV=development npx electron packages/app/dist/main.js",
     "build": "npm run build -w packages/renderer && npm run build -w packages/app",
@@ -43,7 +44,7 @@
     "@nut-tree-fork/nut-js": "^4.2.6"
   },
   "overrides": {
-    "uuid": "$uuid",
+    "uuid": "^14.0.0",
     "postcss": "^8.5.10",
     "next": {
       "postcss": "^8.5.10"
@@ -57,6 +58,7 @@
     "electron": "^41.7.0",
     "electron-builder": "^26.8.1",
     "eslint": "^8.57.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "node-gyp": "^12.3.0",
     "typescript": "^5.4.0",
     "vitest": "^3.2.4",

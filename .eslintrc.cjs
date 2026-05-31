@@ -17,7 +17,7 @@ module.exports = {
     sourceType: 'module',
     ecmaFeatures: { jsx: true },
   },
-  plugins: ['@typescript-eslint'],
+  plugins: ['@typescript-eslint', 'react-hooks'],
   extends: ['eslint:recommended', 'plugin:@typescript-eslint/recommended'],
   env: { node: true, browser: true, es2022: true },
   ignorePatterns: [
@@ -40,5 +40,10 @@ module.exports = {
     'no-empty': ['warn', { allowEmptyCatch: true }],
     // Control chars appear in legitimate parsing/regex code.
     'no-control-regex': 'off',
+    // React hooks safety — `rules-of-hooks` is non-negotiable; missing-deps is
+    // a warning so it surfaces in CI without blocking refactors that legitimately
+    // close over stable values (Zustand actions, etc.).
+    'react-hooks/rules-of-hooks': 'error',
+    'react-hooks/exhaustive-deps': 'warn',
   },
 };

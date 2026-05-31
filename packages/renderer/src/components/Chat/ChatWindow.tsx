@@ -18,6 +18,8 @@ import { useChatStore } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
 import ToolCallInline from './ToolCallInline';
 import Citations from './Citations';
+import AtAutocomplete, { type AtSuggestion } from './AtAutocomplete';
+import { Tooltip } from '../ui/Tooltip';
 
 /** First-run hints shown on the empty state and the new-session screen. */
 const SUGGESTED_PROMPTS = [
@@ -40,12 +42,12 @@ function CodeBlock({ children }: { children: string }) {
   };
   return (
     <div className="relative group my-2">
-      <pre className="bg-black/40 border border-white/10 rounded-lg p-3 text-xs font-mono overflow-x-auto text-green-300/80 leading-relaxed">
+      <pre className="bg-artha-surface2 border border-artha-border rounded-lg p-3 text-xs font-mono overflow-x-auto text-artha-text/90 leading-relaxed">
         <code>{children}</code>
       </pre>
       <button
         onClick={copy}
-        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-white/10 hover:bg-white/20 text-artha-muted"
+        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-artha-surface border border-artha-border hover:border-artha-accent text-artha-muted"
       >
         {copied ? <Check size={11} /> : <Copy size={11} />}
       </button>
@@ -62,7 +64,7 @@ const mdComponents = {
     const isBlock = className?.includes('language-') || String(children).includes('\n');
     return isBlock
       ? <CodeBlock>{String(children).replace(/\n$/, '')}</CodeBlock>
-      : <code className="bg-black/30 px-1.5 py-0.5 rounded text-xs font-mono text-artha-accent">{children}</code>;
+      : <code className="bg-artha-surface2 px-1.5 py-0.5 rounded text-xs font-mono text-artha-accent">{children}</code>;
   },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   p({ children }: any) { return <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>; },
@@ -73,10 +75,10 @@ const mdComponents = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   li({ children }: any) { return <li className="leading-relaxed">{children}</li>; },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  strong({ children }: any) { return <strong className="font-semibold text-white">{children}</strong>; },
+  strong({ children }: any) { return <strong className="font-semibold text-artha-text">{children}</strong>; },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   blockquote({ children }: any) {
-    return <blockquote className="border-l-2 border-artha-accent/50 pl-3 text-artha-muted my-2">{children}</blockquote>;
+    return <blockquote className="border-l-2 border-artha-accent pl-3 text-artha-muted my-2">{children}</blockquote>;
   },
 };
 
@@ -94,7 +96,19 @@ export default function ChatWindow() {
     messages, streamingContent, isStreaming, activeSessionId,
     addUserMessage, activeWorkflowId, setStreaming, pendingCitations, activeSkill,
     pendingAttachments, setPendingAttachments, scopes, setScopes,
+    projects, activeProjectId,
   } = useChatStore();
+  // Project-aware suggested prompts. When the user is in a project, the
+  // hard-coded macOS prompts ("Organize my Desktop") feel wrong — swap to
+  // project-anchored phrasing instead. Falls back to the macOS set when no
+  // project is active so non-project chats still get useful starters.
+  const activeProject = projects.find(p => p.project_id === activeProjectId) ?? null;
+  const displayedPrompts = activeProject ? [
+    { icon: '📂', text: `Summarise what's in ${activeProject.name}` },
+    { icon: '🔍', text: `Find the most recently changed files in ${activeProject.name}` },
+    { icon: '🧠', text: `What did I work on yesterday in ${activeProject.name}?` },
+    { icon: '📝', text: `Draft a short README for ${activeProject.name}` },
+  ] : SUGGESTED_PROMPTS;
   const [scopeBusy, setScopeBusy] = useState(false);
   const [reindexingScope, setReindexingScope] = useState<string | null>(null);
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
@@ -102,6 +116,9 @@ export default function ChatWindow() {
   const [skills, setSkills] = useState<SkillOption[]>([]);
   const [ragIndexes, setRagIndexes] = useState<{ name: string; doc_count: number }[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
+  // `@`-autocomplete dismissal. The popover is otherwise derived from the
+  // input pattern; this lets Esc hide it without erasing the user's typing.
+  const [atDismissed, setAtDismissed] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [popplerWarning, setPopplerWarning] = useState(false);
   // Parallel sub-agent run indicator: the sub-task prompts + which have finished.
@@ -148,10 +165,12 @@ export default function ChatWindow() {
       .then((r) => setRagIndexes(r as { name: string; doc_count: number }[]))
       .catch(() => setRagIndexes([]));
   }, [isStreaming]);
+  // Total number of indexed chunks across all RAG indexes — shown in the status pill.
   const ragChunks = ragIndexes.reduce((n, i) => n + (i.doc_count ?? 0), 0);
 
-  // The slash-menu is open when the input is a bare "/partial-slug" with no
-  // space yet. We filter the enabled skills by that partial slug/name.
+  // The slash-menu is open when the entire input is "/…" with no space — i.e.
+  // the user hasn't started the actual prompt yet. The capture group is the
+  // partial slug; an empty capture ("/" alone) shows all skills.
   const slashMatch = input.match(/^\/([a-z0-9-]*)$/i);
   const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null;
   const slashResults = slashQuery !== null
@@ -165,6 +184,25 @@ export default function ChatWindow() {
     textareaRef.current?.focus();
   };
 
+  // `@`-autocomplete trigger: input ends with `@partial` at a word boundary.
+  // v1 fires only at the trailing edge of input — full cursor-aware insertion
+  // can come later. `showAt` is suppressed while the slash menu owns the keys.
+  const atMatch = input.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+  const atQuery: string | null = atMatch ? (atMatch[1] ?? '') : null;
+  const showAt = atQuery !== null && !showSlash && !atDismissed;
+
+  /** Splice the picked reference back into the textarea, replacing the
+   *  trailing `@partial` token with the value + a trailing space. Preserves
+   *  any leading whitespace that anchored the match. */
+  const pickAtSuggestion = (s: AtSuggestion): void => {
+    setInput(prev => prev.replace(
+      /(^|\s)@[a-zA-Z0-9_-]*$/,
+      (_full, lead: string) => `${lead}${s.value} `,
+    ));
+    setAtDismissed(false);
+    textareaRef.current?.focus();
+  };
+
   const autoResize = (el: HTMLTextAreaElement) => {
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
@@ -172,6 +210,9 @@ export default function ChatWindow() {
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
+    // Any keystroke after Esc-dismiss re-enables the `@` popover so it can
+    // re-open as the user keeps typing a new reference.
+    if (atDismissed) setAtDismissed(false);
     autoResize(e.target);
   };
 
@@ -331,8 +372,11 @@ export default function ChatWindow() {
   };
 
   /** Composer keydown — when the slash-menu is open, arrows/enter/tab drive it;
-   *  otherwise Enter (without shift) sends the message. */
+   *  otherwise Enter (without shift) sends the message. The `@`-popover owns
+   *  its own keys via a window capture listener (see AtAutocomplete) so we
+   *  bail early when it's visible to avoid double-handling. */
   const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showAt) return;
     if (showSlash) {
       const max = slashResults.length - 1;
       const idx = Math.min(slashIndex, max);
@@ -351,16 +395,16 @@ export default function ChatWindow() {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-8 px-6">
         <div className="text-center">
-          <div className="w-12 h-12 rounded-2xl bg-artha-accent/20 border border-artha-accent/20 flex items-center justify-center mx-auto mb-4">
+          <div className="w-12 h-12 rounded-2xl bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center mx-auto mb-4">
             <Bot size={22} className="text-artha-accent" />
           </div>
-          <h1 className="text-2xl font-semibold text-white mb-1">Artha</h1>
+          <h1 className="text-2xl font-semibold text-artha-text mb-1">Artha</h1>
           <p className="text-artha-muted text-sm">Your local AI agent. Fully private, runs on your Mac.</p>
         </div>
         <div className="grid grid-cols-2 gap-2 w-full max-w-md">
-          {SUGGESTED_PROMPTS.map(({ icon, text }) => (
+          {displayedPrompts.map(({ icon, text }) => (
             <button key={text} onClick={() => send(text)}
-              className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border hover:border-artha-accent/40 hover:bg-white/[0.03] transition-all text-sm text-left text-artha-muted hover:text-artha-text">
+              className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent hover:bg-artha-surface2 transition-all text-sm text-left text-artha-muted hover:text-artha-text shadow-soft">
               <span className="text-base leading-none mt-0.5 shrink-0">{icon}</span>
               <span className="leading-snug">{text}</span>
             </button>
@@ -384,18 +428,18 @@ export default function ChatWindow() {
               {parallelTasks.map((t, i) => {
                 const done = parallelDone.has(i);
                 return (
-                  <div
-                    key={i}
-                    title={t}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs ${
-                      done
-                        ? 'bg-green-500/10 border-green-500/30 text-green-400'
-                        : 'bg-artha-s2 border-artha-border text-artha-muted'
-                    }`}
-                  >
-                    {done ? <CheckCircle2 size={12} /> : <Loader size={12} className="animate-spin" />}
-                    Sub-task {i + 1}
-                  </div>
+                  <Tooltip key={i} content={t}>
+                    <div
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs ${
+                        done
+                          ? 'bg-artha-success/10 border-artha-success/40 text-artha-success'
+                          : 'bg-artha-surface border-artha-border text-artha-muted'
+                      }`}
+                    >
+                      {done ? <CheckCircle2 size={12} /> : <Loader size={12} className="animate-spin" />}
+                      Sub-task {i + 1}
+                    </div>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -406,9 +450,9 @@ export default function ChatWindow() {
             <div className="flex flex-col items-center gap-6 pt-8">
               <p className="text-artha-muted text-sm">What would you like to do?</p>
               <div className="grid grid-cols-2 gap-2 w-full max-w-md">
-                {SUGGESTED_PROMPTS.map(({ icon, text }) => (
+                {displayedPrompts.slice(0, 4).map(({ icon, text }) => (
                   <button key={text} onClick={() => send(text)}
-                    className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border hover:border-artha-accent/40 hover:bg-white/[0.03] transition-all text-sm text-left text-artha-muted hover:text-artha-text">
+                    className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent hover:bg-artha-surface2 transition-all text-sm text-left text-artha-muted hover:text-artha-text shadow-soft">
                     <span className="text-base leading-none mt-0.5 shrink-0">{icon}</span>
                     <span className="leading-snug">{text}</span>
                   </button>
@@ -421,14 +465,14 @@ export default function ChatWindow() {
           {sessionMessages.map(msg => (
             <div key={msg.id} className={`flex gap-3 ${msg.senderType === 'user' ? 'justify-end' : 'justify-start'}`}>
               {msg.senderType === 'agent' && (
-                <div className="w-7 h-7 rounded-full bg-artha-accent/15 border border-artha-accent/25 flex items-center justify-center shrink-0 mt-1">
+                <div className="w-7 h-7 rounded-full bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center shrink-0 mt-1">
                   <Bot size={13} className="text-artha-accent" />
                 </div>
               )}
               <div className={`text-sm leading-relaxed rounded-2xl px-4 py-3
                 ${msg.senderType === 'user'
-                  ? 'max-w-[65%] bg-artha-accent text-white rounded-br-sm'
-                  : 'max-w-[80%] bg-artha-s2 border border-artha-border text-artha-text rounded-bl-sm'}`}>
+                  ? 'max-w-[65%] bg-artha-accent text-white rounded-br-sm shadow-soft'
+                  : 'max-w-[80%] bg-artha-surface border border-artha-border text-artha-text rounded-bl-sm shadow-soft'}`}>
                 {msg.senderType === 'agent' ? (
                   <>
                     <ReactMarkdown components={mdComponents as never}>{msg.content || ''}</ReactMarkdown>
@@ -449,7 +493,7 @@ export default function ChatWindow() {
                             src={`data:${a.mime};base64,${a.data}`}
                             alt={a.name}
                             title={a.name}
-                            className="max-h-40 max-w-xs rounded-lg border border-white/20 object-cover"
+                            className="max-h-40 max-w-xs rounded-lg border border-white/40 object-cover"
                           />
                         ))}
                       </div>
@@ -464,10 +508,10 @@ export default function ChatWindow() {
           {/* Streaming / thinking bubble */}
           {isStreaming && (
             <div className="flex gap-3 justify-start">
-              <div className="w-7 h-7 rounded-full bg-artha-accent/15 border border-artha-accent/25 flex items-center justify-center shrink-0 mt-1">
+              <div className="w-7 h-7 rounded-full bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center shrink-0 mt-1">
                 <Zap size={13} className="text-artha-accent animate-pulse" />
               </div>
-              <div className="max-w-[80%] bg-artha-s2 border border-artha-border text-artha-text rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
+              <div className="max-w-[80%] bg-artha-surface border border-artha-border text-artha-text rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed shadow-soft">
                 {streamingContent ? (
                   <>
                     <ReactMarkdown components={mdComponents as never}>{streamingContent}</ReactMarkdown>
@@ -476,9 +520,9 @@ export default function ChatWindow() {
                   </>
                 ) : (
                   <span className="flex items-center gap-1 py-0.5">
-                    <span className="w-1.5 h-1.5 bg-artha-muted/60 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-1.5 h-1.5 bg-artha-muted/60 rounded-full animate-bounce" style={{ animationDelay: '160ms' }} />
-                    <span className="w-1.5 h-1.5 bg-artha-muted/60 rounded-full animate-bounce" style={{ animationDelay: '320ms' }} />
+                    <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '160ms' }} />
+                    <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '320ms' }} />
                   </span>
                 )}
               </div>
@@ -493,10 +537,19 @@ export default function ChatWindow() {
       <div className="px-6 pb-5 pt-2">
         <div className="max-w-3xl mx-auto relative">
 
+          {/* `@`-reference popover — projects, in-scope folders/files, tool tokens. */}
+          {showAt && atQuery !== null && (
+            <AtAutocomplete
+              query={atQuery}
+              onSelect={pickAtSuggestion}
+              onClose={() => setAtDismissed(true)}
+            />
+          )}
+
           {/* Slash-command menu — lists enabled skills as the user types "/…" */}
           {showSlash && (
-            <div className="absolute bottom-full mb-2 left-0 right-0 bg-artha-s2 border border-artha-border rounded-xl shadow-xl overflow-hidden z-20">
-              <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-artha-muted border-b border-artha-border flex items-center gap-1.5">
+            <div className="absolute bottom-full mb-2 left-0 right-0 bg-artha-surface border border-artha-border rounded-xl shadow-lifted overflow-hidden z-20">
+              <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-artha-subtle border-b border-artha-border flex items-center gap-1.5">
                 <Sparkles size={10} /> Skills
               </div>
               {slashResults.map((s, i) => (
@@ -504,12 +557,12 @@ export default function ChatWindow() {
                   onMouseEnter={() => setSlashIndex(i)}
                   onClick={() => pickSkill(s)}
                   className={`w-full flex items-start gap-3 px-3 py-2 text-left transition-colors ${
-                    i === Math.min(slashIndex, slashResults.length - 1) ? 'bg-artha-accent/15' : 'hover:bg-white/5'
+                    i === Math.min(slashIndex, slashResults.length - 1) ? 'bg-artha-accent/10' : 'hover:bg-artha-surface2'
                   }`}>
                   <span className="text-base leading-none mt-0.5 shrink-0">{s.icon}</span>
                   <span className="min-w-0">
                     <span className="flex items-center gap-2">
-                      <span className="text-sm text-white">{s.name}</span>
+                      <span className="text-sm text-artha-text">{s.name}</span>
                       <code className="text-[10px] text-artha-accent font-mono">/{s.slug}</code>
                     </span>
                     <span className="block text-xs text-artha-muted truncate">{s.description}</span>
@@ -523,68 +576,69 @@ export default function ChatWindow() {
               agent is sandboxed to these; empty means full home-dir access. */}
           <div className="flex flex-wrap items-center gap-1.5 mb-2">
             {scopes.map(sc => (
-              <span
-                key={sc.scope_id}
-                title={sc.path}
-                className="group flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-artha-s2 border border-artha-border text-xs text-artha-text"
-              >
-                {sc.kind === 'folder'
-                  ? <Folder size={11} className="shrink-0 text-artha-accent" />
-                  : <FileText size={11} className="shrink-0 text-artha-accent" />}
-                <span className="truncate max-w-[160px]">{baseName(sc.path)}</span>
-                {sc.kind === 'folder' && (
-                  <button
-                    onClick={() => reindexScope(sc.scope_id)}
-                    title="Re-index this folder"
-                    className={`text-artha-muted hover:text-artha-accent transition-colors ${reindexingScope === sc.scope_id ? '' : 'opacity-0 group-hover:opacity-100'}`}
-                  >
-                    <RefreshCw size={10} className={reindexingScope === sc.scope_id ? 'animate-spin' : ''} />
-                  </button>
-                )}
-                <button
-                  onClick={() => removeScope(sc.scope_id)}
-                  title="Remove from chat"
-                  className="text-artha-muted hover:text-red-400 transition-colors"
-                >
-                  <X size={11} />
-                </button>
-              </span>
+              <Tooltip key={sc.scope_id} content={sc.path}>
+                <span className="group flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-artha-surface border border-artha-border text-xs text-artha-text">
+                  {sc.kind === 'folder'
+                    ? <Folder size={11} className="shrink-0 text-artha-accent" />
+                    : <FileText size={11} className="shrink-0 text-artha-accent" />}
+                  <span className="truncate max-w-[160px]">{baseName(sc.path)}</span>
+                  {sc.kind === 'folder' && (
+                    <Tooltip content="Re-index this folder">
+                      <button
+                        onClick={() => reindexScope(sc.scope_id)}
+                        className={`text-artha-muted hover:text-artha-accent transition-colors ${reindexingScope === sc.scope_id ? '' : 'opacity-0 group-hover:opacity-100'}`}
+                      >
+                        <RefreshCw size={10} className={reindexingScope === sc.scope_id ? 'animate-spin' : ''} />
+                      </button>
+                    </Tooltip>
+                  )}
+                  <Tooltip content="Remove from chat">
+                    <button
+                      onClick={() => removeScope(sc.scope_id)}
+                      className="text-artha-muted hover:text-artha-danger transition-colors"
+                    >
+                      <X size={11} />
+                    </button>
+                  </Tooltip>
+                </span>
+              </Tooltip>
             ))}
-            <button
-              onClick={addFolderScope}
-              disabled={scopeBusy}
-              title="Add a folder — the agent works only inside the chat's folders/files"
-              className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-artha-border text-xs text-artha-muted hover:text-white hover:border-artha-accent/40 transition-colors disabled:opacity-40"
-            >
-              <FolderPlus size={11} /> Folder
-            </button>
-            <button
-              onClick={addFileScope}
-              disabled={scopeBusy}
-              title="Add a file to this chat's context"
-              className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-artha-border text-xs text-artha-muted hover:text-white hover:border-artha-accent/40 transition-colors disabled:opacity-40"
-            >
-              <FilePlus2 size={11} /> File
-            </button>
+            <Tooltip content="Add a folder — the agent works only inside the chat's folders/files">
+              <button
+                onClick={addFolderScope}
+                disabled={scopeBusy}
+                className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-artha-border text-xs text-artha-muted hover:text-artha-text hover:border-artha-accent transition-colors disabled:opacity-40"
+              >
+                <FolderPlus size={11} /> Folder
+              </button>
+            </Tooltip>
+            <Tooltip content="Add a file to this chat's context">
+              <button
+                onClick={addFileScope}
+                disabled={scopeBusy}
+                className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-artha-border text-xs text-artha-muted hover:text-artha-text hover:border-artha-accent transition-colors disabled:opacity-40"
+              >
+                <FilePlus2 size={11} /> File
+              </button>
+            </Tooltip>
           </div>
 
           {/* RAG index status — tells the user whether /ask has files to search */}
           {ragIndexes.length > 0 && (
-            <div
-              className="flex items-center gap-1.5 mb-2 w-fit px-2.5 py-1 rounded-full bg-artha-s2 border border-artha-border text-xs text-artha-muted"
-              title={ragIndexes.map((i) => `${i.name} — ${i.doc_count ?? 0} chunks`).join('\n')}
-            >
-              <span className="leading-none">📚</span>
-              <span>
-                {ragIndexes.length} index{ragIndexes.length > 1 ? 'es' : ''} · {ragChunks} chunks —
-                type <span className="text-artha-accent font-medium">/ask</span> to search
-              </span>
-            </div>
+            <Tooltip content={ragIndexes.map((i) => `${i.name} — ${i.doc_count ?? 0} chunks`).join('\n')}>
+              <div className="flex items-center gap-1.5 mb-2 w-fit px-2.5 py-1 rounded-full bg-artha-surface border border-artha-border text-xs text-artha-muted">
+                <span className="leading-none">📚</span>
+                <span>
+                  {ragIndexes.length} index{ragIndexes.length > 1 ? 'es' : ''} · {ragChunks} chunks —
+                  type <span className="text-artha-accent font-medium">/ask</span> to search
+                </span>
+              </div>
+            </Tooltip>
           )}
 
           {/* Active-skill badge — shown while a skill drives the current run */}
           {activeSkill && (
-            <div className="flex items-center gap-1.5 mb-2 w-fit px-2.5 py-1 rounded-full bg-artha-accent/15 border border-artha-accent/30 text-xs text-artha-accent">
+            <div className="flex items-center gap-1.5 mb-2 w-fit px-2.5 py-1 rounded-full bg-artha-accent/10 border border-artha-accent/30 text-xs text-artha-accent">
               <span className="leading-none">{activeSkill.icon}</span>
               <span className="font-medium">Skill: {activeSkill.name}</span>
             </div>
@@ -592,19 +646,20 @@ export default function ChatWindow() {
 
           {/* Poppler-missing warning — PDF attach needs pdftoppm installed */}
           {popplerWarning && (
-            <div className="flex items-start gap-2 mb-2 px-3 py-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-sm text-red-400">
+            <div className="flex items-start gap-2 mb-2 px-3 py-2.5 rounded-xl bg-artha-danger/8 border border-artha-danger/30 text-sm text-artha-danger">
               <FileText size={14} className="shrink-0 mt-0.5" />
               <div className="flex-1 min-w-0">
                 Poppler is required for PDF reading. Install it with:{' '}
-                <code className="bg-red-500/10 px-1.5 py-0.5 rounded font-mono text-xs">brew install poppler</code>
+                <code className="bg-artha-danger/12 px-1.5 py-0.5 rounded font-mono text-xs">brew install poppler</code>
               </div>
-              <button
-                onClick={() => setPopplerWarning(false)}
-                className="shrink-0 text-red-400/70 hover:text-red-400 transition-colors"
-                title="Dismiss"
-              >
-                <X size={13} />
-              </button>
+              <Tooltip content="Dismiss">
+                <button
+                  onClick={() => setPopplerWarning(false)}
+                  className="shrink-0 text-artha-danger/70 hover:text-artha-danger transition-colors"
+                >
+                  <X size={13} />
+                </button>
+              </Tooltip>
             </div>
           )}
 
@@ -616,20 +671,22 @@ export default function ChatWindow() {
                   <img
                     src={`data:${a.mime};base64,${a.data}`}
                     alt={a.name}
-                    className="h-16 w-16 object-cover rounded-lg border border-white/20"
+                    className="h-16 w-16 object-cover rounded-lg border border-artha-border"
                   />
-                  <button
-                    onClick={() => removeAttachment(i)}
-                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-artha-surface border border-white/20 flex items-center justify-center text-artha-muted hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <X size={9} />
-                  </button>
+                  <Tooltip content="Remove attachment">
+                    <button
+                      onClick={() => removeAttachment(i)}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-artha-surface border border-artha-border flex items-center justify-center text-artha-muted hover:text-artha-text opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X size={9} />
+                    </button>
+                  </Tooltip>
                 </div>
               ))}
             </div>
           )}
 
-          <div className="flex items-end gap-3 bg-artha-s2 border border-artha-border rounded-2xl px-4 py-3 focus-within:border-artha-accent/40 transition-colors shadow-lg">
+          <div className="flex items-end gap-3 bg-artha-surface border border-artha-border-strong rounded-2xl px-4 py-3 focus-within:border-artha-accent transition-colors shadow-soft">
             <textarea
               ref={textareaRef}
               value={input}
@@ -637,64 +694,72 @@ export default function ChatWindow() {
               onKeyDown={onComposerKeyDown}
               placeholder="Ask Artha to do something…  (type / for skills)"
               rows={1}
-              className="flex-1 bg-transparent text-sm resize-none outline-none text-artha-text placeholder-artha-muted leading-relaxed"
+              className="flex-1 bg-transparent text-sm resize-none outline-none text-artha-text placeholder-artha-subtle leading-relaxed"
               style={{ minHeight: '1.5rem', maxHeight: '10rem' }}
             />
             {/* Attach an image — opens native file dialog, adds to pendingAttachments */}
-            <button
-              onClick={attachImage}
-              title="Attach image"
-              className="p-2 rounded-xl border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 transition-colors shrink-0"
-            >
-              <Paperclip size={14} />
-            </button>
+            <Tooltip content="Attach an image">
+              <button
+                onClick={attachImage}
+                className="p-2 rounded-xl border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors shrink-0"
+              >
+                <Paperclip size={14} />
+              </button>
+            </Tooltip>
             {/* Attach a PDF — renders each page to an image via pdftoppm, then
                 feeds the pages through the same multimodal pipeline */}
-            <button
-              onClick={attachPdf}
-              title="Attach PDF (renders pages for vision)"
-              className="p-2 rounded-xl border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 transition-colors shrink-0"
-            >
-              <FileText size={14} />
-            </button>
+            <Tooltip content="Attach a PDF (renders pages for vision)">
+              <button
+                onClick={attachPdf}
+                className="p-2 rounded-xl border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors shrink-0"
+              >
+                <FileText size={14} />
+              </button>
+            </Tooltip>
             {/* Voice input — mic button toggles speech recognition */}
-            <button
-              onClick={toggleVoice}
-              title={isListening ? 'Stop recording' : 'Voice input'}
-              className={`p-2 rounded-xl border transition-colors shrink-0 ${
-                isListening
-                  ? 'bg-red-500/20 border-red-500/40 text-red-400 animate-pulse'
-                  : 'border-artha-border text-artha-muted hover:text-white hover:bg-white/5'
-              }`}
-            >
-              {isListening ? <MicOff size={14} /> : <Mic size={14} />}
-            </button>
+            <Tooltip content={isListening ? 'Stop recording' : 'Voice input'}>
+              <button
+                onClick={toggleVoice}
+                className={`p-2 rounded-xl border transition-colors shrink-0 ${
+                  isListening
+                    ? 'bg-artha-danger/12 border-artha-danger/40 text-artha-danger animate-pulse'
+                    : 'border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5'
+                }`}
+              >
+                {isListening ? <MicOff size={14} /> : <Mic size={14} />}
+              </button>
+            </Tooltip>
             {/* Toggle the BrowserPane. Browser tools auto-open the pane via
                 the `browser:autoOpen` IPC event the tool emitter pushes;
                 this button is for the user-initiated case. */}
-            <button
-              onClick={() => setBrowserOpen(!isBrowserOpen)}
-              title={isBrowserOpen ? 'Hide browser pane' : 'Show browser pane'}
-              className={`p-2 rounded-xl border transition-colors shrink-0
-                ${isBrowserOpen
-                  ? 'bg-artha-accent/20 border-artha-accent/40 text-artha-accent'
-                  : 'bg-transparent border-artha-border text-artha-muted hover:text-white hover:bg-white/5'}`}
-            >
-              <Globe size={14} />
-            </button>
+            <Tooltip content={isBrowserOpen ? 'Hide browser pane' : 'Show browser pane'}>
+              <button
+                onClick={() => setBrowserOpen(!isBrowserOpen)}
+                className={`p-2 rounded-xl border transition-colors shrink-0
+                  ${isBrowserOpen
+                    ? 'bg-artha-accent/10 border-artha-accent/40 text-artha-accent'
+                    : 'bg-transparent border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5'}`}
+              >
+                <Globe size={14} />
+              </button>
+            </Tooltip>
             {isStreaming ? (
-              <button onClick={stop} title="Stop"
-                className="p-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-400 transition-colors shrink-0">
-                <Square size={14} fill="currentColor" />
-              </button>
+              <Tooltip content="Stop the agent">
+                <button onClick={stop}
+                  className="p-2 rounded-xl bg-artha-danger/12 hover:bg-artha-danger/20 border border-artha-danger/30 text-artha-danger transition-colors shrink-0">
+                  <Square size={14} fill="currentColor" />
+                </button>
+              </Tooltip>
             ) : (
-              <button onClick={() => send()} disabled={!input.trim()}
-                className="p-2 rounded-xl bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-25 disabled:cursor-not-allowed transition-colors shrink-0">
-                <Send size={14} />
-              </button>
+              <Tooltip content="Send message (⌘↩)">
+                <button onClick={() => send()} disabled={!input.trim()}
+                  className="p-2 rounded-xl bg-artha-accent hover:bg-artha-accent-hover text-white disabled:opacity-25 disabled:cursor-not-allowed transition-colors shrink-0">
+                  <Send size={14} />
+                </button>
+              </Tooltip>
             )}
           </div>
-          <p className="text-[11px] text-artha-muted/60 text-center mt-2">
+          <p className="text-[11px] text-artha-subtle text-center mt-2">
             All processing happens locally · No data leaves your machine
           </p>
         </div>

@@ -8,6 +8,8 @@
 import { useEffect, useState } from 'react';
 import { ExternalLink, Download, Check, Loader, Link as LinkIcon } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
+import { FeatureGuide } from '../ui/FeatureGuide';
+import { GUIDES } from './guides';
 
 // Catalog entries for Google Workspace services that need an OAuth grant — the
 // user must connect them in the Cloud tab rather than installing an MCP server.
@@ -61,12 +63,19 @@ const CATEGORIES: { id: McpCategory | 'all'; label: string }[] = [
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+/**
+ * Marketplace panel — browse the curated plugin catalog, install MCP servers
+ * one-click, or navigate to the Cloud tab for OAuth-gated services.
+ */
 export default function MarketplacePanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [category, setCategory] = useState<McpCategory | 'all'>('all');
   const [query, setQuery] = useState('');
+  // `installing` holds the catalog entry id currently being installed.
   const [installing, setInstalling] = useState<string | null>(null);
   const [installed, setInstalled] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  // Used to redirect auth-required entries straight to the Cloud Integrations tab.
   const setActiveView = useChatStore(s => s.setActiveView);
 
   // Installed state is persisted in the DB (the `tools` table), keyed by install
@@ -83,6 +92,7 @@ export default function MarketplacePanel() {
 
   useEffect(() => { refreshInstalled(); }, []);
 
+  // Filter the catalog by both category pill and free-text query (name, description, tools).
   const filtered = CATALOG.filter(e => {
     const matchCat = category === 'all' || e.category === category;
     const q = query.toLowerCase();
@@ -107,10 +117,11 @@ export default function MarketplacePanel() {
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-3xl mx-auto">
+        <FeatureGuide {...GUIDES.marketplace} />
 
         {/* Header */}
         <div className="mb-6">
-          <h2 className="text-lg font-semibold text-white">Plugin Marketplace</h2>
+          <h2 className="text-lg font-semibold text-artha-text">Plugin Marketplace</h2>
           <p className="text-sm text-artha-muted mt-0.5">
             One-click install for MCP servers — extend Artha with new tools and integrations.
           </p>
@@ -133,8 +144,8 @@ export default function MarketplacePanel() {
               onClick={() => setCategory(c.id)}
               className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
                 category === c.id
-                  ? 'bg-artha-accent text-white'
-                  : 'bg-artha-s2 border border-artha-border text-artha-muted hover:text-white hover:border-artha-accent/40'
+                  ? 'bg-artha-accent text-artha-text'
+                  : 'bg-artha-s2 border border-artha-border text-artha-muted hover:text-artha-text hover:border-artha-accent/40'
               }`}
             >
               {c.label}
@@ -170,7 +181,7 @@ export default function MarketplacePanel() {
                 {/* Info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
-                    <span className="text-sm font-semibold text-white">{entry.name}</span>
+                    <span className="text-sm font-semibold text-artha-text">{entry.name}</span>
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-artha-surface border border-artha-border text-artha-muted uppercase tracking-wide">
                       {entry.category}
                     </span>
@@ -193,7 +204,7 @@ export default function MarketplacePanel() {
                       target="_blank"
                       rel="noreferrer"
                       title="Docs"
-                      className="p-1.5 rounded-lg text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
+                      className="p-1.5 rounded-lg text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors"
                     >
                       <ExternalLink size={13} />
                     </a>
@@ -202,7 +213,7 @@ export default function MarketplacePanel() {
                     <button
                       onClick={() => setActiveView('cloud')}
                       title="Connect in the Cloud tab"
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-cyan-600/80 hover:bg-cyan-500 text-white transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-cyan-600/80 hover:bg-cyan-500 text-artha-text transition-colors"
                     >
                       <LinkIcon size={11} /> Cloud tab
                     </button>
@@ -214,7 +225,7 @@ export default function MarketplacePanel() {
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-not-allowed ${
                         isDone
                           ? 'bg-green-500/15 border border-green-500/30 text-green-400'
-                          : 'bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-50 text-white'
+                          : 'bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-50 text-artha-text'
                       }`}
                     >
                       {isInstalling ? (

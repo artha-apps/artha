@@ -52,14 +52,22 @@ function relativeTime(unixSec: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+/**
+ * Bundles panel — export an agent run to a signed `.artha-bundle` file, or
+ * import one to verify its HMAC signature, inspect the manifest, and check for
+ * missing MCP servers needed to replay it deterministically.
+ */
 export default function BundlesPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [tab, setTab] = useState<'export' | 'import'>('export');
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [docs, setDocs] = useState<DocRow[]>([]);
   const [selectedRun, setSelectedRun] = useState<string>('');
+  // `selectedDoc` is optional — attaches a "golden" artifact for byte-match verification.
   const [selectedDoc, setSelectedDoc] = useState<string>('');
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  // `exportStatus` doubles as the success message (starts "Bundle") and error message.
   const [exportStatus, setExportStatus] = useState<string>('');
   const [imported, setImported] = useState<ImportResult | null>(null);
 
@@ -116,11 +124,11 @@ export default function BundlesPanel() {
             <Package size={16} className="text-artha-accent" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-white">Workflow Bundles</h1>
+            <h1 className="text-base font-semibold text-artha-text">Workflow Bundles</h1>
             <p className="text-xs text-artha-muted">Share or replay full agent runs without the cloud.</p>
           </div>
         </div>
-        <button onClick={load} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs">
+        <button onClick={load} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs">
           <RefreshCw size={12} /> Refresh
         </button>
       </div>
@@ -129,7 +137,7 @@ export default function BundlesPanel() {
         {(['export', 'import'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize
-              ${tab === t ? 'bg-artha-accent/20 text-white' : 'text-artha-muted hover:text-white'}`}>
+              ${tab === t ? 'bg-artha-accent/20 text-artha-text' : 'text-artha-muted hover:text-artha-text'}`}>
             {t === 'export' ? <><Download size={12} className="inline mr-1.5" /> Export</> : <><Upload size={12} className="inline mr-1.5" /> Import</>}
           </button>
         ))}
@@ -253,7 +261,7 @@ export default function BundlesPanel() {
 
               <button
                 onClick={() => window.artha.bundles.openExtracted(imported.extractedDir)}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-artha-border text-xs text-artha-muted hover:text-white hover:bg-white/5"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-artha-border text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5"
               >
                 <FolderOpen size={12} /> Open extracted folder
               </button>

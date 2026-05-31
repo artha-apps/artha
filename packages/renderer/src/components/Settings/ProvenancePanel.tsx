@@ -71,13 +71,25 @@ function relativeTime(unixSec: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+/**
+ * Provenance panel — master-detail view of generated document lineage.
+ * Left sidebar lists all docs from `generated_documents`. Right panel shows
+ * the selected doc's anchors (from `provenance_records`) and its receipt
+ * (the `.artha-receipt.json` sidecar written alongside the output file).
+ */
 export default function ProvenancePanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [docs, setDocs] = useState<DocRow[]>([]);
+  // `selectedId` drives the detail panel; auto-set to the first doc on initial load.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [anchors, setAnchors] = useState<AnchorRow[]>([]);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
+  // `copied` is the label of the hash that was most recently copied to clipboard.
   const [copied, setCopied] = useState('');
 
+  // ── Effects ────────────────────────────────────────────────────────────────
+
+  // Load the doc list once and auto-select the first entry.
   useEffect(() => {
     window.artha.provenance.listDocs().then((rows) => {
       setDocs(rows as DocRow[]);
@@ -85,6 +97,8 @@ export default function ProvenancePanel() {
     });
   }, []);
 
+  // Whenever the selection changes, load anchors + receipt in parallel.
+  // Receipt may be null if the .artha-receipt.json sidecar was deleted.
   useEffect(() => {
     if (!selectedId) return;
     Promise.all([
@@ -111,7 +125,7 @@ export default function ProvenancePanel() {
             <ShieldCheck size={14} className="text-artha-accent" />
           </div>
           <div>
-            <h1 className="text-sm font-semibold text-white">Provenance</h1>
+            <h1 className="text-sm font-semibold text-artha-text">Provenance</h1>
             <p className="text-[10px] text-artha-muted">{docs.length} generated artifacts</p>
           </div>
         </div>
@@ -129,8 +143,8 @@ export default function ProvenancePanel() {
                 onClick={() => setSelectedId(d.doc_id)}
                 className={`w-full text-left flex items-start gap-2 px-3 py-2 rounded-lg transition-colors ${
                   selectedId === d.doc_id
-                    ? 'bg-artha-accent/20 text-white'
-                    : 'text-artha-muted hover:bg-white/5 hover:text-white'
+                    ? 'bg-artha-accent/20 text-artha-text'
+                    : 'text-artha-muted hover:bg-artha-text/5 hover:text-artha-text'
                 }`}
               >
                 <Icon size={13} className="mt-0.5 shrink-0 opacity-70" />
@@ -158,18 +172,18 @@ export default function ProvenancePanel() {
           <div className="max-w-3xl space-y-6">
             {/* Header */}
             <div>
-              <h2 className="text-lg font-semibold text-white mb-1">{receipt.title || 'Untitled'}</h2>
+              <h2 className="text-lg font-semibold text-artha-text mb-1">{receipt.title || 'Untitled'}</h2>
               <p className="text-xs text-artha-muted font-mono break-all">{receipt.filePath}</p>
               <div className="flex items-center gap-2 mt-2">
                 <button
                   onClick={() => window.artha.docs.openFile(receipt.filePath)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-artha-border text-xs text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-artha-border text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors"
                 >
                   <ExternalLink size={11} /> Open file
                 </button>
                 <button
                   onClick={() => window.artha.docs.openFile(receipt.filePath + '.artha-receipt.json')}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-artha-border text-xs text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-artha-border text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors"
                 >
                   <ExternalLink size={11} /> Open receipt
                 </button>
@@ -192,7 +206,7 @@ export default function ProvenancePanel() {
                   <code className="font-mono text-artha-text break-all flex-1">{receipt.contentHash}</code>
                   <button
                     onClick={() => copy('content', receipt.contentHash)}
-                    className="text-artha-muted hover:text-white shrink-0"
+                    className="text-artha-muted hover:text-artha-text shrink-0"
                   >
                     {copied === 'content' ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
                   </button>
