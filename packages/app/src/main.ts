@@ -17,9 +17,36 @@ import { app, BrowserWindow, shell, dialog } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
 import { registerIpcHandlers } from './ipc/handlers';
-import { initDatabase } from './db/schema';
+import { initDatabase, runMigrations, getDb } from './db/schema';
 import { BrowserController } from './browser/controller';
 import { SchedulerService } from './scheduler/scheduler';
+import { initSentry, withTransaction, captureException } from './sentry';
+import { startHealthCheckpointing, stopHealthCheckpointing } from './db/health';
+
+/** Probe whether the local Ollama runtime is reachable. Best-effort with a
+ *  short timeout so a missing Ollama can't stall startup. Drives the
+ *  `artha.ollama_connected` Sentry tag set on session start. */
+async function probeOllamaReachable(): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 1500);
+    const res = await fetch('http://localhost:11434/api/tags', { signal: controller.signal });
+    clearTimeout(t);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Count installed MCP servers (non-PII) for the `artha.mcp_server_count` tag. */
+function countMcpServers(): number {
+  try {
+    const row = getDb().prepare(`SELECT COUNT(*) AS n FROM tools WHERE mcp_server_uri IS NOT NULL`).get() as { n: number };
+    return row?.n ?? 0;
+  } catch {
+    return 0;
+  }
+}
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -48,6 +75,28 @@ async function createWindow(): Promise<void> {
     );
     // Continue loading the window anyway so the UI is visible.
   }
+
+  // ── Operational resilience ───────────────────────────────────────────────
+  // Base tables exist now (so the settings blob is readable) — initialise
+  // Sentry here, AFTER the DB opens, so it can honour the user's opt-out before
+  // a single event is sent. Then apply additive migrations inside a Sentry
+  // performance transaction (so a slow/failed migration is tracked, not just
+  // thrown), and start the 30-minute DB health heartbeat.
+  try {
+    const ollamaConnected = await probeOllamaReachable();
+    initSentry({ ollamaConnected, mcpServerCount: countMcpServers() });
+  } catch (err) {
+    console.error('[Artha] Sentry init failed:', err);
+  }
+  // Migrations MUST run regardless of Sentry state. withTransaction is a no-op
+  // span when Sentry is disabled, so this just runs runMigrations() directly.
+  try {
+    await withTransaction('db.migrations', 'db.migrate', () => runMigrations());
+  } catch (err) {
+    console.error('[Artha] Database migrations failed:', err);
+    captureException(err);
+  }
+  startHealthCheckpointing();
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -103,6 +152,9 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
     console.error('[Artha] Renderer process gone:', details.reason, 'exit', details.exitCode);
     if (details.reason === 'clean-exit') return;
+    // Report the crash (reason + exit code only — no PII) so a bad release that
+    // silently kills the renderer surfaces in incident monitoring.
+    captureException(new Error(`Renderer process gone: ${details.reason} (exit ${details.exitCode})`));
     rendererCrashes++;
     if (rendererCrashes <= 3 && mainWindow && !mainWindow.isDestroyed()) {
       try { mainWindow.reload(); } catch { /* window gone */ }
@@ -169,6 +221,7 @@ if (!gotSingleInstanceLock) {
 
   app.on('window-all-closed', () => {
     SchedulerService.getInstance().shutdown();
+    stopHealthCheckpointing();
     if (process.platform !== 'darwin') app.quit();
   });
 

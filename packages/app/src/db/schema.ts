@@ -110,6 +110,15 @@ export async function initDatabase(): Promise<void> {
       updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- ── DB health heartbeat (disaster recovery) ───────────────────────────
+    -- A single-row (id='default') heartbeat updated every 30 minutes. On a
+    -- crash report, checkpointed_at reveals exactly how long since the app was
+    -- last known healthy. See db/health.ts.
+    CREATE TABLE IF NOT EXISTS db_health (
+      id              TEXT PRIMARY KEY DEFAULT 'default',
+      checkpointed_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     -- MCP tool registry (replaces v1.0 execution_path with mcp_server_uri)
     CREATE TABLE IF NOT EXISTS tools (
       tool_id        TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
@@ -456,6 +465,19 @@ export async function initDatabase(): Promise<void> {
       );
   `);
 
+  console.log('[Artha] Database schema ready at', dbPath);
+}
+
+/**
+ * Apply additive ALTER TABLE migrations. Split out from `initDatabase` so the
+ * caller can wrap it in a Sentry performance transaction (disaster-recovery:
+ * migration failures are then tracked as transactions, not just errors). Every
+ * block is individually guarded + idempotent, so it is safe to run on every
+ * launch and a single bad block can't prevent boot.
+ */
+export function runMigrations(): void {
+  const db = getDb();
+
   // ── Additive column migrations ───────────────────────────────────────────
   // SQLite's CREATE TABLE IF NOT EXISTS never modifies existing tables, so any
   // column added after the initial release must be back-filled with ALTER TABLE.
@@ -545,5 +567,18 @@ export async function initDatabase(): Promise<void> {
     console.warn('[Artha] api_keys member_id/role migration skipped:', err);
   }
 
-  console.log('[Artha] Database initialised at', dbPath);
+  // Migration v8→v9: reasoning_steps on messages — stores the agent's internal
+  // chain-of-thought trace produced by the <think> phase (JSON array of steps,
+  // each optionally carrying a context_score). Surfaced in the UI as an
+  // expandable "Thinking" disclosure; NULL for messages from before this column.
+  try {
+    const msgCols = db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
+    if (msgCols.length && !msgCols.some(c => c.name === 'reasoning_steps')) {
+      db.exec(`ALTER TABLE messages ADD COLUMN reasoning_steps TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] reasoning_steps migration skipped:', err);
+  }
+
+  console.log('[Artha] Database migrations applied.');
 }

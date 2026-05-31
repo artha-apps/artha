@@ -40,9 +40,21 @@ import {
   isDesktopTool,
   invokeDesktopTool,
 } from '../tools/desktop';
+import { gatherContext } from './contextGather';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
+
+/** One entry in the agent's internal chain-of-thought trace. Produced by the
+ *  <think> phase (and the preceding context-gather), persisted to
+ *  `messages.reasoning_steps`, and surfaced in the UI as an expandable
+ *  "Thinking" disclosure. `context_score` records how strongly the assembled
+ *  local context (memories + history + scopes) influenced this step (0-1). */
+export interface ReasoningStep {
+  phase: 'context' | 'think';
+  content: string;
+  context_score: number;
+}
 
 /** One row in the agent's plan as shown to the user in Planning Mode. */
 export interface WorkflowStep {
@@ -100,6 +112,7 @@ interface TrackedMutation {
 /** Tools that change filesystem state — only these are tracked for verification. */
 const MUTATION_TOOLS = new Set([
   'fs_move_file',
+  'fs_move_batch',
   'fs_copy_file',
   'fs_delete_file',
   'fs_create_directory',
@@ -414,6 +427,43 @@ Rules:
     }
   }
 
+  /** Whether the renderer should DISPLAY the reasoning disclosure. Default true.
+   *  When false the <think> phase still runs (and is persisted) — only the UI is
+   *  hidden, per the `show_reasoning` setting. */
+  private showReasoningEnabled(): boolean {
+    try {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+      return JSON.parse(row?.settings_json ?? '{}').show_reasoning !== false;
+    } catch {
+      return true;
+    }
+  }
+
+  /** Dedicated chain-of-thought call made BEFORE any tool use. Reuses the run's
+   *  system prompt (so it sees the injected <context> + memory + environment)
+   *  but asks ONLY for a plain-English plan — no tools, no final answer. The
+   *  returned trace is recorded + shown in the UI and fed back as private
+   *  guidance, never as the user-facing reply. Best-effort: '' on any failure. */
+  private async runThinkPhase(goal: string, messages: OpenAI.ChatCompletionMessageParam[]): Promise<string> {
+    try {
+      const llm = getActiveLLMClient(undefined, 'plan');
+      const sys = messages.find(m => m.role === 'system');
+      const sysText = typeof sys?.content === 'string' ? sys.content : '';
+      const thinkMessages: OpenAI.ChatCompletionMessageParam[] = [
+        {
+          role: 'system',
+          content: `${sysText}\n\n— REASONING STEP —\nBefore taking any action, think step by step about how to accomplish the user's goal. Cover: (1) what the user actually wants, (2) what information or files you need, (3) which tools you'll call and in what order, (4) how you'll verify success. Write a concise plan in plain English. Do NOT call any tools and do NOT write the final answer yet — only the plan.`,
+        },
+        { role: 'user', content: goal },
+      ];
+      // No tools passed → the model can only return plain text.
+      const resp = await llm.complete(thinkMessages);
+      return (resp.choices[0]?.message?.content ?? '').trim();
+    } catch {
+      return '';
+    }
+  }
+
   // ── Private ───────────────────────────────────────────────────────────────
 
   /** Build the user-turn content. If image attachments are present, returns an
@@ -627,6 +677,7 @@ RULES — follow exactly, no exceptions:
 
     const messages = args.messages;
     const mutations: TrackedMutation[] = [];
+    const reasoningSteps: ReasoningStep[] = [];
     const recordStep = this.makeStepRecorder(args.runId);
     let stepIdx = 0;
 
@@ -636,6 +687,47 @@ RULES — follow exactly, no exceptions:
     setActiveCitationToken(args.workflowId);
 
     recordStep(stepIdx++, 'system', { note: 'loop start', model: args.modelOverride ?? this.activeModelName() }, messages);
+
+    // ── Context gather + <think> phase ───────────────────────────────────────
+    // Before the first tool call we (1) assemble a structured <context> block of
+    // the most relevant local context (top memories by semantic similarity, a
+    // short conversation recap, active scopes) and inject it at the TOP of the
+    // system prompt, then (2) make a dedicated reasoning call that plans the tool
+    // use. The reasoning trace is persisted + shown in the UI but never becomes
+    // the user-facing answer. Skipped for silent parallel child loops (cost).
+    if (!args.silent) {
+      try {
+        const gathered = await gatherContext(args.sessionId, args.goal);
+        if (gathered.block && messages[0]?.role === 'system' && typeof messages[0].content === 'string') {
+          // Inject <context> above the existing memory preamble.
+          messages[0].content = `${gathered.block}\n\n${messages[0].content}`;
+          reasoningSteps.push({
+            phase: 'context',
+            content: `Pulled ${gathered.memoryCount} relevant memory item(s), recent conversation, and active folder scopes into context.`,
+            context_score: gathered.contextScore,
+          });
+        }
+        const trace = await this.runThinkPhase(args.goal, messages);
+        if (trace) {
+          reasoningSteps.push({ phase: 'think', content: trace, context_score: gathered.contextScore });
+          // Feed the plan back as private guidance for tool use — kept out of the
+          // final answer (it lives in a system message, never emitted to chat).
+          messages.push({
+            role: 'system',
+            content: `Your private plan for this task (use it to guide your tool calls; do NOT repeat it to the user):\n${trace}`,
+          });
+          recordStep(stepIdx++, 'assistant', { phase: 'think', reasoning: trace, context_score: gathered.contextScore });
+        }
+        if (reasoningSteps.length) {
+          // Live disclosure: ChatWindow shows these while the agent works. The
+          // flag lets the renderer hide the panel when the user turned reasoning
+          // off in Settings (the phase still ran — only the UI is suppressed).
+          emit('agent:reasoning', { steps: reasoningSteps, showReasoning: this.showReasoningEnabled() });
+        }
+      } catch (err) {
+        console.warn('[Artha] context/think phase failed (continuing):', err);
+      }
+    }
 
     const MAX_ITERATIONS = 60;
     let iterations = 0;
@@ -847,8 +939,13 @@ RULES — follow exactly, no exceptions:
         try {
           const cits = drainCitations(args.workflowId);
           db.prepare(
-            `INSERT INTO messages (session_id, sender_type, content, citations_json) VALUES (?, 'agent', ?, ?)`
-          ).run(args.sessionId, finalText, cits.length ? JSON.stringify(cits) : null);
+            `INSERT INTO messages (session_id, sender_type, content, citations_json, reasoning_steps) VALUES (?, 'agent', ?, ?, ?)`
+          ).run(
+            args.sessionId,
+            finalText,
+            cits.length ? JSON.stringify(cits) : null,
+            reasoningSteps.length ? JSON.stringify(reasoningSteps) : null,
+          );
           if (cits.length > 0) {
             emit('agent:citations', { citations: cits });
           }
@@ -896,10 +993,23 @@ RULES — follow exactly, no exceptions:
     const successful = mutations.filter(m => m.success);
     const failed = mutations.filter(m => !m.success);
 
+    // fs_move_batch is one tool call that moves many files; surface the actual
+    // moved/failed counts from its result instead of dumping the whole moves
+    // array, so the summary can accurately say "moved N files".
+    const describeMutation = (m: TrackedMutation): string => {
+      if (m.tool === 'fs_move_batch') {
+        try {
+          const r = JSON.parse(m.result) as { moved?: number; failed?: number };
+          return `- moved ${r.moved ?? 0} file(s) in one batch${r.failed ? `, ${r.failed} could not be moved` : ''} → OK`;
+        } catch { /* fall through to generic */ }
+      }
+      return `- ${m.tool}(${JSON.stringify(m.args)}) → OK`;
+    };
+
     const groundTruth = [
       `Goal: ${goal}`,
       `Operations performed (${successful.length} ok, ${failed.length} failed):`,
-      ...successful.map(m => `- ${m.tool}(${JSON.stringify(m.args)}) → OK`),
+      ...successful.map(describeMutation),
       ...failed.map(m => `- ${m.tool}(${JSON.stringify(m.args)}) → FAILED: ${m.result.slice(0, 200)}`),
     ].join('\n');
 
