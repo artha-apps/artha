@@ -20,9 +20,16 @@ export interface LLMConfig {
   baseUrl: string;        // e.g. http://localhost:11434/v1
   apiKey?: string;        // 'ollama' for local, real key for cloud
   model: string;          // e.g. 'llama3:8b-instruct-q4_K_M'
-  /** Maps to max_tokens in API calls; driven by the model's context window. */
+  /** Output-token cap (max_tokens / num_predict). NOT the context window. */
   maxTokens?: number;
   temperature?: number;
+  /** Ollama context window (num_ctx). Only applied on the local-Ollama native
+   *  path — the OpenAI-compat /v1 endpoint ignores num_ctx, so the default 2048
+   *  would silently truncate big tool-using prompts and re-eval every turn. */
+  contextWindow?: number;
+  /** How long Ollama keeps the model resident after a call (keep_alive). Keeps
+   *  the model warm between agent turns/tasks so there's no reload latency. */
+  keepAlive?: string;
 }
 
 /** Callbacks wired by the orchestrator to forward text tokens to the renderer
@@ -50,6 +57,17 @@ export class LLMClient {
       baseURL: config.baseUrl,
       apiKey: config.apiKey ?? 'ollama',
     });
+  }
+
+  /** True for a local Ollama endpoint, where we use the native /api/chat route
+   *  to set num_ctx/keep_alive (the OpenAI-compat /v1 endpoint can't). */
+  private get isOllama(): boolean {
+    return /(:11434)(\/|$)/.test(this.config.baseUrl);
+  }
+
+  /** Strip the trailing /v1 so we can hit Ollama's native API base. */
+  private get ollamaBase(): string {
+    return this.config.baseUrl.replace(/\/v1\/?$/, '');
   }
 
   /** Stream a chat completion. Yields tokens via callbacks. */
@@ -107,6 +125,12 @@ export class LLMClient {
     onToken: (token: string) => void,
     shouldAbort?: () => boolean
   ): Promise<StreamedMessage> {
+    // Local Ollama: use the native endpoint so we can set num_ctx + keep_alive.
+    // This is the hot ReAct path, so the bigger context window (no per-turn
+    // truncation/re-eval) and a warm model matter most here.
+    if (this.isOllama) {
+      return this.streamCompleteOllamaNative(messages, tools, onToken, shouldAbort);
+    }
     const stream = await this.client.chat.completions.create({
       model: this.config.model,
       messages,
@@ -144,6 +168,109 @@ export class LLMClient {
     // "model produced only tool calls" from "model produced empty text".
     return { content: content || null, tool_calls: tool_calls.length ? tool_calls : undefined };
   }
+
+  /** Native Ollama /api/chat streaming with tool support. Lets us pass num_ctx
+   *  + keep_alive (which the OpenAI-compat endpoint ignores). Translates to/from
+   *  the OpenAI message/tool shapes the orchestrator uses. Tool results map by
+   *  order (Ollama has no tool_call_id), which matches how the loop appends them. */
+  private async streamCompleteOllamaNative(
+    messages: OpenAI.ChatCompletionMessageParam[],
+    tools: OpenAI.ChatCompletionTool[] | undefined,
+    onToken: (token: string) => void,
+    shouldAbort?: () => boolean,
+  ): Promise<StreamedMessage> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const oMessages = messages.map((m): any => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const am = m as any;
+      if (m.role === 'assistant' && am.tool_calls?.length) {
+        return {
+          role: 'assistant',
+          content: am.content ?? '',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          tool_calls: am.tool_calls.map((tc: any) => ({
+            function: { name: tc.function?.name, arguments: safeParseArgs(tc.function?.arguments) },
+          })),
+        };
+      }
+      const content = typeof am.content === 'string' ? am.content : JSON.stringify(am.content ?? '');
+      return { role: m.role, content };
+    });
+
+    const body = {
+      model: this.config.model,
+      messages: oMessages,
+      tools: tools && tools.length ? tools : undefined,
+      stream: true,
+      keep_alive: this.config.keepAlive ?? '30m',
+      options: {
+        num_ctx: this.config.contextWindow ?? 8192,
+        num_predict: this.config.maxTokens ?? 2048,
+        temperature: this.config.temperature ?? 0.3,
+      },
+    };
+
+    const controller = new AbortController();
+    const res = await fetch(`${this.ollamaBase}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(`Ollama /api/chat failed: ${res.status} ${res.statusText}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let content = '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const collected: any[] = [];
+
+    for (;;) {
+      if (shouldAbort?.()) { controller.abort(); break; }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let evt: any;
+        try { evt = JSON.parse(line); } catch { continue; }
+        const tok: string | undefined = evt?.message?.content;
+        if (tok) { content += tok; onToken(tok); }
+        const tcs = evt?.message?.tool_calls;
+        if (Array.isArray(tcs)) {
+          for (const tc of tcs) {
+            collected.push({
+              id: `call_${collected.length}_${tc.function?.name ?? 'fn'}`,
+              type: 'function' as const,
+              function: {
+                name: tc.function?.name ?? '',
+                arguments: typeof tc.function?.arguments === 'string'
+                  ? tc.function.arguments
+                  : JSON.stringify(tc.function?.arguments ?? {}),
+              },
+            });
+          }
+        }
+      }
+    }
+
+    return { content: content || null, tool_calls: collected.length ? collected : undefined };
+  }
+}
+
+/** Coerce an OpenAI tool-call `arguments` (JSON string or object) into the
+ *  plain object Ollama's native API expects. */
+function safeParseArgs(s: unknown): Record<string, unknown> {
+  if (s && typeof s === 'object') return s as Record<string, unknown>;
+  if (typeof s === 'string') { try { return JSON.parse(s); } catch { return {}; } }
+  return {};
 }
 
 /**
@@ -193,7 +320,9 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
   const baseUrl       = (row?.base_url as string)        ?? 'http://localhost:11434/v1';
   const apiKey        = (row?.api_key as string)          ?? 'ollama';
   const fallbackModel = (row?.ollama_name as string)      ?? 'llama3.2:3b-instruct-q4_K_M';
-  const contextWindow = (row?.context_window as number)   ?? 4096;
+  // num_ctx for the local Ollama native path. Default 8192 (up from Ollama's
+  // 2048) so big tool-using prompts aren't truncated + re-evaluated each turn.
+  const contextWindow = (row?.context_window as number)   ?? 8192;
 
   const routed = resolveModelName(modelOverride, taskType);
 
@@ -201,6 +330,7 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
     baseUrl,
     apiKey,
     model: routed ?? fallbackModel,
-    maxTokens: contextWindow,
+    contextWindow,
+    keepAlive: '30m',
   });
 }
