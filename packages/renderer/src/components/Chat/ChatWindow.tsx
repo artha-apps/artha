@@ -124,6 +124,9 @@ export default function ChatWindow() {
   // Parallel sub-agent run indicator: the sub-task prompts + which have finished.
   const [parallelTasks, setParallelTasks] = useState<string[] | null>(null);
   const [parallelDone, setParallelDone] = useState<Set<number>>(new Set());
+  // Live "thinking" timer — seconds elapsed since the current run started, so
+  // the user can see how long a task is taking while it runs.
+  const [elapsed, setElapsed] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -154,6 +157,15 @@ export default function ChatWindow() {
   // Clear the indicator once the run is no longer streaming.
   useEffect(() => {
     if (!isStreaming) setParallelTasks(null);
+  }, [isStreaming]);
+
+  // Tick a 1s "thinking" timer while a run is in flight; reset when it ends.
+  useEffect(() => {
+    if (!isStreaming) { setElapsed(0); return; }
+    setElapsed(0);
+    const started = Date.now();
+    const id = setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
   }, [isStreaming]);
 
   // Load RAG index status so the composer can tell the user whether /ask has
@@ -519,10 +531,13 @@ export default function ChatWindow() {
                     {pendingCitations.length > 0 && <Citations citations={pendingCitations} />}
                   </>
                 ) : (
-                  <span className="flex items-center gap-1 py-0.5">
-                    <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '160ms' }} />
-                    <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '320ms' }} />
+                  <span className="flex items-center gap-2 py-0.5">
+                    <span className="flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '160ms' }} />
+                      <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '320ms' }} />
+                    </span>
+                    <span className="text-xs text-artha-subtle">Thinking… {elapsed}s</span>
                   </span>
                 )}
               </div>
