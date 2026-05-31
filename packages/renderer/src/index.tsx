@@ -7,6 +7,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import ErrorBoundary from './components/ErrorBoundary';
 
 // Inter — self-hosted via @fontsource. Same family the landing site uses so
 // the app and marketing site share typographic feel.
@@ -19,4 +20,10 @@ import './index.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element not found');
-createRoot(root).render(<React.StrictMode><App /></React.StrictMode>);
+createRoot(root).render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </React.StrictMode>,
+);
