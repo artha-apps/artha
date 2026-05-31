@@ -48,7 +48,7 @@ export default function App() {
     setPendingPlan, setPendingClarify, setSessions, sessions,
     setStreaming, setActiveWorkflowId, setActiveSkill,
     activeTab, setProjects, openWorkspaceSettings, closeWorkspaceSettings,
-    workspaceSettingsOpen, activeProjectId, activeSessionId,
+    workspaceSettingsOpen, activeProjectId, activeSessionId, setActiveSession,
   } = useChatStore();
   // Project home shows when the user has picked a project but isn't in a
   // specific chat yet — surfaces the rolling summary, RAG status, and
@@ -114,6 +114,33 @@ export default function App() {
 
     return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offClarify(); offTitle(); offAutoOpen(); };
   }, []);
+
+  // ── Always land on a ready chat ──────────────────────────────────────────
+  // Without this, a user with no active session sees the empty welcome screen
+  // with no composer and has to click "New Chat" before they can type. Once
+  // onboarding is done and there's no active session (and no project — projects
+  // show ProjectHome instead), open the most recent non-project chat, or create
+  // a fresh one if there are none.
+  useEffect(() => {
+    if (showOnboarding !== false) return;
+    if (activeSessionId || activeProjectId) return;
+    let cancelled = false;
+    (async () => {
+      const list = await window.artha.sessions.list();
+      if (cancelled) return;
+      const general = list.filter((s) => !s.project_id);
+      if (general.length > 0) {
+        setSessions(list);
+        setActiveSession(general[0].session_id);
+      } else {
+        const session = await window.artha.sessions.create(null);
+        if (cancelled) return;
+        setSessions(await window.artha.sessions.list());
+        setActiveSession(session.session_id);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showOnboarding, activeSessionId, activeProjectId, setActiveSession, setSessions]);
 
   // ── Global keyboard shortcuts ────────────────────────────────────────────
   // ⌘, (Mac) / Ctrl+, (everywhere else) toggles Workspace Settings.
