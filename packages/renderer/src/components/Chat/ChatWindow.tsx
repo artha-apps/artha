@@ -91,6 +91,52 @@ interface SkillOption {
   icon: string;
 }
 
+/** Split a model reply into its private reasoning (<think>…</think>, used by
+ *  qwen3 et al.) and the user-facing answer. Handles a still-open <think> during
+ *  streaming so the reasoning shows live as readable prose, not raw tags/code. */
+function splitThinking(content: string): { thinking: string; answer: string } {
+  if (!content || !content.includes('<think>')) return { thinking: '', answer: content };
+  let thinking = '';
+  let answer = content.replace(/<think>([\s\S]*?)<\/think>/g, (_m, t: string) => { thinking += t + '\n'; return ''; });
+  const open = answer.indexOf('<think>');
+  if (open >= 0) { thinking += answer.slice(open + '<think>'.length); answer = answer.slice(0, open); }
+  return { thinking: thinking.trim(), answer: answer.trim() };
+}
+
+/** Collapsible, muted prose block for the model's reasoning — readable English,
+ *  never code. Open by default so the user follows the agent's thinking. */
+function Thinking({ text }: { text: string }) {
+  const [open, setOpen] = useState(true);
+  if (!text) return null;
+  return (
+    <div className="mb-2 rounded-lg border border-artha-border bg-artha-surface2/50 overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-artha-muted hover:text-artha-text transition-colors"
+      >
+        <Sparkles size={11} className="text-artha-accent" />
+        {open ? 'Thinking' : 'Show thinking'}
+      </button>
+      {open && (
+        <div className="px-3 pb-2 text-[13px] leading-relaxed text-artha-muted italic whitespace-pre-wrap">
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Render an agent reply: reasoning as muted prose, the answer as markdown. */
+function AgentText({ content }: { content: string }) {
+  const { thinking, answer } = splitThinking(content);
+  return (
+    <>
+      {thinking && <Thinking text={thinking} />}
+      {answer && <ReactMarkdown components={mdComponents as never}>{answer}</ReactMarkdown>}
+    </>
+  );
+}
+
 export default function ChatWindow() {
   const {
     messages, streamingContent, isStreaming, activeSessionId,
@@ -487,7 +533,7 @@ export default function ChatWindow() {
                   : 'max-w-[80%] bg-artha-surface border border-artha-border text-artha-text rounded-bl-sm shadow-soft'}`}>
                 {msg.senderType === 'agent' ? (
                   <>
-                    <ReactMarkdown components={mdComponents as never}>{msg.content || ''}</ReactMarkdown>
+                    <AgentText content={msg.content || ''} />
                     {msg.toolEvents && msg.toolEvents.length > 0 && (
                       <ToolCallInline events={msg.toolEvents} />
                     )}
@@ -526,7 +572,7 @@ export default function ChatWindow() {
               <div className="max-w-[80%] bg-artha-surface border border-artha-border text-artha-text rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed shadow-soft">
                 {streamingContent ? (
                   <>
-                    <ReactMarkdown components={mdComponents as never}>{streamingContent}</ReactMarkdown>
+                    <AgentText content={streamingContent} />
                     <span className="inline-block w-1.5 h-[1.1em] bg-artha-accent ml-0.5 animate-pulse rounded-sm align-middle" />
                     {pendingCitations.length > 0 && <Citations citations={pendingCitations} />}
                   </>
