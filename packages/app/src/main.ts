@@ -96,6 +96,25 @@ async function createWindow(): Promise<void> {
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
 
+  // Recover from renderer process crashes (e.g. memory pressure from a large
+  // local model mid-task) — without this the window just goes black with no
+  // recourse. Auto-reload a few times, then stop to avoid a crash loop.
+  let rendererCrashes = 0;
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error('[Artha] Renderer process gone:', details.reason, 'exit', details.exitCode);
+    if (details.reason === 'clean-exit') return;
+    rendererCrashes++;
+    if (rendererCrashes <= 3 && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.reload();
+    }
+  });
+  mainWindow.webContents.on('unresponsive', () => {
+    console.error('[Artha] Renderer became unresponsive');
+  });
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
+    console.error('[Artha] Renderer failed to load:', code, desc);
+  });
+
   // Open external links in default browser, not Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
