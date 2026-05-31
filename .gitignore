@@ -39,6 +39,11 @@ Thumbs.db
 .idea/
 *.swp
 
+# Claude Code local harness state (machine-local, never commit)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/*.lock
+
 # Logs
 *.log
 npm-debug.log*
