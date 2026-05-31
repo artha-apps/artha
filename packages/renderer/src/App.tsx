@@ -26,7 +26,6 @@ import WorkflowsTab from './components/Workflows/WorkflowsTab';
 import CodeTab from './components/Code/CodeTab';
 import ProjectHome from './components/ProjectHome/ProjectHome';
 import WorkspaceSettings from './components/WorkspaceSettings/WorkspaceSettings';
-import Guide from './components/Guide/Guide';
 import { TooltipProvider } from './components/ui/Tooltip';
 
 // Expose the type-safe ArthaAPI that the preload script injects onto `window`.
@@ -204,7 +203,6 @@ export default function App() {
 
         {/* Modal layer — sits above the canvas regardless of tab. */}
         <WorkspaceSettings />
-        <Guide />
         <PlanApproval />
         <ClarificationModal />
 

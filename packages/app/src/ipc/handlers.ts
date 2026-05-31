@@ -577,6 +577,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     try { shell.showItemInFolder(p); } catch { /* ignore — path missing */ }
   });
 
+  ipcMain.handle('system:appInfo', () => ({
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    node: process.versions.node,
+    chrome: process.versions.chrome,
+    platform: `${process.platform} ${process.arch}`,
+  }));
+
   /** Sessions belonging to one project (or `null` for general/no-project).
    *  Drives the Project home page's "Recent chats" list. Same shape as
    *  `sessions:list` for a drop-in render. */

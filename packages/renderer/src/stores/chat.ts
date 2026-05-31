@@ -86,7 +86,7 @@ export interface SessionScope {
  *  the Workspace Settings modal scoped to that panel. Keeping the union lets
  *  legacy call-sites (`setActiveView('models')`) deep-link into the modal
  *  without changing their signature. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license' | 'guide' | 'about';
 
 /** Three top-level rooms inside the Chat view. Tab selection persists in
  *  localStorage so reloads land where you left off. */
@@ -134,8 +134,6 @@ interface ChatState {
    *  working: `setActiveView('models')` opens the modal to Models. */
   workspaceSettingsOpen: boolean;
   workspaceSettingsSection: Exclude<ActiveView, 'chat'> | null;
-  /** "How to use Artha" guide modal (feature cards). */
-  guideOpen: boolean;
   /** Active project context. `null` = "no project" (general chat). Drives
    *  the sidebar switcher, the scope badge, and `@project` autocomplete. */
   activeProjectId: string | null;
@@ -169,9 +167,8 @@ interface ChatState {
   openWorkspaceSettings: (section?: Exclude<ActiveView, 'chat'> | null) => void;
   /** Close the modal and return to the Chat view. */
   closeWorkspaceSettings: () => void;
-  /** Open / close the "How to use Artha" feature-guide modal. */
+  /** Open the "How to use Artha" guide (a panel inside Workspace Settings). */
   openGuide: () => void;
-  closeGuide: () => void;
   setActiveProjectId: (id: string | null) => void;
   /** Pick a project AND auto-land on its most recent session (or empty
    *  state if there are none). Returns the picked session id, so the caller
@@ -256,7 +253,6 @@ export const useChatStore = create<ChatState>((set) => ({
   activeView: 'chat',
   activeTab: loadActiveTab(),
   workspaceSettingsOpen: false,
-  guideOpen: false,
   workspaceSettingsSection: null,
   activeProjectId: loadActiveProjectId(),
   projects: [],
@@ -368,8 +364,7 @@ export const useChatStore = create<ChatState>((set) => ({
     set({ workspaceSettingsOpen: true, workspaceSettingsSection: section, activeView: section ?? 'settings' }),
   closeWorkspaceSettings: () =>
     set({ workspaceSettingsOpen: false, workspaceSettingsSection: null, activeView: 'chat' }),
-  openGuide: () => set({ guideOpen: true }),
-  closeGuide: () => set({ guideOpen: false }),
+  openGuide: () => set({ workspaceSettingsOpen: true, workspaceSettingsSection: 'guide', activeView: 'guide' }),
   setActiveProjectId: (id) => {
     saveActiveProjectId(id);
     set({ activeProjectId: id });
