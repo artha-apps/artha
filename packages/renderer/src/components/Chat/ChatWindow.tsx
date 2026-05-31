@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { useChatStore } from '../../stores/chat';
+import { useChatStore, type ReasoningStep } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
 import ToolCallInline from './ToolCallInline';
 import Citations from './Citations';
@@ -126,6 +126,45 @@ function Thinking({ text }: { text: string }) {
   );
 }
 
+/** Collapsible disclosure for the agent's structured <think>-phase reasoning.
+ *  Mirrors the muted style of the inline Thinking block and the plan-approval
+ *  card. While `live`, it's open with a spinner so the user follows the agent's
+ *  planning as it works; once persisted on a finished message it defaults
+ *  collapsed. Each step shows its phase and, when available, how strongly the
+ *  assembled local context influenced it (context_score). */
+function ReasoningDisclosure({ steps, live = false }: { steps: ReasoningStep[]; live?: boolean }) {
+  const [open, setOpen] = useState(live);
+  if (!steps?.length) return null;
+  return (
+    <div className="mb-2 rounded-lg border border-artha-border bg-artha-surface2/50 overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-artha-muted hover:text-artha-text transition-colors"
+      >
+        {live
+          ? <Loader size={11} className="text-artha-accent animate-spin" />
+          : <Sparkles size={11} className="text-artha-accent" />}
+        {live ? 'Thinking…' : (open ? 'Reasoning' : 'Show reasoning')}
+      </button>
+      {open && (
+        <div className="px-3 pb-2 space-y-2">
+          {steps.map((s, i) => (
+            <div key={i} className="text-[13px] leading-relaxed text-artha-muted">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-[10px] uppercase tracking-wide text-artha-subtle">{s.phase}</span>
+                {s.context_score > 0 && (
+                  <span className="text-[10px] text-artha-accent">context {Math.round(s.context_score * 100)}%</span>
+                )}
+              </div>
+              <div className="whitespace-pre-wrap italic">{s.content}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Render an agent reply: reasoning as muted prose, the answer as markdown. */
 function AgentText({ content }: { content: string }) {
   const { thinking, answer } = splitThinking(content);
@@ -143,6 +182,7 @@ export default function ChatWindow() {
     addUserMessage, activeWorkflowId, setStreaming, pendingCitations, activeSkill,
     pendingAttachments, setPendingAttachments, scopes, setScopes,
     projects, activeProjectId,
+    liveReasoning, showReasoning, setLiveReasoning,
   } = useChatStore();
   // Project-aware suggested prompts. When the user is in a project, the
   // hard-coded macOS prompts ("Organize my Desktop") feel wrong — swap to
@@ -199,6 +239,15 @@ export default function ChatWindow() {
     });
     return () => { offStart(); offDone(); };
   }, []);
+
+  // Live chain-of-thought from the orchestrator's <think> phase. Stored in the
+  // chat store so it can be folded onto the finished assistant message.
+  useEffect(() => {
+    const off = window.artha.agent.onReasoning(({ steps, showReasoning: show }) => {
+      setLiveReasoning(steps as ReasoningStep[], show);
+    });
+    return () => { off(); };
+  }, [setLiveReasoning]);
 
   // Clear the indicator once the run is no longer streaming.
   useEffect(() => {
@@ -533,6 +582,9 @@ export default function ChatWindow() {
                   : 'max-w-[80%] bg-artha-surface border border-artha-border text-artha-text rounded-bl-sm shadow-soft'}`}>
                 {msg.senderType === 'agent' ? (
                   <>
+                    {showReasoning && msg.reasoning && msg.reasoning.length > 0 && (
+                      <ReasoningDisclosure steps={msg.reasoning} />
+                    )}
                     <AgentText content={msg.content || ''} />
                     {msg.toolEvents && msg.toolEvents.length > 0 && (
                       <ToolCallInline events={msg.toolEvents} />
@@ -570,6 +622,9 @@ export default function ChatWindow() {
                 <Zap size={13} className="text-artha-accent animate-pulse" />
               </div>
               <div className="max-w-[80%] bg-artha-surface border border-artha-border text-artha-text rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed shadow-soft">
+                {showReasoning && liveReasoning && liveReasoning.length > 0 && (
+                  <ReasoningDisclosure steps={liveReasoning} live />
+                )}
                 {streamingContent ? (
                   <>
                     <AgentText content={streamingContent} />

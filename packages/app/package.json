@@ -11,6 +11,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.6.0",
+    "@sentry/electron": "^5.11.0",
     "@types/node-schedule": "^2.1.8",
     "better-sqlite3": "^12.2.0",
     "dockerode": "^5.0.0",
