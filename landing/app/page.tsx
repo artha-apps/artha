@@ -107,10 +107,16 @@ function downloadHref(p: Platform): string {
   return `/api/download/${p}`;
 }
 
+type PriceInfo = { configured: boolean; display?: string; oneTime?: boolean } | null;
+
 export default function Page() {
   const [platform, setPlatform] = useState<Platform>('unknown');
   const [release, setRelease] = useState<ReleaseInfo>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [price, setPrice] = useState<PriceInfo>(null);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   useEffect(() => {
     setPlatform(detectPlatform());
@@ -121,7 +127,35 @@ export default function Page() {
       })
       .then(setRelease)
       .catch((e) => setError(String(e)));
+
+    // Authoritative Pro price straight from Stripe (test or live).
+    fetch('/api/stripe/price')
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setPrice)
+      .catch(() => setPrice({ configured: false }));
   }, []);
+
+  async function handleProCheckout() {
+    setCheckoutLoading(true);
+    setCheckoutError(null);
+    try {
+      const res = await fetch('/api/stripe/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setCheckoutError(data.error ?? 'Something went wrong — please try again.');
+        setCheckoutLoading(false);
+      }
+    } catch {
+      setCheckoutError('Network error — please try again.');
+      setCheckoutLoading(false);
+    }
+  }
 
   const primaryPlatform: Exclude<Platform, 'unknown'> =
     platform === 'unknown' ? 'mac-arm64' : platform;
@@ -154,6 +188,9 @@ export default function Page() {
             <ul className="nav-links">
               <li>
                 <a href="#features">Features</a>
+              </li>
+              <li>
+                <a href="#pricing">Pricing</a>
               </li>
               <li className="hide-sm">
                 <a href="#getting-started">Get started</a>
@@ -259,6 +296,77 @@ export default function Page() {
                   <p>{body}</p>
                 </div>
               ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="pricing" id="pricing">
+          <div className="container">
+            <div className="section-header">
+              <h2>Start free. Upgrade when you need more.</h2>
+              <p>
+                Artha runs entirely on your device — no account, no telemetry.
+                Pro adds advanced skills and unlocks the full agent. One payment,
+                yours forever.
+              </p>
+            </div>
+            <div className="price-grid">
+              <div className="price-card">
+                <div className="price-tier">Free</div>
+                <div className="price-amount">
+                  $0<span className="price-suffix">forever</span>
+                </div>
+                <p className="price-desc">
+                  The full local AI agent on your hardware. No strings attached.
+                </p>
+                <ul className="price-features">
+                  <li>Unlimited local AI conversations (Ollama)</li>
+                  <li>Local document indexing &amp; RAG</li>
+                  <li>Persistent agent memory</li>
+                  <li>DOCX / XLSX / PPTX / PDF generation</li>
+                  <li>Works fully offline · zero telemetry</li>
+                </ul>
+                <a className="price-cta secondary" href={downloadHref(primaryPlatform)}>
+                  Download free
+                </a>
+              </div>
+
+              <div className="price-card highlight">
+                <div className="price-badge">Most popular</div>
+                <div className="price-tier">Pro</div>
+                <div className="price-amount">
+                  {price?.configured && price.display ? (
+                    <>{price.display}</>
+                  ) : price === null ? (
+                    <span className="price-loading">—</span>
+                  ) : (
+                    <span className="price-loading">Soon</span>
+                  )}
+                  {price?.oneTime && <span className="price-suffix">one-time</span>}
+                </div>
+                <p className="price-desc">
+                  Everything in Free, plus advanced skills and priority support.
+                  A perpetual license — never expires.
+                </p>
+                <ul className="price-features">
+                  <li>Everything in Free</li>
+                  <li>Advanced agent skills</li>
+                  <li>Priority email support</li>
+                  <li>Perpetual license key, delivered by email</li>
+                </ul>
+                <button
+                  className="price-cta primary"
+                  onClick={handleProCheckout}
+                  disabled={checkoutLoading || !price?.configured}
+                >
+                  {checkoutLoading
+                    ? 'Redirecting to checkout…'
+                    : price?.configured
+                      ? 'Upgrade to Pro'
+                      : 'Coming soon'}
+                </button>
+                {checkoutError && <p className="price-error">{checkoutError}</p>}
+              </div>
             </div>
           </div>
         </section>
