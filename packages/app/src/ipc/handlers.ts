@@ -368,6 +368,16 @@ function stopLanServer(): { running: boolean; url: string | null; localIp: strin
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
 
+  // Safe push to the renderer. Guards window AND webContents (a reload destroys
+  // webContents while the window lives) and swallows the destroy-mid-send race,
+  // so a closing/reloading window can't crash main with "Object has been destroyed".
+  const safeSend = (channel: string, payload?: unknown): void => {
+    if (window.isDestroyed()) return;
+    const wc = window.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    try { wc.send(channel, payload); } catch { /* torn down mid-send */ }
+  };
+
   // Load all enabled MCP servers at startup
   MCPRegistry.getInstance().loadFromDatabase().catch(console.error);
 
@@ -423,7 +433,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (session?.title === 'New Chat') {
       const title = content.trim().slice(0, 40).replace(/\n/g, ' ') + (content.length > 40 ? '…' : '');
       db.prepare(`UPDATE chat_sessions SET title=?, last_activity=unixepoch() WHERE session_id=?`).run(title, sessionId);
-      window.webContents.send('session:titleUpdated', { sessionId, title });
+      safeSend('session:titleUpdated', { sessionId, title });
     } else {
       db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(sessionId);
     }
@@ -865,9 +875,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Streaming pull — Ollama returns NDJSON progress lines; we forward each as a
   // `llm:pullProgress` event so onboarding can show a real download bar.
   ipcMain.handle('llm:pullModelStream', async (_e, name: string) => {
-    const emit = (payload: unknown) => {
-      if (!window.isDestroyed()) window.webContents.send('llm:pullProgress', payload);
-    };
+    const emit = (payload: unknown) => safeSend('llm:pullProgress', payload);
     try {
       const res = await fetch('http://localhost:11434/api/pull', {
         method: 'POST',
@@ -1207,7 +1215,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // and records latency + a quality heuristic; `setOverride` lets the user pin
   // a specific model for a task type, bypassing auto-selection.
   ipcMain.handle('router:benchmark', async () => {
-    return runBenchmark((msg) => window.webContents.send('router:benchmarkProgress', msg));
+    return runBenchmark((msg) => safeSend('router:benchmarkProgress', msg));
   });
 
   ipcMain.handle('router:listProfiles', () => listProfiles());
@@ -1315,17 +1323,13 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   const browser = BrowserController.getInstance();
 
   browser.on('state', (state) => {
-    if (!window.isDestroyed()) {
-      window.webContents.send('browser:state', state);
-    }
+    safeSend('browser:state', state);
   });
 
   // Browser tools fire these events through the emitter — surface them to the
   // renderer so the pane can auto-open and the handoff banner can appear.
   setBrowserToolEmitter({
-    emit: (channel, payload) => {
-      if (!window.isDestroyed()) window.webContents.send(channel, payload);
-    },
+    emit: (channel, payload) => safeSend(channel, payload),
   });
 
   ipcMain.handle('browser:attach', (_e, bounds: { x: number; y: number; width: number; height: number }) => {

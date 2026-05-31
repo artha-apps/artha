@@ -1155,8 +1155,17 @@ RULES — follow exactly, no exceptions:
   }
 
   private emit(channel: string, data?: unknown): void {
-    if (!this.window.isDestroyed()) {
-      this.window.webContents.send(channel, data);
+    // Guard BOTH the window and its webContents: a reload (e.g. our renderer-
+    // crash recovery) destroys/recreates webContents while the window lives, so
+    // checking only the window let a mid-run emit throw "Object has been
+    // destroyed". try/catch covers the destroy-between-check-and-send race.
+    if (this.window.isDestroyed()) return;
+    const wc = this.window.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    try {
+      wc.send(channel, data);
+    } catch {
+      /* window/webContents torn down mid-emit — drop the event */
     }
   }
 }
