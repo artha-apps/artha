@@ -6,6 +6,8 @@
  */
 import OpenAI from 'openai';
 
+/** Accumulated state for a single in-progress tool call across stream chunks.
+ *  `arguments` is a partial JSON string that grows until the stream ends. */
 export interface PartialToolCall {
   id: string;
   name: string;
@@ -24,6 +26,8 @@ export function applyToolCallDeltas(acc: PartialToolCall[], deltas: ToolCallDelt
   const next = acc.slice();
   for (const d of deltas) {
     const i = d.index ?? 0;
+    // First chunk for an index carries id + name; subsequent chunks carry
+    // only argument fragments, so we preserve whatever arrived earlier.
     const cur = next[i] ?? { id: '', name: '', arguments: '' };
     next[i] = {
       id: d.id ?? cur.id,

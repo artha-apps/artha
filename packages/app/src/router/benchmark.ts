@@ -25,9 +25,13 @@ interface ProbeTask {
   validate: (text: string) => number; // 0..1 heuristic quality score
 }
 
+// The three canonical probes are designed to stress each capability in
+// isolation without requiring internet access or large context windows.
 const PROBES: ProbeTask[] = [
   {
     task: 'plan',
+    // Checks that the model can emit a clean JSON array — the shape the
+    // orchestrator expects from planning steps.
     messages: [
       { role: 'system', content: 'Respond with a JSON array of 3 short step descriptions to make tea. No explanation, JSON only.' },
       { role: 'user', content: 'Plan it.' },
@@ -35,12 +39,14 @@ const PROBES: ProbeTask[] = [
     validate: (text) => {
       try {
         const arr = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim()) as unknown;
+        // Partial credit if the array exists but has too many/few items.
         return Array.isArray(arr) && arr.length >= 2 && arr.length <= 6 ? 1 : 0.4;
       } catch { return 0; }
     },
   },
   {
     task: 'tool_args',
+    // Checks that the model can produce a correctly-shaped tool argument object.
     messages: [
       { role: 'system', content: 'Respond with JSON only: {"path": "<absolute home subdirectory>"}.' },
       { role: 'user', content: 'Give me args to list my Desktop folder.' },
@@ -49,12 +55,15 @@ const PROBES: ProbeTask[] = [
       try {
         const obj = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim()) as { path?: string };
         if (typeof obj.path !== 'string') return 0;
+        // Partial credit if the model produces a path, full credit if it
+        // correctly includes "Desktop" in the value.
         return /desktop/i.test(obj.path) ? 1 : 0.5;
       } catch { return 0; }
     },
   },
   {
     task: 'synthesis',
+    // Checks coherent prose generation — output length is the proxy for quality.
     messages: [
       { role: 'system', content: 'Write a concise, professional 2-sentence project status update.' },
       { role: 'user', content: 'Status: Q1 milestone met, two risks identified.' },
@@ -69,6 +78,7 @@ const PROBES: ProbeTask[] = [
   },
 ];
 
+/** Minimal shape of a single model entry in the Ollama `/api/tags` response. */
 interface OllamaTag { name: string; size: number }
 
 /** Live `/api/tags` query against Ollama. Empty array on connection failure. */

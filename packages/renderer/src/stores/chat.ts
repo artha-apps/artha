@@ -81,9 +81,27 @@ export interface SessionScope {
   added_at: number;
 }
 
-/** Top-level view selector. Each value maps to a panel mounted under <main>
- *  in App.tsx. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'settings';
+/** Top-level view selector. `'chat'` puts the canvas in tab mode (driven by
+ *  `activeTab`); every other value is a settings panel that, when set, opens
+ *  the Workspace Settings modal scoped to that panel. Keeping the union lets
+ *  legacy call-sites (`setActiveView('models')`) deep-link into the modal
+ *  without changing their signature. */
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license';
+
+/** Three top-level rooms inside the Chat view. Tab selection persists in
+ *  localStorage so reloads land where you left off. */
+export type ActiveTab = 'chat' | 'workflows' | 'code';
+
+/** A project as exposed by the `projects:*` IPC. Mirrors the `projects`
+ *  table on disk (created by migrations v3→v6). */
+export interface Project {
+  project_id: string;
+  name: string;
+  root_path: string;
+  rag_index_id: string | null;
+  summary: string | null;
+  created_at: number;
+}
 
 /** The skill the orchestrator matched/loaded for the in-flight workflow.
  *  Drives the small "Skill: …" badge in the composer. Cleared on stream end. */
@@ -108,10 +126,26 @@ interface ChatState {
   pendingToolEvents: ToolCallEvent[];
   pendingCitations: Citation[];
   activeView: ActiveView;
+  /** Which top-level tab is showing inside the Chat view. Ignored when
+   *  `activeView !== 'chat'` (because a settings modal is open). */
+  activeTab: ActiveTab;
+  /** Workspace Settings modal — open state + which panel to scroll to. The
+   *  panel id matches the legacy `ActiveView` value so old call-sites keep
+   *  working: `setActiveView('models')` opens the modal to Models. */
+  workspaceSettingsOpen: boolean;
+  workspaceSettingsSection: Exclude<ActiveView, 'chat'> | null;
+  /** Active project context. `null` = "no project" (general chat). Drives
+   *  the sidebar switcher, the scope badge, and `@project` autocomplete. */
+  activeProjectId: string | null;
+  /** All projects loaded once on mount + refreshed when one is created. */
+  projects: Project[];
   activeWorkflowId: string | null;
   activeSkill: ActiveSkillBadge | null;
   pendingAttachments: MessageAttachment[];
   scopes: SessionScope[];
+  /** Set of FeatureGuide keys the user has dismissed. Persisted to
+   *  localStorage so guides don't re-appear after a reload. */
+  seenGuides: Set<string>;
 
   // Actions
   setSessions: (s: Session[]) => void;
@@ -128,12 +162,82 @@ interface ChatState {
   setPendingPlan: (plan: AgentPlan | null) => void;
   setPendingClarify: (req: ClarifyRequest | null) => void;
   setActiveView: (view: ActiveView) => void;
+  setActiveTab: (tab: ActiveTab) => void;
+  /** Open the Workspace Settings modal, optionally scrolled to a section. */
+  openWorkspaceSettings: (section?: Exclude<ActiveView, 'chat'> | null) => void;
+  /** Close the modal and return to the Chat view. */
+  closeWorkspaceSettings: () => void;
+  setActiveProjectId: (id: string | null) => void;
+  /** Pick a project AND auto-land on its most recent session (or empty
+   *  state if there are none). Returns the picked session id, so the caller
+   *  can hydrate messages over IPC. */
+  selectProject: (id: string | null) => string | null;
+  setProjects: (projects: Project[]) => void;
   setStreaming: (streaming: boolean) => void;
   setActiveWorkflowId: (id: string | null) => void;
   setActiveSkill: (skill: ActiveSkillBadge | null) => void;
+  /** Mark a feature guide as seen — collapses the inline card. */
+  dismissGuide: (featureKey: string) => void;
+  /** Re-open a feature guide (called from the panel header "?" button). */
+  reopenGuide: (featureKey: string) => void;
+}
+
+const SEEN_GUIDES_KEY = 'artha.seenGuides.v1';
+const ACTIVE_TAB_KEY = 'artha.activeTab.v1';
+const ACTIVE_PROJECT_KEY = 'artha.activeProjectId.v1';
+
+function loadSeenGuides(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(SEEN_GUIDES_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSeenGuides(set: Set<string>) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SEEN_GUIDES_KEY, JSON.stringify([...set]));
+  } catch {
+    /* quota exceeded or storage blocked — non-fatal */
+  }
+}
+
+/** Read the persisted tab choice; default to 'chat' for new users. */
+function loadActiveTab(): ActiveTab {
+  if (typeof window === 'undefined') return 'chat';
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_TAB_KEY);
+    if (raw === 'chat' || raw === 'workflows' || raw === 'code') return raw;
+  } catch { /* fall through */ }
+  return 'chat';
+}
+
+function saveActiveTab(tab: ActiveTab) {
+  if (typeof window === 'undefined') return;
+  try { window.localStorage.setItem(ACTIVE_TAB_KEY, tab); } catch { /* non-fatal */ }
+}
+
+/** Read the persisted project pick; null = "no project (general)". */
+function loadActiveProjectId(): string | null {
+  if (typeof window === 'undefined') return null;
+  try { return window.localStorage.getItem(ACTIVE_PROJECT_KEY); } catch { return null; }
+}
+
+function saveActiveProjectId(id: string | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (id) window.localStorage.setItem(ACTIVE_PROJECT_KEY, id);
+    else window.localStorage.removeItem(ACTIVE_PROJECT_KEY);
+  } catch { /* non-fatal */ }
 }
 
 export const useChatStore = create<ChatState>((set) => ({
+  // ── Initial state ──────────────────────────────────────────────────────────
   sessions: [],
   activeSessionId: null,
   messages: [],
@@ -145,11 +249,18 @@ export const useChatStore = create<ChatState>((set) => ({
   pendingToolEvents: [],
   pendingCitations: [],
   activeView: 'chat',
+  activeTab: loadActiveTab(),
+  workspaceSettingsOpen: false,
+  workspaceSettingsSection: null,
+  activeProjectId: loadActiveProjectId(),
+  projects: [],
   activeWorkflowId: null,
   activeSkill: null,
   pendingAttachments: [],
   scopes: [],
+  seenGuides: loadSeenGuides(),
 
+  // ── Actions ────────────────────────────────────────────────────────────────
   setSessions: (sessions) => set({ sessions }),
   setScopes: (scopes) => set({ scopes }),
   // Switching sessions clears ALL in-flight state, including isStreaming — so a
@@ -233,8 +344,78 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
   setPendingClarify: (req) => set({ pendingClarify: req }),
-  setActiveView: (view) => set({ activeView: view }),
+  // Legacy view setter. 'chat' returns to the tabbed canvas; anything else is
+  // a settings panel id and routes to the Workspace Settings modal so old
+  // call-sites keep working without refactor.
+  setActiveView: (view) => {
+    if (view === 'chat') {
+      set({ activeView: 'chat', workspaceSettingsOpen: false, workspaceSettingsSection: null });
+    } else {
+      set({ activeView: view, workspaceSettingsOpen: true, workspaceSettingsSection: view });
+    }
+  },
+  setActiveTab: (tab) => {
+    saveActiveTab(tab);
+    set({ activeTab: tab });
+  },
+  openWorkspaceSettings: (section = null) =>
+    set({ workspaceSettingsOpen: true, workspaceSettingsSection: section, activeView: section ?? 'settings' }),
+  closeWorkspaceSettings: () =>
+    set({ workspaceSettingsOpen: false, workspaceSettingsSection: null, activeView: 'chat' }),
+  setActiveProjectId: (id) => {
+    saveActiveProjectId(id);
+    set({ activeProjectId: id });
+  },
+  // Pick a project AND land on its most recent session (or empty if none).
+  // Loads scopes for the picked session via the same path Sidebar.openSession
+  // uses, so the user sees the right sandbox immediately.
+  // Returns the picked session id (or null) so the caller can drive any
+  // further IPC (message hydration etc.) without re-walking the array.
+  // The use of `get()` (Zustand's selector) here breaks the otherwise
+  // circular type chain (`useChatStore` → action → `useChatStore`) that
+  // would force an explicit annotation on the action signature.
+  selectProject: (id): string | null => {
+    saveActiveProjectId(id);
+    const all: Session[] = useChatStore.getState().sessions;
+    const candidates: Session[] = id === null
+      ? all.filter((s: Session) => !s.project_id)
+      : all.filter((s: Session) => s.project_id === id);
+    // sessions:list comes back sorted by last_activity DESC, so [0] is "most recent".
+    const next: Session | null = candidates[0] ?? null;
+    set({
+      activeProjectId: id,
+      activeSessionId: next?.session_id ?? null,
+      messages: [],
+      streamingContent: '',
+      isStreaming: false,
+      executionLog: [],
+      pendingToolEvents: [],
+      pendingCitations: [],
+      activeWorkflowId: null,
+      activeSkill: null,
+      scopes: [],
+    });
+    return next?.session_id ?? null;
+  },
+  setProjects: (projects) => set({ projects }),
   setStreaming: (streaming) => set({ isStreaming: streaming }),
   setActiveWorkflowId: (id) => set({ activeWorkflowId: id }),
   setActiveSkill: (skill) => set({ activeSkill: skill }),
+
+  dismissGuide: (featureKey) =>
+    set((s) => {
+      const next = new Set(s.seenGuides);
+      next.add(featureKey);
+      saveSeenGuides(next);
+      return { seenGuides: next };
+    }),
+
+  reopenGuide: (featureKey) =>
+    set((s) => {
+      if (!s.seenGuides.has(featureKey)) return s;
+      const next = new Set(s.seenGuides);
+      next.delete(featureKey);
+      saveSeenGuides(next);
+      return { seenGuides: next };
+    }),
 }));

@@ -92,6 +92,7 @@ export class BrowserController extends EventEmitter {
    *  immediately surfaces the manual overlay instead of looping forever. */
   private lastAutoRecoverAt = 0;
 
+  /** Return the process-wide singleton, creating it on first call. */
   static getInstance(): BrowserController {
     if (!BrowserController.instance) BrowserController.instance = new BrowserController();
     return BrowserController.instance;
@@ -170,6 +171,8 @@ export class BrowserController extends EventEmitter {
   // as it mounts/unmounts and resizes. Coordinates come straight from
   // getBoundingClientRect() on the pane container.
 
+  /** Attach the BrowserView to the window and position it at `bounds`. Safe to
+   *  call repeatedly — only adds the view once, then just updates the bounds. */
   attach(bounds: BrowserBounds): void {
     if (!this.window) return;
     const view = this.ensureView();
@@ -181,6 +184,8 @@ export class BrowserController extends EventEmitter {
     this.emitState();
   }
 
+  /** Remove the BrowserView from the window (hides it) without destroying it,
+   *  so re-attaching later is instant (no page reload). */
   detach(): void {
     if (!this.window || !this.view) return;
     if (this.attached) {
@@ -190,6 +195,8 @@ export class BrowserController extends EventEmitter {
     }
   }
 
+  /** Update the BrowserView's pixel rect. Coordinates are rounded to integers
+   *  because Electron's setBounds rejects fractional pixels. */
   setBounds(bounds: BrowserBounds): void {
     this.bounds = bounds;
     if (this.view && this.attached) {
@@ -204,12 +211,15 @@ export class BrowserController extends EventEmitter {
 
   // ── Driving mode ──────────────────────────────────────────────────────────
 
+  /** Switch the driving-mode latch and broadcast the new state to the renderer.
+   *  No-op if the mode is already set, avoiding a spurious state event. */
   setDrivingMode(mode: DrivingMode): void {
     if (this.drivingMode === mode) return;
     this.drivingMode = mode;
     this.emitState();
   }
 
+  /** Return who currently holds the wheel without mutating anything. */
   getDrivingMode(): DrivingMode {
     return this.drivingMode;
   }
@@ -243,6 +253,8 @@ export class BrowserController extends EventEmitter {
     });
   }
 
+  /** Called from the UI when the user hands control back. Resolves the pending
+   *  handoff promise and switches the driving mode back to `agent`. */
   resumeAgent(): void {
     if (this.pendingHandoff) {
       this.pendingHandoff.resolve('resumed');
@@ -251,6 +263,9 @@ export class BrowserController extends EventEmitter {
     this.setDrivingMode('agent');
   }
 
+  /** Called when the user dismisses the handoff request without resuming.
+   *  Resolves the pending promise with `'cancelled'` and keeps driving mode as
+   *  `user` — the agent must not act until the user explicitly resumes it. */
   cancelHandoff(): void {
     if (this.pendingHandoff) {
       this.pendingHandoff.resolve('cancelled');
@@ -290,6 +305,7 @@ export class BrowserController extends EventEmitter {
     return view.webContents;
   }
 
+  /** Snapshot current state for the IPC layer to forward to the renderer. */
   getState(): BrowserState {
     const wc = this.view?.webContents;
     return {

@@ -13,6 +13,8 @@ import {
   Sparkles, Plus, Trash2, Pencil, ToggleLeft, ToggleRight,
   RefreshCw, Save, X, Lock, Wrench, Upload, Download,
 } from 'lucide-react';
+import { FeatureGuide } from '../ui/FeatureGuide';
+import { GUIDES } from './guides';
 
 interface Skill {
   skill_id: string;
@@ -41,20 +43,24 @@ interface Draft {
   is_builtin: boolean;
 }
 
+// Chip hints shown in the editor to help authors remember tool prefix syntax.
 const BUILTIN_TOOL_HINTS = [
   'fs_ (all filesystem)', 'web_ (all web)', 'browser_ (all browser)',
   'web_search', 'web_fetch', 'fs_list_directory', 'fs_move_file', 'fs_read_file',
 ];
 
+/** Fresh form state for the "New Skill" flow. */
 const EMPTY_DRAFT: Draft = {
   slug: '', name: '', icon: '✨', description: '', instructions: '',
   allowedToolsText: '', is_enabled: true, is_builtin: false,
 };
 
+/** Split a comma-separated tool allowlist string into a trimmed string array. */
 function parseTools(text: string): string[] {
   return text.split(',').map(s => s.trim()).filter(Boolean);
 }
 
+/** Convert a Skill DB row into the editable Draft shape (JSON tools → comma string). */
 function toDraft(skill: Skill): Draft {
   let tools: string[] = [];
   try { const p = JSON.parse(skill.allowed_tools_json); if (Array.isArray(p)) tools = p; } catch { /* ok */ }
@@ -71,9 +77,13 @@ function toDraft(skill: Skill): Draft {
   };
 }
 
+/** Skills list + editor panel. Renders the editor in-place when `editing` is set,
+ *  otherwise shows the full list view. */
 export default function SkillsPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
+  // `editing` non-null means the editor view is shown; null = list view.
   const [editing, setEditing] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -160,7 +170,7 @@ export default function SkillsPanel() {
               <Sparkles size={16} className="text-artha-accent" />
             </div>
             <div>
-              <h1 className="text-base font-semibold text-white">
+              <h1 className="text-base font-semibold text-artha-text">
                 {editing.skill_id ? 'Edit Skill' : 'New Skill'}
               </h1>
               <p className="text-xs text-artha-muted">
@@ -169,7 +179,7 @@ export default function SkillsPanel() {
             </div>
           </div>
           <button onClick={() => { setEditing(null); setError(''); }}
-            className="p-2 rounded-lg text-artha-muted hover:text-white hover:bg-white/5 transition-colors">
+            className="p-2 rounded-lg text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors">
             <X size={16} />
           </button>
         </div>
@@ -193,7 +203,8 @@ export default function SkillsPanel() {
                 onChange={e => setEditing({
                   ...editing,
                   name: e.target.value,
-                  // Auto-derive slug from name for new, non-builtin skills only.
+                  // Auto-derive slug from name only for brand-new (non-builtin) skills;
+                  // existing slugs must not change silently or "/" links in chat break.
                   slug: !editing.skill_id ? e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : editing.slug,
                 })}
                 placeholder="Weekly Report"
@@ -269,7 +280,7 @@ export default function SkillsPanel() {
                         setEditing({ ...editing, allowedToolsText: [...tools, tool].join(', ') });
                       }
                     }}
-                    className="text-[10px] px-2 py-0.5 rounded-full bg-artha-s2 border border-artha-border text-artha-muted hover:text-white hover:border-artha-accent/40 transition-colors font-mono">
+                    className="text-[10px] px-2 py-0.5 rounded-full bg-artha-s2 border border-artha-border text-artha-muted hover:text-artha-text hover:border-artha-accent/40 transition-colors font-mono">
                     + {h}
                   </button>
                 );
@@ -288,7 +299,7 @@ export default function SkillsPanel() {
               {editing.skill_id ? 'Save changes' : 'Create skill'}
             </button>
             <button onClick={() => { setEditing(null); setError(''); }}
-              className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-white hover:bg-white/5 transition-colors">
+              className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors">
               Cancel
             </button>
           </div>
@@ -300,23 +311,24 @@ export default function SkillsPanel() {
   // ── List view ───────────────────────────────────────────────────────────
   return (
     <div className="flex-1 overflow-y-auto px-8 py-8 max-w-3xl mx-auto w-full">
+      <FeatureGuide {...GUIDES.skills} />
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-artha-accent/20 flex items-center justify-center">
             <Sparkles size={16} className="text-artha-accent" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-white">Skills</h1>
+            <h1 className="text-base font-semibold text-artha-text">Skills</h1>
             <p className="text-xs text-artha-muted">Reusable playbooks the agent loads on intent or via <code className="font-mono">/slug</code></p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={load} disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors disabled:opacity-40">
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs transition-colors disabled:opacity-40">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
           <button onClick={importSkill}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors">
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs transition-colors">
             <Upload size={12} /> Import
           </button>
           <button onClick={() => { setError(''); setEditing({ ...EMPTY_DRAFT }); }}
@@ -337,7 +349,7 @@ export default function SkillsPanel() {
       ) : skills.length === 0 ? (
         <div className="text-center py-16 text-artha-muted">
           <Sparkles size={32} className="mx-auto mb-3 opacity-30" />
-          <p className="text-sm font-medium text-white mb-1">No skills yet</p>
+          <p className="text-sm font-medium text-artha-text mb-1">No skills yet</p>
           <p className="text-xs">Create one to give the agent a reusable playbook.</p>
         </div>
       ) : (
@@ -356,10 +368,10 @@ export default function SkillsPanel() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
-                      <span className="text-sm font-medium text-white">{s.name}</span>
+                      <span className="text-sm font-medium text-artha-text">{s.name}</span>
                       <code className="text-[10px] text-artha-accent bg-artha-accent/10 px-1.5 py-0.5 rounded font-mono">/{s.slug}</code>
                       {!!s.is_builtin && (
-                        <span className="flex items-center gap-1 text-[10px] text-artha-muted bg-white/5 px-1.5 py-0.5 rounded-full">
+                        <span className="flex items-center gap-1 text-[10px] text-artha-muted bg-artha-text/5 px-1.5 py-0.5 rounded-full">
                           <Lock size={9} /> built-in
                         </span>
                       )}
@@ -375,20 +387,20 @@ export default function SkillsPanel() {
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button onClick={() => toggle(s)} title={s.is_enabled ? 'Disable' : 'Enable'}
-                      className="text-artha-muted hover:text-white transition-colors">
+                      className="text-artha-muted hover:text-artha-text transition-colors">
                       {s.is_enabled ? <ToggleRight size={20} className="text-artha-accent" /> : <ToggleLeft size={20} />}
                     </button>
                     <button onClick={() => exportSkill(s)} title="Export"
-                      className="p-1.5 text-artha-muted hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+                      className="p-1.5 text-artha-muted hover:text-artha-text hover:bg-artha-text/5 rounded-lg transition-colors">
                       <Download size={13} />
                     </button>
                     <button onClick={() => { setError(''); setEditing(toDraft(s)); }} title="Edit"
-                      className="p-1.5 text-artha-muted hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+                      className="p-1.5 text-artha-muted hover:text-artha-text hover:bg-artha-text/5 rounded-lg transition-colors">
                       <Pencil size={13} />
                     </button>
                     {!s.is_builtin && (
                       <button onClick={() => remove(s)} title="Delete"
-                        className="p-1.5 text-artha-muted hover:text-red-400 hover:bg-white/5 rounded-lg transition-colors">
+                        className="p-1.5 text-artha-muted hover:text-red-400 hover:bg-artha-text/5 rounded-lg transition-colors">
                         <Trash2 size={13} />
                       </button>
                     )}

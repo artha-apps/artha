@@ -59,7 +59,7 @@ Artha stands on the shoulders of excellent open-source work:
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_ORG/artha.git
+git clone https://github.com/artha-apps/artha.git
 cd artha
 
 # Install all workspace dependencies

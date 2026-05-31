@@ -1,3 +1,18 @@
+/**
+ * Main process entry point for the Artha Electron app.
+ *
+ * Responsibilities (in startup order):
+ *   1. Open / migrate the local SQLite database.
+ *   2. Create the BrowserWindow and bind the BrowserView controller.
+ *   3. Register all IPC handlers (agent, LLM, MCP, docs, RAG, web, browser,
+ *      scheduler, etc.) so the renderer can communicate over the preload bridge.
+ *   4. Initialise the SchedulerService so cron / one-shot tasks can fire.
+ *   5. Load the renderer (Vite dev-server in development, dist bundle in prod).
+ *   6. Hook auto-update checks (notification-only, no silent install).
+ *
+ * The single-instance lock at the bottom ensures only one Artha window can run
+ * at a time; a second launch attempt brings the existing window to focus.
+ */
 import { app, BrowserWindow, shell, dialog } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';

@@ -48,6 +48,7 @@ export async function duckduckgoSearch(
   const html = await res.text();
   const results: SearchResult[] = [];
 
+  // Parse links and snippets separately then zip them by index.
   // Result anchors are in <a class="result__a" href="...">title</a>
   // Snippets are in <a class="result__snippet">...</a>
   const linkRe = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;

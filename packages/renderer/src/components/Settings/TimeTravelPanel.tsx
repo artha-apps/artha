@@ -47,7 +47,7 @@ const KIND_ICON: Record<StepRow['kind'], React.ElementType> = {
 };
 
 const KIND_COLOR: Record<StepRow['kind'], string> = {
-  system: 'text-artha-muted bg-white/5',
+  system: 'text-artha-muted bg-artha-text/5',
   user: 'text-green-400 bg-green-400/10',
   assistant: 'text-amber-400 bg-amber-400/10',
   tool_call: 'text-violet-400 bg-violet-400/10',
@@ -81,15 +81,28 @@ function summariseStep(step: StepRow): string {
   } catch { return step.payload.slice(0, 100); }
 }
 
+/**
+ * Time Travel panel — master-detail view of past agent runs.
+ * Left sidebar lists `agent_runs` (newest first). Right panel shows the step-by-step
+ * ReAct trace and allows forking from any snapshot step to replay with a different model.
+ */
 export default function TimeTravelPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [runs, setRuns] = useState<RunRow[]>([]);
+  // `selectedRun` drives the step timeline; auto-set to the newest run on mount.
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [steps, setSteps] = useState<StepRow[]>([]);
+  // Model list for the "swap model on fork" dropdown.
   const [models, setModels] = useState<string[]>([]);
+  // `forkingFrom` is the step_id with the inline Fork UI expanded.
   const [forkingFrom, setForkingFrom] = useState<string | null>(null);
+  // Optional model override for the forked run; empty string = keep active model.
   const [forkModel, setForkModel] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // ── Effects ────────────────────────────────────────────────────────────────
+
+  /** Load runs and available models in parallel; auto-select the most recent run. */
   const load = async () => {
     setLoading(true);
     try {
@@ -107,6 +120,7 @@ export default function TimeTravelPanel() {
 
   useEffect(() => { load(); }, []);
 
+  // Fetch steps whenever the user selects a different run in the sidebar.
   useEffect(() => {
     if (!selectedRun) return;
     window.artha.timetravel.getSteps(selectedRun).then(s => setSteps(s as StepRow[]));
@@ -134,11 +148,11 @@ export default function TimeTravelPanel() {
               <History size={14} className="text-artha-accent" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold text-white">Time Travel</h1>
+              <h1 className="text-sm font-semibold text-artha-text">Time Travel</h1>
               <p className="text-[10px] text-artha-muted">{runs.length} agent runs</p>
             </div>
           </div>
-          <button onClick={load} disabled={loading} className="text-artha-muted hover:text-white">
+          <button onClick={load} disabled={loading} className="text-artha-muted hover:text-artha-text">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -154,8 +168,8 @@ export default function TimeTravelPanel() {
               onClick={() => setSelectedRun(r.run_id)}
               className={`w-full text-left flex items-start gap-2 px-3 py-2 rounded-lg transition-colors ${
                 selectedRun === r.run_id
-                  ? 'bg-artha-accent/20 text-white'
-                  : 'text-artha-muted hover:bg-white/5 hover:text-white'
+                  ? 'bg-artha-accent/20 text-artha-text'
+                  : 'text-artha-muted hover:bg-artha-text/5 hover:text-artha-text'
               }`}
             >
               {r.parent_run_id
@@ -187,7 +201,7 @@ export default function TimeTravelPanel() {
         {selected && (
           <div className="max-w-4xl">
             <div className="mb-6">
-              <h2 className="text-lg font-semibold text-white mb-1">{selected.goal}</h2>
+              <h2 className="text-lg font-semibold text-artha-text mb-1">{selected.goal}</h2>
               <div className="flex items-center gap-3 text-xs text-artha-muted">
                 <code className="font-mono">{selected.model}</code>
                 <span>·</span>
@@ -249,7 +263,7 @@ export default function TimeTravelPanel() {
                           </button>
                           <button
                             onClick={() => { setForkingFrom(null); setForkModel(''); }}
-                            className="px-3 py-1.5 rounded-lg text-xs text-artha-muted hover:text-white hover:bg-white/5"
+                            className="px-3 py-1.5 rounded-lg text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5"
                           >
                             Cancel
                           </button>

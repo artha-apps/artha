@@ -2,6 +2,14 @@
  * Hard-sandbox tests for the filesystem tools. When a chat has attached scopes,
  * reads/writes outside them must be rejected; with no scopes, behaviour falls
  * back to the historical home-dir-wide access (system dirs still blocked).
+ *
+ * Verifies:
+ *   - folder scopes allow access to the whole subtree but nothing adjacent
+ *   - file scopes grant only the exact file, not its siblings
+ *   - writes (moves) whose *destination* escapes the scope are also blocked
+ *   - an empty scope list is treated as "no scopes" (open access, minus system dirs)
+ *   - system directories are blocked independently of any scope setting
+ *   - path prefix overlap (/workdir vs /workdir-2) is handled correctly
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
@@ -10,6 +18,12 @@ import * as path from 'path';
 import { invokeFilesystemTool } from './filesystem';
 import type { ScopeRoot } from '../db/scopes';
 
+// Temp directory layout:
+//   <base>/
+//     workdir/          ← the attached folder scope (root)
+//       note.txt        ← insideFile
+//     elsewhere/        ← sibling NOT in scope (outside)
+//       single.txt      ← scopedFile (attached as an exact-file scope)
 let root: string;        // an attached folder scope
 let outside: string;     // a sibling folder NOT in scope
 let insideFile: string;
@@ -31,6 +45,7 @@ afterAll(() => {
   try { fs.rmSync(path.dirname(root), { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
+// ── Folder scope ─────────────────────────────────────────────────────────────
 describe('filesystem hard sandbox', () => {
   it('allows reads inside an attached folder', async () => {
     const roots: ScopeRoot[] = [{ path: root, kind: 'folder' }];
@@ -52,6 +67,7 @@ describe('filesystem hard sandbox', () => {
       .rejects.toThrow(/outside this chat's selected folders/i);
   });
 
+  // ── File scope ───────────────────────────────────────────────────────────
   it('a file scope grants its exact file but not its siblings', async () => {
     const roots: ScopeRoot[] = [{ path: scopedFile, kind: 'file' }];
     const ok = await invokeFilesystemTool('fs_read_file', { path: scopedFile }, roots);
@@ -62,6 +78,7 @@ describe('filesystem hard sandbox', () => {
       .rejects.toThrow(/outside this chat's selected folders/i);
   });
 
+  // ── Fallback / edge cases ────────────────────────────────────────────────
   it('falls back to home-dir-wide access when no scopes are attached', async () => {
     const out = await invokeFilesystemTool('fs_read_file', { path: scopedFile }, []);
     expect(out).toContain('standalone file scope');

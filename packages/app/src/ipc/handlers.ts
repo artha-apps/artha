@@ -1,6 +1,36 @@
 /**
- * IPC Handlers — wires all Electron IPC channels to backend modules.
- * The renderer calls these via the preload bridge (window.artha.*).
+ * IPC Handlers — wires all Electron `ipcMain.handle` channels to backend
+ * modules. The renderer reaches every handler via the preload bridge
+ * (`window.artha.*`). A single exported function, `registerIpcHandlers`,
+ * is called once from `main.ts` after the BrowserWindow is created.
+ *
+ * Handler groups (search for the section banners below):
+ *   Agent          — send messages, cancel, plan approval, clarification
+ *   Sessions       — list, create, delete, load history
+ *   Scopes         — per-chat folder/file sandbox + RAG index management
+ *   LLM / Models   — Ollama + BYOK cloud model management
+ *   MCP            — install / toggle / remove MCP servers, audit log
+ *   Skills         — CRUD for agent playbooks
+ *   RAG            — index management (separate from scope-auto-indexes)
+ *   Document Gen   — generate and open docx/pptx/xlsx/pdf artifacts
+ *   Settings       — read/write the user settings blob
+ *   Bundles        — export / import `.artha-bundle` run archives
+ *   Router         — adaptive model selection benchmark + overrides
+ *   Provenance     — per-anchor source records and signed receipts
+ *   Time-travel    — replay / fork any past ReAct step
+ *   Web tools      — cache stats and clear
+ *   Browser        — BrowserView attach/detach/navigate/handoff
+ *   Scheduler      — CRUD for scheduled tasks
+ *   Artifacts      — log and browse agent-generated files
+ *   Memory         — long-term agent memory CRUD
+ *   OAuth          — Google Workspace PKCE token flow
+ *   IDE            — generate VS Code / Cursor MCP config files
+ *   LAN            — local-network collaboration server lifecycle
+ *   Parallel       — fan-out sub-agent runs
+ *   Desktop        — screen capture for desktop-control tools
+ *   Team           — local team member roster
+ *   API keys       — LAN server Bearer token management
+ *   Shared memory  — toggle cross-teammate memory injection
  */
 import { ipcMain, BrowserWindow, dialog, shell, desktopCapturer } from 'electron';
 import * as path from 'path';
@@ -12,17 +42,24 @@ import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { parseSkillImport } from '../skills/util';
 import { getDefaultRagIndexer } from '../rag/indexer';
+import { buildShallowTree } from '../agent/folderTree';
 import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
 import { recomputePrimaryProject } from '../db/scopes';
+import { Entitlements, FREE_ENTITLEMENTS } from '../license/entitlements';
+import { getEntitlements, invalidateEntitlements, parseAndVerify } from '../license/verify';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 
+// Module-level orchestrator — created once in `registerIpcHandlers` so every
+// IPC channel shares the same ReAct loop and in-flight workflow map.
 let orchestrator: AgentOrchestrator;
+// Singleton RAG indexer shared by the standalone RAG panel and the scope
+// auto-indexer so they write to the same chunk store.
 const ragIndexer = getDefaultRagIndexer();
 
 // ── IDE MCP HTTP server ─────────────────────────────────────────────────────
@@ -34,6 +71,10 @@ const ragIndexer = getDefaultRagIndexer();
 const IDE_MCP_PORT = 3847;
 let ideMcpServer: http.Server | null = null;
 
+/**
+ * Start the IDE MCP HTTP bridge. Idempotent — returns the current status
+ * immediately if the server is already listening.
+ */
 function startIdeMcpServer(): { running: boolean; url: string } {
   const url = `http://localhost:${IDE_MCP_PORT}/mcp`;
   // Already running → no-op (idempotent, safe to call repeatedly).
@@ -85,12 +126,30 @@ function startIdeMcpServer(): { running: boolean; url: string } {
   return { running: true, url };
 }
 
+/** Stop the IDE MCP HTTP bridge. Safe to call when already stopped. */
 function stopIdeMcpServer(): { running: boolean } {
   if (ideMcpServer) {
     ideMcpServer.close();
     ideMcpServer = null;
   }
   return { running: false };
+}
+
+// ── Licensing helpers ──────────────────────────────────────────────────────
+// The raw license key lives on settings_json.license_key. These two helpers
+// give every module-level function (LAN server, autostart) read access without
+// pulling the inline closures from registerIpcHandlers. Cached entitlements
+// in ../license/verify keep this hot path effectively free.
+function getRawLicenseKey(): string | null {
+  try {
+    const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+    const k = (JSON.parse(row?.settings_json ?? '{}') as { license_key?: string }).license_key;
+    return typeof k === 'string' && k ? k : null;
+  } catch { return null; }
+}
+
+function currentEntitlements(): Entitlements {
+  return getEntitlements(getRawLicenseKey);
 }
 
 // ── LAN API-key auth helper ─────────────────────────────────────────────────
@@ -102,24 +161,39 @@ function hashApiKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
-function isLanRequestAuthorised(req: http.IncomingMessage): boolean {
+/** Caller identity resolved from a Bearer token. memberId is null for keys
+ *  issued before team-mode (no team_members linkage); role defaults to 'admin'
+ *  on the no-keys-registered open-access path so future admin-only routes
+ *  remain reachable on a fresh box. */
+export type LanIdentity = { memberId: string | null; memberName: string | null; role: 'admin' | 'member' };
+
+function authoriseLanRequest(req: http.IncomingMessage): LanIdentity | null {
   try {
     const db = getDb();
-    const keys = db.prepare(`SELECT key_hash FROM api_keys WHERE is_enabled=1`).all() as { key_hash: string }[];
-    // No keys registered → open access (owner hasn't locked down the server yet)
-    if (keys.length === 0) return true;
+    const keys = db.prepare(
+      `SELECT key_hash, member_id, role FROM api_keys WHERE is_enabled=1`,
+    ).all() as { key_hash: string; member_id: string | null; role: string | null }[];
+    // No keys registered → open access (owner hasn't locked down yet). Phase 2
+    // SSO will tighten this; for now it preserves the existing dev-friendly
+    // behaviour where you can curl /chat immediately after starting the server.
+    if (keys.length === 0) return { memberId: null, memberName: null, role: 'admin' };
     const auth = (req.headers['authorization'] ?? '') as string;
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (!token) return false;
+    if (!token) return null;
     const hash = hashApiKey(token);
-    const matched = keys.some(k => k.key_hash === hash);
-    if (matched) {
-      // Best-effort last-used timestamp update
-      try { db.prepare(`UPDATE api_keys SET last_used_at=unixepoch() WHERE key_hash=?`).run(hash); } catch { /* ignore */ }
+    const matched = keys.find(k => k.key_hash === hash);
+    if (!matched) return null;
+    // Best-effort last-used timestamp update.
+    try { db.prepare(`UPDATE api_keys SET last_used_at=unixepoch() WHERE key_hash=?`).run(hash); } catch { /* ignore */ }
+    let memberName: string | null = null;
+    if (matched.member_id) {
+      const m = db.prepare(`SELECT display_name FROM team_members WHERE member_id=?`).get(matched.member_id) as { display_name: string } | undefined;
+      memberName = m?.display_name ?? null;
     }
-    return matched;
+    const role: 'admin' | 'member' = matched.role === 'admin' ? 'admin' : 'member';
+    return { memberId: matched.member_id, memberName, role };
   } catch {
-    return false; // fail closed
+    return null; // fail closed
   }
 }
 
@@ -132,6 +206,10 @@ const LAN_PORT = 7842;
 let lanServer: http.Server | null = null;
 let lanLocalIp: string | null = null;
 
+/**
+ * Return the first non-internal IPv4 address (the machine's LAN IP).
+ * Returns null when no external interface is found (e.g. VMs with no adapters).
+ */
 function detectLocalIp(): string | null {
   const ifaces = os.networkInterfaces();
   for (const name of Object.keys(ifaces)) {
@@ -142,6 +220,7 @@ function detectLocalIp(): string | null {
   return null;
 }
 
+/** Snapshot of the LAN server's current state — used by all lan:* IPC handlers. */
 function lanStatus(): { running: boolean; url: string | null; localIp: string | null } {
   const running = !!lanServer;
   return {
@@ -151,8 +230,30 @@ function lanStatus(): { running: boolean; url: string | null; localIp: string | 
   };
 }
 
-function startLanServer(): { running: boolean; url: string | null; localIp: string | null } {
+/**
+ * Bind the LAN collaboration server on 0.0.0.0:7842. Idempotent — returns
+ * the current status without restarting if already listening.
+ *
+ * Route summary:
+ *   GET  /health — always public; used by monitoring / uptime tools
+ *   GET  /       — server manifest (name, version, skill slugs)
+ *   GET  /skills — full list of enabled skill objects
+ *   POST /chat   — forward a message to the orchestrator; streams NDJSON reply
+ */
+function startLanServer(): { running: boolean; url: string | null; localIp: string | null; error?: string } {
   if (lanServer) return lanStatus();
+  // Gate: Free tier may NOT bind the LAN port. This is the central Free→Pro
+  // monetisation wall; the persona-onboarding flow paints a clear upgrade CTA
+  // when this error string surfaces in the UI.
+  const ents = currentEntitlements();
+  if (!ents.lanServer) {
+    return {
+      running: false,
+      url: null,
+      localIp: null,
+      error: 'The LAN/team server requires a Pro or Enterprise license. Apply a license in Settings → License.',
+    };
+  }
   lanLocalIp = detectLocalIp();
 
   const server = http.createServer((req, res) => {
@@ -170,8 +271,12 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
       return;
     }
 
-    // All other routes require a valid Bearer token if any keys exist
-    if (!isLanRequestAuthorised(req)) {
+    // All other routes require a valid Bearer token if any keys exist. The
+    // resolved identity is captured for future per-member context; admin-only
+    // routes (none yet in Phase 1) will require `role === 'admin'` when
+    // currentEntitlements().rbac is true.
+    const identity = authoriseLanRequest(req);
+    if (!identity) {
       json(401, { error: 'Unauthorized. Include a valid Bearer token in the Authorization header.' });
       return;
     }
@@ -203,10 +308,14 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
           }
 
           res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
+          // Snapshot the max rowid before the run so we can retrieve only the
+          // new agent messages afterwards (the orchestrator streams to the
+          // desktop UI but writes final messages to the DB synchronously).
           const before = (db.prepare(`SELECT COALESCE(MAX(rowid), 0) AS m FROM messages WHERE session_id=?`).get(sid) as { m: number }).m;
 
           await orchestrator.handleMessage(sid, parsed.message, []);
 
+          // Replay all agent replies written during this run as NDJSON lines.
           const rows = db.prepare(
             `SELECT content FROM messages WHERE session_id=? AND sender_type='agent' AND rowid > ? ORDER BY rowid ASC`
           ).all(sid, before) as { content: string }[];
@@ -237,6 +346,7 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
   return lanStatus();
 }
 
+/** Close the LAN server gracefully. Returns the updated status. */
 function stopLanServer(): { running: boolean; url: string | null; localIp: string | null } {
   if (lanServer) {
     lanServer.close();
@@ -245,6 +355,16 @@ function stopLanServer(): { running: boolean; url: string | null; localIp: strin
   return lanStatus();
 }
 
+/**
+ * Register every `ipcMain.handle` channel and perform one-time startup work:
+ *   - Instantiate the AgentOrchestrator bound to `window`.
+ *   - Load enabled MCP servers from the DB.
+ *   - Start the IDE MCP HTTP bridge.
+ *   - Auto-start the LAN server if the user opted in.
+ *   - Back-fill legacy "New Chat" session titles.
+ *
+ * Must be called exactly once, after the BrowserWindow is created.
+ */
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
 
@@ -255,10 +375,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // pointing at localhost:3847/mcp) have a live server to reach immediately.
   startIdeMcpServer();
 
-  // Auto-start the LAN collaboration server if the user opted in.
+  // Auto-start the LAN collaboration server if the user opted in AND their
+  // license unlocks it. A Free user who flipped autostart on then downgraded
+  // will silently no-op here instead of crashing or binding the port.
   try {
-    const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
-    if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) startLanServer();
+    if (currentEntitlements().lanServer) {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+      if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) startLanServer();
+    }
   } catch (err) {
     console.warn('[Artha] LAN autostart check failed:', err);
   }
@@ -404,6 +528,75 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     orchestrator.clarifyRespond(workflowId, answers);
   });
 
+  // ── Projects ───────────────────────────────────────────────────────────
+  // Projects are user-visible containers around a folder: a root path + an
+  // auto-built RAG index + a rolling cross-session memory summary. The data
+  // model has existed since v3→v6 migrations; these handlers surface it to
+  // the renderer for the project switcher, list, and `@project` references.
+
+  /** List every project, newest first. Drives the switcher dropdown and the
+   *  sidebar Projects section. */
+  ipcMain.handle('projects:list', () => {
+    return getDb().prepare(
+      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+       FROM projects ORDER BY created_at DESC`
+    ).all();
+  });
+
+  /** Single project lookup — used by the project home view + `@project`
+   *  resolution. Returns null if the id is unknown. */
+  ipcMain.handle('projects:get', (_e, projectId: string) => {
+    return getDb().prepare(
+      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+       FROM projects WHERE project_id=?`
+    ).get(projectId) ?? null;
+  });
+
+  /** Shallow, depth-2 directory tree for a folder. Drives the Code tab's
+   *  file pane without exposing arbitrary fs access — caller must already
+   *  know the path (typically the active project's root). Returns '' on
+   *  empty/unreadable paths so the caller can render an empty-state. */
+  ipcMain.handle('fs:tree', (_e, rootPath: string, maxEntries?: number) => {
+    return buildShallowTree(rootPath, { maxEntries: maxEntries ?? 80, maxDepth: 2 });
+  });
+
+  /** Reveal a path in Finder / Explorer / nautilus. Used by the Project
+   *  home page. No-op on invalid paths. */
+  ipcMain.handle('system:revealInFolder', (_e, p: string) => {
+    if (!p) return;
+    try { shell.showItemInFolder(p); } catch { /* ignore — path missing */ }
+  });
+
+  /** Sessions belonging to one project (or `null` for general/no-project).
+   *  Drives the Project home page's "Recent chats" list. Same shape as
+   *  `sessions:list` for a drop-in render. */
+  ipcMain.handle('sessions:listByProject', (_e, projectId: string | null) => {
+    const db = getDb();
+    if (projectId === null || projectId === undefined) {
+      return db.prepare(`SELECT * FROM chat_sessions WHERE project_id IS NULL ORDER BY last_activity DESC`).all();
+    }
+    return db.prepare(`SELECT * FROM chat_sessions WHERE project_id=? ORDER BY last_activity DESC`).all(projectId);
+  });
+
+  /** Create a project from a folder pick. Delegates to the same
+   *  `findOrCreateFolderWorkspace()` used when a chat attaches a folder, so
+   *  one project per folder is preserved and a RAG index is auto-built. */
+  ipcMain.handle('projects:create', async () => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (!win) return null;
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Pick a folder for the new project',
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths.length) return null;
+    const rootPath = res.filePaths[0];
+    const { projectId } = findOrCreateFolderWorkspace(rootPath);
+    return getDb().prepare(
+      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+       FROM projects WHERE project_id=?`
+    ).get(projectId) ?? null;
+  });
+
   // ── Sessions ───────────────────────────────────────────────────────────
   ipcMain.handle('sessions:list', () => {
     return getDb().prepare(`SELECT * FROM chat_sessions ORDER BY last_activity DESC`).all();
@@ -447,8 +640,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // `projects` (deduped by absolute path) so it carries an auto-built RAG index
   // + cross-session memory shared across any chat that opens the same folder.
 
-  /** Find the folder workspace for `rootPath`, or create one (with a RAG index
-   *  built in the background). Returns the workspace's project_id + rag_index_id. */
+  /**
+   * Find the existing `projects` row for `rootPath`, or insert one together
+   * with a new `rag_indexes` row.  The RAG index is built in the background
+   * so the folder picker returns immediately.
+   *
+   * Deduplication is by exact `root_path` — two chats that open the same
+   * folder reuse the same project + index, sharing context and memory.
+   */
   function findOrCreateFolderWorkspace(rootPath: string): { projectId: string; ragIndexId: string } {
     const db = getDb();
     const existing = db.prepare(`SELECT project_id, rag_index_id FROM projects WHERE root_path=? ORDER BY created_at ASC LIMIT 1`)
@@ -477,6 +676,27 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('scopes:list', (_e, sessionId: string) => {
     return getDb().prepare(`SELECT * FROM session_scopes WHERE session_id=? ORDER BY added_at ASC, rowid ASC`).all(sessionId);
+  });
+
+  /** Programmatic sibling of `scopes:addFolder` — no dialog, takes an absolute
+   *  path. Used to auto-attach the active project's root folder to a fresh
+   *  session so chats inside a project default to that project's sandbox. */
+  ipcMain.handle('scopes:addFolderPath', (_e, sessionId: string, rootPath: string) => {
+    if (!sessionId || !rootPath) return null;
+    const db = getDb();
+    const { ragIndexId } = findOrCreateFolderWorkspace(rootPath);
+    const scopeId = crypto.randomUUID();
+    try {
+      db.prepare(`INSERT INTO session_scopes (scope_id, session_id, path, kind, rag_index_id) VALUES (?,?,?,?,?)`)
+        .run(scopeId, sessionId, rootPath, 'folder', ragIndexId);
+    } catch {
+      // UNIQUE(session_id, path) violation — already attached. Idempotent
+      // return so the caller can treat both "added" and "already there"
+      // identically.
+      return db.prepare(`SELECT * FROM session_scopes WHERE session_id=? AND path=?`).get(sessionId, rootPath);
+    }
+    recomputePrimaryProject(sessionId);
+    return db.prepare(`SELECT * FROM session_scopes WHERE scope_id=?`).get(scopeId);
   });
 
   ipcMain.handle('scopes:addFolder', async (_e, sessionId: string) => {
@@ -737,6 +957,8 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return { model_id: id };
   });
 
+  // Clamp to [512, 128 000] so a user typo can't break the model call (most
+  // Ollama models top out at 128 K; 512 is the practical floor for any reply).
   ipcMain.handle('llm:setContextWindow', (_e, modelId: string, tokens: number) => {
     const clamped = Math.max(512, Math.min(128_000, Math.round(tokens)));
     getDb().prepare(`UPDATE llm_models SET context_window=? WHERE model_id=?`).run(clamped, modelId);
@@ -908,6 +1130,45 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const db = getDb();
     const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
     db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify({ ...existing, ...patch }));
+  });
+
+  // ── License ────────────────────────────────────────────────────────────
+  // Offline Ed25519-signed keys gate Pro/Enterprise capabilities. The raw key
+  // is stored on settings_json.license_key; verification is local-only (see
+  // ../license/verify). The renderer never receives the raw key back after
+  // apply — only the derived entitlements + organisation + expiry.
+  ipcMain.handle('license:get', () => {
+    const ents = currentEntitlements();
+    return {
+      entitlements: ents,
+      hasKey: !!getRawLicenseKey(),
+    };
+  });
+
+  ipcMain.handle('license:apply', (_e, rawKey: string) => {
+    const trimmed = (rawKey ?? '').trim();
+    if (!trimmed) {
+      return { ok: false, error: 'License key is empty.' };
+    }
+    const payload = parseAndVerify(trimmed);
+    if (!payload) {
+      return { ok: false, error: 'Invalid or expired license key. Check that you pasted the full line.' };
+    }
+    const db = getDb();
+    const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
+    db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`)
+      .run(JSON.stringify({ ...existing, license_key: trimmed }));
+    invalidateEntitlements();
+    return { ok: true, entitlements: currentEntitlements() };
+  });
+
+  ipcMain.handle('license:clear', () => {
+    const db = getDb();
+    const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
+    delete existing.license_key;
+    db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify(existing));
+    invalidateEntitlements();
+    return { ok: true, entitlements: FREE_ENTITLEMENTS };
   });
 
   // ── Bundles ─────────────────────────────────────────────────────────────
@@ -1240,6 +1501,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       authUrl.searchParams.set('code_challenge_method', 'S256');
       authUrl.searchParams.set('state', state);
 
+      // Spin up a local HTTP server on OAUTH_PORT (9742) to receive the redirect
+      // from Google, then open a modal popup for the user to log in.  `settled`
+      // guards against the server, popup-close, and timeout all racing to call
+      // resolve().  The server closes itself as soon as it receives one callback.
       return await new Promise<{ success: boolean; error?: string }>((resolve) => {
         let settled = false;
         let popup: BrowserWindow | null = new BrowserWindow({
@@ -1293,6 +1558,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
         server.on('error', (e) => finish({ success: false, error: e.message }));
         server.listen(OAUTH_PORT, '127.0.0.1', () => { popup?.loadURL(authUrl.toString()); });
         popup.on('closed', () => finish({ success: false, error: 'Window closed before authorization completed.' }));
+        // 3-minute hard timeout — enough for any human to complete the login
+        // flow, but prevents the promise from hanging indefinitely if something
+        // goes wrong after the user walks away.
         setTimeout(() => finish({ success: false, error: 'OAuth timed out.' }), 180_000);
       });
     } catch (err) {
@@ -1432,6 +1700,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('team:addMember', (_e, m: { displayName: string; email?: string; role?: 'admin' | 'member' }) => {
     const db = getDb();
+    // Seat enforcement: the license-encoded seat count caps the team roster.
+    // Pro/Enterprise customers can lift this by re-issuing a key with a higher
+    // `seats`; Free customers stay at 1.
+    const ents = currentEntitlements();
+    const count = (db.prepare(`SELECT COUNT(*) AS n FROM team_members`).get() as { n: number }).n;
+    if (count >= ents.seats) {
+      throw new Error(`Seat limit reached (${count}/${ents.seats}). Upgrade your license to add more members.`);
+    }
     const id = crypto.randomUUID();
     db.prepare(
       `INSERT INTO team_members (member_id, display_name, email, role) VALUES (?, ?, ?, ?)`
@@ -1462,15 +1738,33 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     ).all();
   });
 
-  ipcMain.handle('apikeys:create', (_e, name: string): { key_id: string; plaintext: string } => {
+  // Accepts either the legacy string-only form (`apikeys:create("My key")`) or
+  // the new object form that binds the key to a teammate
+  // (`apikeys:create({ name, memberId })`). The bound member's role is cached
+  // on the row so LAN auth can resolve identity without a join.
+  ipcMain.handle('apikeys:create', (_e, args: string | { name: string; memberId?: string }): { key_id: string; plaintext: string } => {
+    const name = (typeof args === 'string' ? args : args?.name) ?? 'API Key';
+    const memberId = typeof args === 'object' && args ? (args.memberId ?? null) : null;
     const db = getDb();
+    // Seat enforcement: a "seat" = one enabled API key.
+    const ents = currentEntitlements();
+    const enabledCount = (db.prepare(`SELECT COUNT(*) AS n FROM api_keys WHERE is_enabled=1`).get() as { n: number }).n;
+    if (enabledCount >= ents.seats) {
+      throw new Error(`Seat limit reached (${enabledCount}/${ents.seats}). Upgrade your license to issue more keys.`);
+    }
+    let role: 'admin' | 'member' = 'member';
+    if (memberId) {
+      const m = db.prepare(`SELECT role FROM team_members WHERE member_id=?`).get(memberId) as { role: string } | undefined;
+      if (!m) throw new Error(`Unknown member_id "${memberId}".`);
+      role = m.role === 'admin' ? 'admin' : 'member';
+    }
     const { randomBytes } = require('crypto') as typeof import('crypto');
     const plaintext = randomBytes(32).toString('base64url'); // 43-char URL-safe token
     const keyHash = hashApiKey(plaintext);
     const id = crypto.randomUUID();
     db.prepare(
-      `INSERT INTO api_keys (key_id, name, key_hash) VALUES (?, ?, ?)`
-    ).run(id, name.trim() || 'API Key', keyHash);
+      `INSERT INTO api_keys (key_id, name, key_hash, member_id, role) VALUES (?, ?, ?, ?, ?)`,
+    ).run(id, name.trim() || 'API Key', keyHash, memberId, role);
     return { key_id: id, plaintext };
   });
 

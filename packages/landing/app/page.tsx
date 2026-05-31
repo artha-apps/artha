@@ -1,3 +1,13 @@
+/**
+ * Home page for the Artha marketing site.
+ *
+ * Renders a single long-scroll page composed of six sections:
+ *   Hero → How it works → Features grid → Privacy callout → Download CTA → Footer
+ *
+ * The component is a Client Component so it can fetch the latest GitHub release
+ * URL on mount and pass it down to NavBar and DownloadButton — keeping those
+ * components pointing at the real latest release rather than a hardcoded tag.
+ */
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -5,9 +15,12 @@ import DownloadButton from '../components/DownloadButton';
 import FeatureCard from '../components/FeatureCard';
 import NavBar from '../components/NavBar';
 
+// Centralised so that every GitHub link on the page stays in sync.
 const GITHUB_OWNER = 'Noopurtrivedi';
 const GITHUB_REPO = 'artha';
 
+// Static feature definitions — rendered in the Features grid section.
+// Keep this list ordered by perceived importance; the grid is 4-up on desktop.
 const FEATURES = [
   {
     icon: '🔒',
@@ -59,24 +72,31 @@ const FEATURES = [
   },
 ];
 
+// Three-step onboarding copy used in the "How it works" section.
 const STEPS = [
   { n: '1', title: 'Download & install', body: 'One DMG / EXE / DEB — no dependencies. Double-click and Artha is running.' },
   { n: '2', title: 'Add an API key or Ollama', body: 'Paste an OpenAI-compatible API key, or point at local Ollama. Switch models any time.' },
   { n: '3', title: 'Give it a task', body: 'Type (or speak) a goal. The agent plans, asks clarifying questions if needed, and executes.' },
 ];
 
+/** The single page of the Artha marketing site. */
 export default function Home() {
+  // Default to the generic /releases/latest URL so every link works even before
+  // the API response arrives (avoids a flash of broken hrefs on slow connections).
   const [releaseUrl, setReleaseUrl] = useState<string>(
     `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`
   );
 
-  // Fetch latest release tag so the version badge is accurate
+  // Fetch latest release tag so the version badge is accurate.
+  // The GitHub API returns the concrete release page URL in html_url, which is
+  // more specific than the generic /releases/latest redirect.
   useEffect(() => {
     fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`)
       .then((r) => r.json())
       .then((data) => {
         if (data?.html_url) setReleaseUrl(data.html_url);
       })
+      // Silently swallow network errors — the default URL is still valid.
       .catch(() => {});
   }, []);
 
@@ -122,7 +142,7 @@ export default function Home() {
             </a>
           </div>
 
-          {/* Platform badges */}
+          {/* Platform badges — purely decorative, reassure visitors their OS is supported */}
           <div className="mt-8 flex items-center justify-center gap-6 text-sm text-gray-500">
             <span className="flex items-center gap-1.5">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">

@@ -37,11 +37,16 @@ function formatDate(ts: number) {
   return new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** Artifact browser — lists files written to the `artifacts` table, lets the
+ *  user open them with the OS default app or remove the record from the list. */
 export default function ArtifactsPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [loading, setLoading] = useState(true);
+  // `deleting` holds the artifact_id whose delete button is in-flight.
   const [deleting, setDeleting] = useState<string | null>(null);
 
+  // ── Effects ────────────────────────────────────────────────────────────────
   const load = async () => {
     setLoading(true);
     try {
@@ -54,10 +59,15 @@ export default function ArtifactsPanel() {
 
   useEffect(() => { load(); }, []);
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  /** Ask the OS to open the file with its default application (e.g. Word for .docx). */
   const open = async (filePath: string) => {
     await window.artha.artifacts.open(filePath);
   };
 
+  /** Remove the artifact record from the DB (and the file from disk) and update
+   *  the local list optimistically to avoid a full reload. */
   const remove = async (artifactId: string) => {
     setDeleting(artifactId);
     await window.artha.artifacts.delete(artifactId);
@@ -72,7 +82,7 @@ export default function ArtifactsPanel() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h2 className="text-lg font-semibold text-white">Generated Artifacts</h2>
+            <h2 className="text-lg font-semibold text-artha-text">Generated Artifacts</h2>
             <p className="text-sm text-artha-muted mt-0.5">
               Files Artha has created for you — click to open, or delete to remove from the list.
             </p>
@@ -80,7 +90,7 @@ export default function ArtifactsPanel() {
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-artha-muted hover:text-white hover:bg-white/5 border border-artha-border transition-colors disabled:opacity-40"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5 border border-artha-border transition-colors disabled:opacity-40"
           >
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             Refresh
@@ -105,7 +115,7 @@ export default function ArtifactsPanel() {
               <div className="shrink-0">{fileIcon(a.file_type)}</div>
 
               <div className="flex-1 min-w-0">
-                <p className="text-sm text-white truncate">{a.name}</p>
+                <p className="text-sm text-artha-text truncate">{a.name}</p>
                 <p className="text-xs text-artha-muted truncate mt-0.5">
                   {a.file_type.toUpperCase()}{a.size_bytes ? ` · ${formatBytes(a.size_bytes)}` : ''} · {formatDate(a.created_at)}
                 </p>
