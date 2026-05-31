@@ -26,6 +26,7 @@ import WorkflowsTab from './components/Workflows/WorkflowsTab';
 import CodeTab from './components/Code/CodeTab';
 import ProjectHome from './components/ProjectHome/ProjectHome';
 import WorkspaceSettings from './components/WorkspaceSettings/WorkspaceSettings';
+import Guide from './components/Guide/Guide';
 import { TooltipProvider } from './components/ui/Tooltip';
 
 // Expose the type-safe ArthaAPI that the preload script injects onto `window`.
@@ -48,7 +49,7 @@ export default function App() {
     setPendingPlan, setPendingClarify, setSessions, sessions,
     setStreaming, setActiveWorkflowId, setActiveSkill,
     activeTab, setProjects, openWorkspaceSettings, closeWorkspaceSettings,
-    workspaceSettingsOpen, activeProjectId, activeSessionId, setActiveSession,
+    workspaceSettingsOpen, activeProjectId, activeSessionId, setActiveSession, openGuide,
   } = useChatStore();
   // Project home shows when the user has picked a project but isn't in a
   // specific chat yet — surfaces the rolling summary, RAG status, and
@@ -64,6 +65,15 @@ export default function App() {
   // newer GitHub release. Notification-only; the button opens the download page.
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   useEffect(() => window.artha.updates.onAvailable(({ version }) => setUpdateVersion(version)), []);
+
+  // Show the "How to use Artha" guide once, right after onboarding completes,
+  // for first-time users. Reopenable anytime from the Help (?) button.
+  useEffect(() => {
+    if (showOnboarding !== false) return;
+    if (localStorage.getItem('artha_guide_seen')) return;
+    localStorage.setItem('artha_guide_seen', '1');
+    openGuide();
+  }, [showOnboarding, openGuide]);
 
   useEffect(() => {
     window.artha.settings.get().then((s: { onboardingComplete?: boolean }) => {
@@ -194,6 +204,7 @@ export default function App() {
 
         {/* Modal layer — sits above the canvas regardless of tab. */}
         <WorkspaceSettings />
+        <Guide />
         <PlanApproval />
         <ClarificationModal />
 

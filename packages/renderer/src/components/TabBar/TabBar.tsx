@@ -8,7 +8,7 @@
  * story is a feature — it should always be visible).
  */
 import { useEffect, useState } from 'react';
-import { MessageSquare, Workflow, Code2, Lock, Cpu } from 'lucide-react';
+import { MessageSquare, Workflow, Code2, Lock, Cpu, HelpCircle } from 'lucide-react';
 import { useChatStore, type ActiveTab, type Project } from '../../stores/chat';
 import { Tooltip } from '../ui/Tooltip';
 
@@ -28,7 +28,7 @@ const TABS: TabDef[] = [
 
 /** Single row of tabs + the always-visible scope badge. */
 export default function TabBar() {
-  const { activeTab, setActiveTab, projects, activeProjectId, openWorkspaceSettings, workspaceSettingsOpen } = useChatStore();
+  const { activeTab, setActiveTab, projects, activeProjectId, openWorkspaceSettings, workspaceSettingsOpen, openGuide } = useChatStore();
   const activeProject = projects.find((p: Project) => p.project_id === activeProjectId) ?? null;
 
   // Active model chip — so the user can always see which model is selected,
@@ -63,8 +63,19 @@ export default function TabBar() {
         })}
       </div>
 
-      {/* ── Right rail: active model + scope badge ─────────────────────── */}
+      {/* ── Right rail: help + active model + scope badge ──────────────── */}
       <div className="flex items-center gap-2">
+        {/* Help — opens the "How to use Artha" feature guide. */}
+        <Tooltip content="How to use Artha" side="bottom" sideOffset={6}>
+          <button
+            onClick={openGuide}
+            className="flex items-center justify-center w-7 h-7 rounded-md border border-artha-border text-artha-muted hover:text-artha-text hover:border-artha-accent transition-colors"
+            aria-label="How to use Artha"
+          >
+            <HelpCircle size={13} />
+          </button>
+        </Tooltip>
+
         {/* Active model chip — click to change in Settings → Models. Lets the
             user confirm which model is actually selected without digging. */}
         <Tooltip
