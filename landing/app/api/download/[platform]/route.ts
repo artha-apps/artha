@@ -72,9 +72,11 @@ export async function GET(
     Accept: 'application/vnd.github+json',
     ...(auth && token ? { Authorization: `Bearer ${token}` } : {}),
   });
-  let releaseRes = await fetch(url, { headers: hdrs(true), next: { revalidate: 60 } });
+  // no-store: skip Next's durable Data Cache (it wedged stale); the redirect's
+  // own short CDN cache is enough.
+  let releaseRes = await fetch(url, { headers: hdrs(true), cache: 'no-store' });
   if ((releaseRes.status === 401 || releaseRes.status === 403) && token) {
-    releaseRes = await fetch(url, { headers: hdrs(false), next: { revalidate: 60 } });
+    releaseRes = await fetch(url, { headers: hdrs(false), cache: 'no-store' });
   }
   if (!releaseRes.ok) {
     return new Response('Release lookup failed', { status: 502 });
