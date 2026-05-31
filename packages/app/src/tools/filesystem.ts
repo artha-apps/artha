@@ -128,7 +128,7 @@ export const FILESYSTEM_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'fs_move_file',
-      description: 'Move or rename a file or folder. Use this to organise files into folders.',
+      description: 'Move or rename a SINGLE file or folder. To move many files at once (e.g. organising a folder), use fs_move_batch instead — it is far faster.',
       parameters: {
         type: 'object',
         properties: {
@@ -142,6 +142,31 @@ export const FILESYSTEM_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['source', 'destination'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fs_move_batch',
+      description: 'Move MANY files/folders in ONE call. ALWAYS prefer this over repeated fs_move_file when organising or reorganising a folder — it does every move in a single step instead of one slow round-trip per file. Destination directories are created automatically.',
+      parameters: {
+        type: 'object',
+        properties: {
+          moves: {
+            type: 'array',
+            description: 'List of { source, destination } pairs, each an absolute path. Include the filename at the end of each destination.',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string', description: 'Absolute path of the file/folder to move' },
+                destination: { type: 'string', description: 'Absolute destination path (include filename at the end)' },
+              },
+              required: ['source', 'destination'],
+            },
+          },
+        },
+        required: ['moves'],
       },
     },
   },
@@ -300,6 +325,35 @@ async function moveFileImpl(source: string, destination: string, roots?: ScopeRo
   return JSON.stringify({ moved: src, to: dst, success: true });
 }
 
+/** Move many files in one shot. Each move is independent: a failure on one
+ *  (bad path, missing source) is recorded and the rest still proceed, so a
+ *  single typo doesn't abort an entire folder reorganisation. */
+async function moveBatchImpl(
+  moves: Array<{ source?: string; src?: string; destination?: string; dst?: string; dest?: string }>,
+  roots?: ScopeRoot[] | null,
+): Promise<string> {
+  if (!Array.isArray(moves) || moves.length === 0) {
+    return JSON.stringify({ error: 'fs_move_batch requires a non-empty "moves" array of { source, destination } pairs.' });
+  }
+  const results: Array<{ source: string; to?: string; ok: boolean; error?: string }> = [];
+  let moved = 0;
+  for (const m of moves) {
+    const source = (m.source ?? m.src) as string;
+    const destination = (m.destination ?? m.dst ?? m.dest) as string;
+    try {
+      const src = safePath(expandTilde(source), roots);
+      const dst = safePath(expandTilde(destination), roots);
+      await fsp.mkdir(path.dirname(dst), { recursive: true });
+      await fsp.rename(src, dst);
+      results.push({ source: src, to: dst, ok: true });
+      moved++;
+    } catch (err) {
+      results.push({ source: String(source), ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return JSON.stringify({ success: moved > 0, moved, failed: moves.length - moved, results });
+}
+
 async function copyFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null): Promise<string> {
   const src = safePath(expandTilde(source), roots);
   const dst = safePath(expandTilde(destination), roots);
@@ -377,6 +431,11 @@ export async function invokeFilesystemTool(
       return moveFileImpl(
         (args.source ?? args.src) as string,
         (args.destination ?? args.dst ?? args.dest) as string,
+        allowedRoots
+      );
+    case 'fs_move_batch':
+      return moveBatchImpl(
+        (args.moves ?? []) as Array<{ source?: string; destination?: string }>,
         allowedRoots
       );
     case 'fs_copy_file':
