@@ -116,6 +116,11 @@
 | `public/logo-wordmark.png`, `logo-wordmark-72.png`, `logo-full.png` | ARTHA wordmark / full lockup |
 | `public/favicon-16.png`, `favicon-32.png`, `favicon-256.png`, `apple-touch-icon.png` | PNG favicons + Apple touch icon |
 | `public/og-image.png` | Open Graph / Twitter card image |
+| `app/api/stripe/checkout/route.ts` | (live `landing/`) POST — creates a Stripe Checkout session for the one-time Pro purchase, returns the session URL |
+| `app/api/stripe/webhook/route.ts` | (live `landing/`) POST — verifies Stripe signature on `checkout.session.completed`, generates a signed Pro license key, emails it via Resend |
+| `app/api/stripe/price/route.ts` | (live `landing/`) GET — returns the authoritative Pro price (and test/live mode) from the Stripe Price so the pricing card never hardcodes an amount |
+| `app/success/page.tsx` | (live `landing/`) post-checkout thank-you page with license-key delivery instructions |
+| `lib/license-gen.ts` | (live `landing/`) server-side Ed25519 license-key signer (uses `ARTHA_LICENSE_PRIVATE_KEY`); matches the app's `packages/app/src/license/verify.ts` |
 
 ---
 
