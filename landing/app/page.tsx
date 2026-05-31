@@ -208,7 +208,10 @@ export default function Page() {
       <main>
         <section className="hero">
           <div className="container">
-            <div className="eyebrow">Local-first · Privacy by design · v0.1.1</div>
+            <div className="eyebrow">
+              Local-first · Privacy by design
+              {release?.tag_name ? ` · ${release.tag_name.toUpperCase()}` : ''}
+            </div>
             <h1>
               Serious work. <span className="accent">Fully local.</span>
             </h1>
