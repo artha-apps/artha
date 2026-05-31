@@ -10,16 +10,25 @@
 import { useEffect, useState } from 'react';
 import { Bell, BellOff } from 'lucide-react';
 
+/**
+ * Loose shape of the settings blob — the index signature lets the same `toggle`
+ * helper handle future boolean keys without a per-key type narrowing.
+ */
 interface AppSettings {
   notifications_enabled?: boolean;
   [key: string]: unknown;
 }
 
+/** General preferences panel — loads on mount, persists each change immediately. */
 export default function SettingsPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [settings, setSettings] = useState<AppSettings>({});
   const [loading, setLoading] = useState(true);
+  // Disables the toggle while a write is in flight to prevent double-tap races.
   const [saving, setSaving] = useState(false);
 
+  // ── Effects ────────────────────────────────────────────────────────────────
+  // Fetch the full settings blob once on mount via the `settings:get` IPC channel.
   useEffect(() => {
     window.artha.settings.get().then((s: AppSettings) => {
       setSettings(s);
@@ -27,6 +36,9 @@ export default function SettingsPanel() {
     });
   }, []);
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  /** Write a single boolean key to settings_json and mirror it into local state. */
   const toggle = async (key: keyof AppSettings, value: boolean) => {
     setSaving(true);
     const patch = { [key]: value };
@@ -35,13 +47,14 @@ export default function SettingsPanel() {
     setSaving(false);
   };
 
+  // Treat absence of the key as "on" — notifications are opt-out, not opt-in.
   const notificationsOn = settings.notifications_enabled !== false;
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-xl mx-auto">
         <div className="mb-6">
-          <h2 className="text-lg font-semibold text-white">Settings</h2>
+          <h2 className="text-lg font-semibold text-artha-text">Settings</h2>
           <p className="text-sm text-artha-muted mt-0.5">General application preferences.</p>
         </div>
 
@@ -57,7 +70,7 @@ export default function SettingsPanel() {
                   ? <Bell size={16} className="text-artha-accent shrink-0" />
                   : <BellOff size={16} className="text-artha-muted shrink-0" />}
                 <div>
-                  <p className="text-sm text-white">Native notifications</p>
+                  <p className="text-sm text-artha-text">Native notifications</p>
                   <p className="text-xs text-artha-muted mt-0.5">
                     Show an OS alert when a long task or scheduled job completes.
                   </p>

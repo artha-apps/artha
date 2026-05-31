@@ -213,6 +213,9 @@ function makeAnchor(): string {
   return 'a' + crypto.randomBytes(8).toString('hex');
 }
 
+/** Look up the currently-active LLM's ollama_name from SQLite so it can be
+ *  stored in the receipt. Returns 'unknown' on any DB error to keep the rest
+ *  of the generation pipeline from failing over a cosmetic metadata field. */
 async function getActiveModelName(): Promise<string> {
   try {
     const row = getDb().prepare(`SELECT ollama_name FROM llm_models WHERE is_active=1 LIMIT 1`).get() as { ollama_name: string } | undefined;

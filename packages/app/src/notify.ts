@@ -42,7 +42,8 @@ export function sendNotification(
   const n = new Notification({
     title,
     body,
-    // Use the app icon so the notification looks native on macOS.
+    // TODO: supply the app icon path once asset bundling is confirmed;
+    // both branches are undefined for now so the OS picks the default.
     icon: app.isPackaged ? undefined : undefined,
     silent: false,
   });

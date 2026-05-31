@@ -56,6 +56,10 @@ async function ensureResolver(wc: WebContents): Promise<void> {
 
 // ── waitForSelector ──────────────────────────────────────────────────────────
 
+/** Poll until `selector` is present in the page DOM, then return. Throws a
+ *  timeout error if the element never appears. Polling runs in the main
+ *  process rather than injecting a long-lived Promise into the page, which
+ *  keeps cleanup simple if the page navigates while we're waiting. */
 export async function waitForSelector(wc: WebContents, selector: string, timeoutMs = DEFAULT_WAIT_MS): Promise<void> {
   await ensureResolver(wc);
   const deadline = Date.now() + timeoutMs;
@@ -75,6 +79,9 @@ export async function waitForSelector(wc: WebContents, selector: string, timeout
 
 // ── navigate ─────────────────────────────────────────────────────────────────
 
+/** Load `url` and wait for `did-finish-load`. Bare hostnames are prefixed with
+ *  `https://`. Returns the resolved URL + page title after the load completes,
+ *  or throws on navigation failure or timeout. */
 export async function navigate(wc: WebContents, url: string, timeoutMs = 30_000): Promise<{ url: string; title: string }> {
   if (!/^https?:\/\//i.test(url) && !url.startsWith('about:')) {
     url = `https://${url}`;
@@ -103,6 +110,9 @@ export async function navigate(wc: WebContents, url: string, timeoutMs = 30_000)
 
 // ── click / type / read ──────────────────────────────────────────────────────
 
+/** Scroll `selector` into view and fire a click. Waits for the element first;
+ *  throws if the element is not found after `waitMs`. Prefers `el.click()` for
+ *  native form/link behaviour, falling back to a synthetic MouseEvent. */
 export async function click(wc: WebContents, selector: string, waitMs = DEFAULT_WAIT_MS): Promise<void> {
   await waitForSelector(wc, selector, waitMs);
   const ok = await wc.executeJavaScript(
@@ -117,6 +127,12 @@ export async function click(wc: WebContents, selector: string, waitMs = DEFAULT_
   if (!ok) throw new Error(`click: no element matched ${selector}`);
 }
 
+/** Focus `selector`, set its value/textContent to `text`, and fire input +
+ *  change events so React/Vue controlled components update. When
+ *  `opts.submit` is true, also synthesises an Enter keydown (and calls
+ *  `form.requestSubmit()` when available) to trigger SPA form handlers. Uses
+ *  the native value setter to bypass framework property descriptors that
+ *  ignore direct `.value =` assignments. */
 export async function typeInto(wc: WebContents, selector: string, text: string, opts: { submit?: boolean; waitMs?: number } = {}): Promise<void> {
   await waitForSelector(wc, selector, opts.waitMs ?? DEFAULT_WAIT_MS);
   const ok = await wc.executeJavaScript(
@@ -167,6 +183,10 @@ export interface ReadResult {
   truncated: boolean;
 }
 
+/** Extract cleaned visible text from the page (or from a sub-tree when
+ *  `selector` is given). Scripts and styles are stripped for readability.
+ *  The result is capped at `maxChars`; `truncated` tells the caller whether
+ *  the output was cut so they can retry with a narrower selector if needed. */
 export async function readDom(wc: WebContents, selector?: string, maxChars = 12_000): Promise<ReadResult> {
   await ensureResolver(wc);
   const text = (await wc.executeJavaScript(
@@ -192,6 +212,9 @@ export async function readDom(wc: WebContents, selector?: string, maxChars = 12_
 
 // ── Screenshot via CDP ───────────────────────────────────────────────────────
 
+/** Capture the current viewport as a base64-encoded PNG string (no data-URI
+ *  prefix). `fullPage` is reserved for a future CDP-based implementation that
+ *  would capture content scrolled below the fold. */
 export async function screenshot(wc: WebContents, fullPage = false): Promise<string> {
   // Native Electron capturePage is the simplest path; CDP would only matter
   // if we needed fullPage > viewport, which we approximate by resizing capture.
@@ -202,22 +225,28 @@ export async function screenshot(wc: WebContents, fullPage = false): Promise<str
 
 // ── Navigation helpers ───────────────────────────────────────────────────────
 
+/** Navigate back in the page history. Returns `false` (no-op) if there is no
+ *  previous entry, so callers can surface a "can't go back" message. */
 export function back(wc: WebContents): boolean {
   if (!wc.canGoBack()) return false;
   wc.goBack();
   return true;
 }
 
+/** Navigate forward in the page history. Returns `false` if there is no
+ *  forward entry. */
 export function forward(wc: WebContents): boolean {
   if (!wc.canGoForward()) return false;
   wc.goForward();
   return true;
 }
 
+/** Hard-reload the current page (equivalent to Ctrl+R). */
 export function reload(wc: WebContents): void {
   wc.reload();
 }
 
+/** Return the current URL and page title without any I/O or side effects. */
 export function getUrl(wc: WebContents): { url: string; title: string } {
   return { url: wc.getURL(), title: wc.getTitle() };
 }

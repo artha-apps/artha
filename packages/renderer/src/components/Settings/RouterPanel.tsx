@@ -8,6 +8,8 @@ import {
   Route, Zap, Play, RefreshCw, Trophy, Clock, Brain,
   Wrench, Sparkles, Pin, PinOff,
 } from 'lucide-react';
+import { FeatureGuide } from '../ui/FeatureGuide';
+import { GUIDES } from './guides';
 
 /** Aligned with the backend `TaskType` union and `model_profiles.task_type`. */
 type TaskType = 'plan' | 'tool_args' | 'synthesis';
@@ -41,12 +43,21 @@ function relativeTime(unixSec: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+/**
+ * Adaptive Router panel — benchmarks all installed Ollama models against three
+ * task categories (plan / tool_args / synthesis) and lets users pin a specific
+ * model per task type. When no override is set the router auto-picks the
+ * highest-scoring model for each task at inference time.
+ */
 export default function RouterPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [overrides, setOverrides] = useState<Override[]>([]);
   const [benchmarking, setBenchmarking] = useState(false);
+  // Progress messages stream in via IPC during the benchmark run.
   const [progress, setProgress] = useState<string>('');
 
+  // ── Effects ────────────────────────────────────────────────────────────────
   const load = async () => {
     const [p, o] = await Promise.all([
       window.artha.router.listProfiles() as Promise<Profile[]>,
@@ -58,6 +69,7 @@ export default function RouterPanel() {
 
   useEffect(() => {
     load();
+    // Subscribe to live benchmark progress so the status line updates without polling.
     const off = window.artha.router.onBenchmarkProgress(setProgress);
     return () => { off(); };
   }, []);
@@ -97,19 +109,20 @@ export default function RouterPanel() {
 
   return (
     <div className="flex-1 overflow-y-auto px-8 py-8 max-w-3xl mx-auto w-full">
+      <FeatureGuide {...GUIDES.router} />
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-artha-accent/20 flex items-center justify-center">
             <Route size={16} className="text-artha-accent" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-white">Adaptive Router</h1>
+            <h1 className="text-base font-semibold text-artha-text">Adaptive Router</h1>
             <p className="text-xs text-artha-muted">Right model for the job, not the biggest one.</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={load}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs">
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs">
             <RefreshCw size={12} /> Refresh
           </button>
           <button onClick={runBench} disabled={benchmarking}
@@ -181,7 +194,7 @@ export default function RouterPanel() {
                         onClick={() => setOverride(task, pinned ? null : r.ollama_name)}
                         title={pinned ? 'Unpin (use auto)' : 'Pin this model for this task'}
                         className={`p-1 rounded transition-colors ${
-                          pinned ? 'text-artha-accent' : 'text-artha-muted hover:text-white'
+                          pinned ? 'text-artha-accent' : 'text-artha-muted hover:text-artha-text'
                         }`}
                       >
                         {pinned ? <PinOff size={12} /> : <Pin size={12} />}

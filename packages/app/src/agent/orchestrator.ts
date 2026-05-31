@@ -331,6 +331,10 @@ or
     this.emit('agent:workflowStart', workflowId);
     this.emit('agent:parallelStart', { goal, subTasks });
 
+    // Same live env context the sequential loop gets, so concurrent children
+    // share the agent's awareness of the date/OS/user.
+    const envBlock = this.buildEnvironmentContext();
+
     const CONCURRENCY = 4;
     let cursor = 0;
     const worker = async (): Promise<void> => {
@@ -349,7 +353,19 @@ or
           const messages: OpenAI.ChatCompletionMessageParam[] = [
             {
               role: 'system',
-              content: `You are Artha, a local AI agent on a Mac running one sub-task of a larger goal. Complete this sub-task precisely using your tools, then report the result concisely. Sub-task:`,
+              content: `You are Artha, a local AI agent on a Mac, running ONE sub-task of a larger goal. You have real filesystem and web tools.
+
+${envBlock}
+
+Complete exactly this one sub-task using your tools — do not expand scope or start other sub-tasks.
+
+Rules:
+- NEVER fabricate results. Every claim that a file was read/created/moved/deleted, or that a page said something, MUST come from an actual tool call.
+- Only call tools that have been made available to you; never invent a tool name or a parameter that isn't in its schema.
+- If a tool reports an error, correct the arguments and retry that call at most once; never repeat an identical failing call.
+- When moving files: resolve bare folder names via ~/Desktop/NAME → ~/Documents/NAME → ~/Downloads/NAME → ~/NAME, call fs_move_file once per file (the destination must include the filename), then fs_list_directory to verify.
+- When you use web_fetch or web_search, weave the source URL into your answer so it can be cited.
+- Output only the result and a one-line verification of what you confirmed — no preamble, no extra commentary.`,
             },
             { role: 'user', content: subTask },
           ];
@@ -434,6 +450,8 @@ or
       role: 'system',
       content: `You are Artha, a local-first AI productivity agent running on the user's Mac.
 
+${this.buildEnvironmentContext()}
+
 Available tools: ${tools.map(t => t.function.name).join(', ')}
 ${skillBlock}
 Decompose the user's request into a clear, minimal step-by-step plan.
@@ -513,6 +531,7 @@ Rules:
     const projectId = this.getSessionProjectId(plan.sessionId);
     const memoryBlock = getMemoryContext(projectId);
     const projectBlock = this.getSessionScopeBlock(plan.sessionId);
+    const envBlock = this.buildEnvironmentContext();
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
@@ -520,6 +539,8 @@ Rules:
         content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools.
 
 ${memoryBlock}${skillBlock}${projectBlock}
+
+${envBlock}
 
 Home:      ${homeDir}
 Desktop:   ${homeDir}/Desktop
@@ -542,7 +563,9 @@ RULES — follow exactly, no exceptions:
     - If the page needs a login, captcha, 2FA, or anything you cannot do safely, call browser_request_user with a short reason. The user will complete it and resume you — the call returns "resumed" or "cancelled".
 11. When the user asks for a report, proposal, summary document, presentation, or spreadsheet AS A FILE, call docs_generate (type docx/pptx/xlsx/pdf). Gather facts first with web_fetch/web_search when needed and pass them in the "context" argument so the document is sourced. Do not paste a long document into chat when the user wanted a file.
 12. When the user asks about THEIR OWN files, notes, or documents, call rag_search to retrieve relevant passages from their indexed files, then answer from those passages and cite the source filenames. Do not fabricate file contents.
-13. Use memory_store to persist important facts about the user or their work for future sessions (preferences, project names, contacts, decisions). Use memory_recall before answering questions about things the user has told you before. Use memory_forget if a memory is outdated.`,
+13. Use memory_store to persist important facts about the user or their work for future sessions (preferences, project names, contacts, decisions). Use memory_recall before answering questions about things the user has told you before. Use memory_forget if a memory is outdated.
+14. Tool errors: if a tool result reports a failure (it starts with "Error:" or contains an "error" field), read the message, correct the arguments, and retry THAT call AT MOST once more. NEVER re-issue a byte-identical call that just failed — change something or stop. If the same operation fails twice, leave it, note it as failed, and continue with the rest of the task; do not loop on it.
+15. Tool availability: only call tools that have been made available to you. Never invent a tool name, and never pass a parameter that isn't in that tool's schema. If no available tool can do what's needed, say so plainly — do not pretend an action happened.`,
       },
       ...history,
       { role: 'user', content: this.buildUserContent(plan.goal, plan.attachments) },
@@ -923,6 +946,45 @@ RULES — follow exactly, no exceptions:
         console.warn('[Artha] step record failed:', err);
       }
     };
+  }
+
+  /** Live environment context injected into the agent's system prompt on every
+   *  run. Surfaces the three things the model can never infer on its own:
+   *    1. the real wall-clock date/time (+ the user's timezone) so "today",
+   *       "now", "latest", and relative dates resolve correctly;
+   *    2. the actual OS/platform/arch it is operating on; and
+   *    3. the current user account + hostname.
+   *  Best-effort — any lookup that fails degrades gracefully rather than
+   *  throwing, since a missing line is better than a failed run. */
+  private buildEnvironmentContext(): string {
+    const now = new Date();
+    let when: string;
+    let tz: string;
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
+      when = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+      }).format(now);
+    } catch {
+      tz = 'local time';
+      when = now.toString();
+    }
+
+    // Friendly OS name; fall back to the raw platform code for anything exotic.
+    const platformName =
+      ({ darwin: 'macOS', win32: 'Windows', linux: 'Linux' } as Record<string, string>)[os.platform()]
+      ?? os.platform();
+
+    let username = 'unknown';
+    try { username = os.userInfo().username; } catch { /* sandboxed env — leave unknown */ }
+
+    return [
+      `ENVIRONMENT — live context for this turn (you cannot infer these values, so trust them):`,
+      `- Current date & time: ${when} (timezone ${tz}). Use this for any "today"/"now"/"latest"/"recent" wording and for resolving relative dates.`,
+      `- Operating system: ${platformName} ${os.release()} (${os.platform()}/${os.arch()}).`,
+      `- User account: ${username}@${os.hostname()}.`,
+    ].join('\n');
   }
 
   /** Look up the active model name from llm_models. Used for run row metadata

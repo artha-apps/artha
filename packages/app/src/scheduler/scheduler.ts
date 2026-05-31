@@ -21,11 +21,16 @@ import { sendNotification } from '../notify';
 export interface ScheduledTask {
   task_id: string;
   name: string;
+  /** The verbatim prompt sent to the agent when this task fires. */
   prompt: string;
+  /** Standard cron expression (null for one-shot tasks). */
   cron: string | null;
+  /** Unix timestamp (seconds) — set only for one-shot tasks. */
   fire_at: number | null;
+  /** SQLite boolean: 1 = active, 0 = disabled / already fired (one-shot). */
   is_enabled: number;
   last_run_at: number | null;
+  /** 'running' | 'ok' | 'error' — persisted for display in the UI. */
   last_status: string | null;
   run_count: number;
   created_at: number;
@@ -127,10 +132,12 @@ export class SchedulerService {
 
   // ── CRUD helpers (used by IPC handlers) ──────────────────────────────────
 
+  /** Return all tasks ordered newest-first (both enabled and disabled). */
   list(): ScheduledTask[] {
     return getDb().prepare(`SELECT * FROM scheduled_tasks ORDER BY created_at DESC`).all() as ScheduledTask[];
   }
 
+  /** Persist a new task row and immediately schedule it. */
   create(input: TaskInput): ScheduledTask {
     const db = getDb();
     const id = crypto.randomUUID();
@@ -143,6 +150,9 @@ export class SchedulerService {
     return task;
   }
 
+  /** Merge a partial patch over an existing task row and re-schedule it if
+   *  still enabled. `is_enabled` can be passed directly (int 0/1) for internal
+   *  toggle/disable-after-fire use. */
   update(taskId: string, patch: Partial<TaskInput> & { is_enabled?: number }): ScheduledTask {
     const db = getDb();
     const existing = db.prepare(`SELECT * FROM scheduled_tasks WHERE task_id=?`).get(taskId) as ScheduledTask | undefined;
@@ -165,11 +175,13 @@ export class SchedulerService {
     return updated;
   }
 
+  /** Cancel the in-memory job and delete the DB row permanently. */
   remove(taskId: string): void {
     this.cancelTask(taskId);
     getDb().prepare(`DELETE FROM scheduled_tasks WHERE task_id=?`).run(taskId);
   }
 
+  /** Convenience wrapper: enable or disable a task by boolean. */
   toggle(taskId: string, enabled: boolean): ScheduledTask {
     return this.update(taskId, { is_enabled: enabled ? 1 : 0 });
   }

@@ -21,16 +21,22 @@ import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { getDb } from '../db/schema';
 
+/** Version sentinel — incremented only on breaking schema changes. */
 export const BUNDLE_SCHEMA = 'artha-bundle/v1';
 
 export interface BundleManifest {
   bundleId: string;
   exportedAt: string;
+  /** The original user prompt that triggered the agent run. */
   prompt: string;
+  /** The Ollama/cloud model name used during the run. */
   model: string;
   sessionTitle: string;
+  /** MCP servers that were active when the run executed. */
   mcpServers: { name: string; uri: string }[];
+  /** SHA-256 of the golden artifact file, or null if no doc was attached. */
   goldenContentHash: string | null;
+  /** SHA-256 over the stable manifest fields — lets importers detect tampering. */
   signature: string;
 }
 
@@ -38,6 +44,7 @@ export interface Bundle {
   schema: typeof BUNDLE_SCHEMA;
   manifest: BundleManifest;
   run: { goal: string; steps: { idx: number; kind: string; payload: unknown }[] };
+  /** Keyed by filename; values are base64-encoded file bytes. */
   artifacts: Record<string, string>;
 }
 
@@ -165,6 +172,8 @@ export async function importBundle(bundlePath: string, importsDir: string): Prom
   }
 
   const db = getDb();
+  // Strip "ENV:VAR_NAME " prefixes before comparing so env-substituted URIs
+  // still match the stored literal in both the bundle and the local tools table.
   const installed = new Set(
     (db.prepare(`SELECT mcp_server_uri FROM tools WHERE mcp_server_uri IS NOT NULL`).all() as { mcp_server_uri: string }[])
       .map(r => r.mcp_server_uri.replace(/^ENV:[^\s]+ /g, '').trim())
@@ -184,6 +193,8 @@ export async function importBundle(bundlePath: string, importsDir: string): Prom
   };
 }
 
+/** Try to JSON-parse a value; return the raw string on failure so agent_steps
+ *  with non-JSON payloads are still included in the bundle verbatim. */
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return s; }
 }

@@ -24,6 +24,11 @@ export interface ToolContext {
   ragIndexIds?: string[] | null;
 }
 
+/**
+ * Runtime record of one connected MCP server: its SDK client handle plus the
+ * OpenAI-formatted tool schemas negotiated at connection time. Kept in the
+ * `connections` map keyed by the DB `tool_id`.
+ */
 interface MCPServerConnection {
   id: string;
   name: string;
@@ -31,8 +36,15 @@ interface MCPServerConnection {
   tools: OpenAI.ChatCompletionTool[];
 }
 
+/**
+ * Singleton registry that manages the lifecycle of every MCP server process
+ * and owns the dispatch logic for all tool invocations.
+ *
+ * Lifetime: created once in `handlers.ts`, lives until app quit.
+ */
 export class MCPRegistry {
   private static instance: MCPRegistry;
+  // tool_id → live connection (stdio sub-process + negotiated tool schemas)
   private connections = new Map<string, MCPServerConnection>();
 
   static getInstance(): MCPRegistry {
@@ -56,7 +68,13 @@ export class MCPRegistry {
     }
   }
 
-  /** Connect to an MCP server and cache its tool schemas. */
+  /**
+   * Spawn the MCP server process described by `serverUri` (space-separated
+   * command + args, e.g. `"npx @modelcontextprotocol/server-filesystem"`),
+   * negotiate capabilities, and cache the resulting tool schemas.
+   *
+   * Overwrites any previous connection for the same `id` (hot-reload safe).
+   */
   async connectServer(id: string, name: string, serverUri: string): Promise<void> {
     const [cmd, ...args] = serverUri.split(' ');
     const transport = new StdioClientTransport({ command: cmd, args });

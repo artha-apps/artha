@@ -6,6 +6,8 @@
  */
 import { useEffect, useState } from 'react';
 import { Code2, CheckCircle2, FolderOpen, Zap, Info } from 'lucide-react';
+import { FeatureGuide } from '../ui/FeatureGuide';
+import { GUIDES } from './guides';
 
 type IDE = 'vscode' | 'cursor';
 
@@ -24,8 +26,16 @@ const IDE_OPTIONS: { id: IDE; label: string; configPath: string; description: st
   },
 ];
 
+/**
+ * IDE Integration panel — generates the editor-side MCP config file and starts
+ * the local MCP HTTP bridge that VS Code / Cursor connect to. The bridge exposes
+ * all of Artha's tools (filesystem, web, docs, RAG, memory) over HTTP/MCP so the
+ * editor's AI agent can call them without running Artha itself.
+ */
 export default function IDEIntegrationPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [selectedIde, setSelectedIde] = useState<IDE>('vscode');
+  // Port that the MCP bridge listens on — written into the generated config file.
   const [port, setPort]               = useState(3847);
   const [generatedPath, setGeneratedPath] = useState<string | null>(null);
   const [busy, setBusy]               = useState(false);
@@ -41,6 +51,9 @@ export default function IDEIntegrationPanel() {
       .catch(() => setServerRunning(false));
   }, []);
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  /** Open a folder picker, then write the IDE config file into that project. */
   async function handleGenerate() {
     setBusy(true);
     setError(null);
@@ -57,6 +70,7 @@ export default function IDEIntegrationPanel() {
 
   const selectedOption = IDE_OPTIONS.find(o => o.id === selectedIde)!;
 
+  // Config file content shown as a preview before the user clicks Generate.
   const configPreview = JSON.stringify({
     mcpServers: {
       artha: {
@@ -68,22 +82,23 @@ export default function IDEIntegrationPanel() {
 
   return (
     <div className="flex flex-col h-full p-6 overflow-y-auto">
+      <FeatureGuide {...GUIDES.ide} />
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <Code2 size={22} className="text-cyan-400" />
         <div className="flex-1">
-          <h2 className="text-lg font-semibold text-white">IDE Integration</h2>
+          <h2 className="text-lg font-semibold text-artha-text">IDE Integration</h2>
           <p className="text-sm text-gray-400">Connect VS Code or Cursor to Artha's local MCP server</p>
         </div>
       </div>
 
       {/* MCP server status — the bridge the generated configs talk to */}
-      <div className="flex items-center gap-3 p-3 mb-6 rounded-lg bg-white/5 border border-white/10">
+      <div className="flex items-center gap-3 p-3 mb-6 rounded-lg bg-artha-text/5 border border-artha-border">
         <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
           serverRunning ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-gray-500'
         }`} />
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-white">
+          <p className="text-sm font-medium text-artha-text">
             MCP server {serverRunning ? 'running' : 'stopped'}
           </p>
           <p className="text-xs text-gray-400 font-mono break-all">{serverUrl}</p>
@@ -111,10 +126,10 @@ export default function IDEIntegrationPanel() {
               className={`p-4 rounded-xl border text-left transition-colors ${
                 selectedIde === opt.id
                   ? 'border-cyan-500/60 bg-cyan-500/10'
-                  : 'border-white/10 bg-white/5 hover:bg-white/8'
+                  : 'border-artha-border bg-artha-text/5 hover:bg-white/8'
               }`}
             >
-              <p className="text-sm font-semibold text-white">{opt.label}</p>
+              <p className="text-sm font-semibold text-artha-text">{opt.label}</p>
               <p className="text-xs text-gray-400 mt-1">{opt.description}</p>
               <p className="text-xs text-gray-500 mt-2 font-mono">{opt.configPath}</p>
             </button>
@@ -131,7 +146,7 @@ export default function IDEIntegrationPanel() {
           min={1024}
           max={65535}
           onChange={e => setPort(Number(e.target.value))}
-          className="w-32 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50"
+          className="w-32 px-3 py-2 rounded-lg bg-artha-text/5 border border-artha-border text-artha-text text-sm focus:outline-none focus:border-cyan-500/50"
         />
         <p className="text-xs text-gray-500 mt-1">Default: 3847. Change only if another service uses this port.</p>
       </div>
@@ -141,7 +156,7 @@ export default function IDEIntegrationPanel() {
         <label className="block text-sm font-medium text-gray-300 mb-2">
           Preview — <span className="text-gray-500 font-mono">{selectedOption.configPath}</span>
         </label>
-        <pre className="p-4 rounded-xl bg-black/40 border border-white/10 text-xs text-green-300 font-mono overflow-x-auto">
+        <pre className="p-4 rounded-xl bg-black/40 border border-artha-border text-xs text-green-300 font-mono overflow-x-auto">
           {configPreview}
         </pre>
       </div>
@@ -150,7 +165,7 @@ export default function IDEIntegrationPanel() {
       <button
         onClick={handleGenerate}
         disabled={busy}
-        className="flex items-center gap-2 px-4 py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-800 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors self-start"
+        className="flex items-center gap-2 px-4 py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-800 disabled:cursor-not-allowed text-artha-text text-sm font-medium transition-colors self-start"
       >
         <FolderOpen size={16} />
         {busy ? 'Generating…' : 'Choose project folder & generate'}

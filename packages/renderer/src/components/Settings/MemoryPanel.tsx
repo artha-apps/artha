@@ -6,6 +6,8 @@
  */
 import { useEffect, useState } from 'react';
 import { Brain, Trash2, RefreshCw, AlertTriangle } from 'lucide-react';
+import { FeatureGuide } from '../ui/FeatureGuide';
+import { GUIDES } from './guides';
 
 interface MemoryEntity {
   entity_id: string;
@@ -32,11 +34,19 @@ function fmtDate(epochSecs: number): string {
   });
 }
 
+/**
+ * Memory browser — shows all long-term memory entities the agent has written,
+ * allows individual deletion or a two-step "clear all". Reads/writes through
+ * the `memory:{list,delete,clear}` IPC channels.
+ */
 export default function MemoryPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [entities, setEntities] = useState<MemoryEntity[]>([]);
   const [loading, setLoading]   = useState(true);
+  // Two-step clear: first click sets confirmClear=true, second click calls handleClear().
   const [confirmClear, setConfirmClear] = useState(false);
 
+  // ── Effects ────────────────────────────────────────────────────────────────
   async function load() {
     setLoading(true);
     try {
@@ -49,11 +59,15 @@ export default function MemoryPanel() {
 
   useEffect(() => { load(); }, []);
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  /** Delete one entity and remove it from local state (no full reload needed). */
   async function handleDelete(id: string) {
     await window.artha.memory.delete(id);
     setEntities(prev => prev.filter(e => e.entity_id !== id));
   }
 
+  /** Wipe the entire memory table and reset UI state. */
   async function handleClear() {
     await window.artha.memory.clear();
     setEntities([]);
@@ -62,12 +76,13 @@ export default function MemoryPanel() {
 
   return (
     <div className="flex flex-col h-full p-6 overflow-y-auto">
+      <FeatureGuide {...GUIDES.memory} />
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <Brain size={22} className="text-purple-400" />
           <div>
-            <h2 className="text-lg font-semibold text-white">Agent Memory</h2>
+            <h2 className="text-lg font-semibold text-artha-text">Agent Memory</h2>
             <p className="text-sm text-gray-400">
               {entities.length} {entities.length === 1 ? 'memory' : 'memories'} stored
             </p>
@@ -76,7 +91,7 @@ export default function MemoryPanel() {
         <div className="flex items-center gap-2">
           <button
             onClick={load}
-            className="p-2 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+            className="p-2 rounded-lg hover:bg-artha-text/8 text-gray-400 hover:text-artha-text transition-colors"
             title="Refresh"
           >
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
@@ -94,13 +109,13 @@ export default function MemoryPanel() {
               <span className="text-sm text-red-400">Delete all memories?</span>
               <button
                 onClick={handleClear}
-                className="px-3 py-1 rounded text-sm bg-red-500 hover:bg-red-600 text-white transition-colors"
+                className="px-3 py-1 rounded text-sm bg-red-500 hover:bg-red-600 text-artha-text transition-colors"
               >
                 Yes, clear
               </button>
               <button
                 onClick={() => setConfirmClear(false)}
-                className="px-3 py-1 rounded text-sm hover:bg-white/10 text-gray-400 transition-colors"
+                className="px-3 py-1 rounded text-sm hover:bg-artha-text/8 text-gray-400 transition-colors"
               >
                 Cancel
               </button>
@@ -133,6 +148,7 @@ export default function MemoryPanel() {
       {!loading && entities.length > 0 && (
         <div className="space-y-2">
           {entities.map(entity => {
+            // Parse tags_json inline — gracefully fall back to empty on malformed JSON.
             const tags: string[] = (() => {
               try { return JSON.parse(entity.tags_json) as string[]; } catch { return []; }
             })();
@@ -141,7 +157,7 @@ export default function MemoryPanel() {
             return (
               <div
                 key={entity.entity_id}
-                className="group flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/8 border border-white/5 transition-colors"
+                className="group flex items-start gap-3 p-4 rounded-xl bg-artha-text/5 hover:bg-white/8 border border-white/5 transition-colors"
               >
                 {/* Type badge */}
                 <span className={`flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${colour}`}>
@@ -150,12 +166,12 @@ export default function MemoryPanel() {
 
                 {/* Content */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-white truncate">{entity.name}</p>
+                  <p className="text-sm font-medium text-artha-text truncate">{entity.name}</p>
                   <p className="text-sm text-gray-300 mt-0.5 line-clamp-2">{entity.content}</p>
                   {tags.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
                       {tags.map(tag => (
-                        <span key={tag} className="px-1.5 py-0.5 rounded text-xs bg-white/10 text-gray-400">
+                        <span key={tag} className="px-1.5 py-0.5 rounded text-xs bg-artha-text/8 text-gray-400">
                           #{tag}
                         </span>
                       ))}

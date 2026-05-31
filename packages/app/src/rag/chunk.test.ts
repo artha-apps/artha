@@ -1,7 +1,17 @@
+/**
+ * Unit tests for the boundary-aware chunker (`rag/chunk.ts`).
+ *
+ * Verifies: empty input, single-chunk short text, word-boundary preservation,
+ * sentence-boundary preference, minimum-length filtering, infinite-loop
+ * safety for over-long tokens, and the overlap invariant between consecutive
+ * chunks. No fs or Electron dependency — runs in plain Vitest/Node.
+ */
 import { describe, it, expect } from 'vitest';
 import { chunkOnBoundaries } from './chunk';
 
 describe('chunkOnBoundaries', () => {
+  // ── Edge / boundary cases ──────────────────────────────────────────────────
+
   it('returns nothing for empty text', () => {
     expect(chunkOnBoundaries('', 100, 20)).toEqual([]);
   });
@@ -13,6 +23,8 @@ describe('chunkOnBoundaries', () => {
     expect(out[0].text).toBe(t);
     expect(out[0].offset).toBe(0);
   });
+
+  // ── Multi-chunk behaviour ──────────────────────────────────────────────────
 
   it('never splits a word across chunks', () => {
     const sentence = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet ';
@@ -38,6 +50,8 @@ describe('chunkOnBoundaries', () => {
     const out = chunkOnBoundaries('hi.', 512, 64, 20);
     expect(out).toEqual([]);
   });
+
+  // ── Safety / invariants ────────────────────────────────────────────────────
 
   it('makes progress even when a single token exceeds the target', () => {
     const longToken = 'x'.repeat(300);

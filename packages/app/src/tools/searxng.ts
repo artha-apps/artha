@@ -5,30 +5,42 @@
  * convenience starting point.
  */
 
+/** Normalised result shape returned by every search backend (Brave, SearXNG,
+ *  DuckDuckGo). Downstream consumers (web.ts, docs.ts) only deal with this. */
 export interface SearchResult {
   title: string;
   url: string;
+  /** Short excerpt shown to the model (300-char cap applied by each backend). */
   snippet: string;
+  /** ISO publication date, present only when the backend provides it. */
   published_at?: string;
 }
 
+/** Options shared across all three search backends. */
 export interface SearchOptions {
+  /** Number of results to return. Each backend may apply its own cap. */
   count?: number;
   freshness?: 'day' | 'week' | 'month' | 'year';
   language?: string;
 }
 
+/** Raw result object from the SearXNG JSON endpoint. All fields are optional
+ *  because SearXNG aggregates heterogeneous engines that may omit any field. */
 interface SearXNGJsonResult {
   url?: string;
   title?: string;
+  /** SearXNG's term for the result snippet/excerpt. */
   content?: string;
   publishedDate?: string;
 }
 
+/** Top-level SearXNG /search?format=json response envelope. */
 interface SearXNGResponse {
   results?: SearXNGJsonResult[];
 }
 
+// SearXNG's time_range parameter values happen to mirror our freshness strings,
+// but we map explicitly so any future divergence only requires a change here.
 const FRESHNESS_TO_TIMERANGE: Record<NonNullable<SearchOptions['freshness']>, string> = {
   day: 'day',
   week: 'week',

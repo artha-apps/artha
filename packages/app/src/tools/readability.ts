@@ -7,11 +7,17 @@
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 
+/** Cleaned article returned by `extractReadable`. `content` is compact markdown
+ *  (not HTML) — suitable for direct injection into an LLM context window. */
 export interface ReadableArticle {
   title: string;
+  /** Author line, e.g. "By Jane Smith", or null when absent. */
   byline: string | null;
+  /** One-sentence article summary Readability infers from the opening text. */
   excerpt: string | null;
+  /** Main body converted to markdown via `htmlToMarkdown`. */
   content: string;
+  /** Approximate character count of the original article body. */
   length: number;
   siteName: string | null;
 }

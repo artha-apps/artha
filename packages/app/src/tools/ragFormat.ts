@@ -5,12 +5,18 @@
  */
 import * as path from 'path';
 
+/** A single retrieval hit as returned by `searchAllIndexes` in rag/indexer.ts. */
 export interface RagHit {
+  /** Absolute path to the source file that contains this chunk. */
   filePath: string;
+  /** The raw chunk text from the vector index. */
   text: string;
+  /** Cosine-similarity score in [0, 1]; higher is more relevant. */
   score: number;
 }
 
+/** Maximum characters shown per hit. Long chunks are truncated to keep the
+ *  agent's context window from blowing up on large documents. */
 const SNIPPET_CHARS = 320;
 
 /** Render retrieval hits as a numbered, source-labelled list. Empty hits get an

@@ -8,6 +8,8 @@ import { useEffect, useState } from 'react';
 import {
   FolderSearch, Plus, Trash2, RefreshCw, FolderOpen, Database, AlertTriangle, Loader2, X,
 } from 'lucide-react';
+import { FeatureGuide } from '../ui/FeatureGuide';
+import { GUIDES } from './guides';
 
 interface RagIndex {
   index_id: string;
@@ -28,13 +30,22 @@ function relativeTime(unixSec: number | null): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+/**
+ * RAG Index panel — create, rebuild, and delete local vector indexes.
+ * Each index embeds files in a chosen folder using nomic-embed-text via Ollama.
+ * Resulting chunks are stored in SQLite and queried by the rag_search tool.
+ */
 export default function RAGPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [indexes, setIndexes] = useState<RagIndex[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  // Controlled inputs for the new-index form.
   const [name, setName] = useState('');
   const [dirPath, setDirPath] = useState('');
+  // `building` blocks the form while indexing is in progress (can take minutes).
   const [building, setBuilding] = useState(false);
+  // `rebuilding` holds the index_id being re-embedded so we can animate that row only.
   const [rebuilding, setRebuilding] = useState<string | null>(null);
   const [error, setError] = useState('');
 
@@ -95,6 +106,7 @@ export default function RAGPanel() {
 
   return (
     <div className="flex-1 overflow-y-auto px-8 py-8 max-w-3xl mx-auto w-full">
+      <FeatureGuide {...GUIDES.rag} />
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
@@ -102,13 +114,13 @@ export default function RAGPanel() {
             <FolderSearch size={16} className="text-artha-accent" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-white">RAG Index</h1>
+            <h1 className="text-base font-semibold text-artha-text">RAG Index</h1>
             <p className="text-xs text-artha-muted">Make your files searchable — powers <code className="font-mono">rag_search</code> and grounded documents</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={load} disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors disabled:opacity-40">
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs transition-colors disabled:opacity-40">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
           {!showForm && (
@@ -134,9 +146,9 @@ export default function RAGPanel() {
       {showForm && (
         <div className="bg-artha-s2 border border-artha-border rounded-xl p-4 space-y-3 mb-5">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-white">New index</h2>
+            <h2 className="text-sm font-medium text-artha-text">New index</h2>
             <button onClick={() => { setShowForm(false); setError(''); }}
-              className="p-1 text-artha-muted hover:text-white rounded transition-colors"><X size={14} /></button>
+              className="p-1 text-artha-muted hover:text-artha-text rounded transition-colors"><X size={14} /></button>
           </div>
 
           <div>
@@ -153,7 +165,7 @@ export default function RAGPanel() {
                 placeholder="Choose a folder…"
                 className="flex-1 bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:outline-none font-mono truncate" />
               <button onClick={pickFolder}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-sm transition-colors shrink-0">
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-sm transition-colors shrink-0">
                 <FolderOpen size={14} /> Browse
               </button>
             </div>
@@ -167,7 +179,7 @@ export default function RAGPanel() {
               {building ? <><Loader2 size={13} className="animate-spin" /> Indexing…</> : <><Database size={13} /> Build index</>}
             </button>
             <button onClick={() => { setShowForm(false); setError(''); }}
-              className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-white hover:bg-white/5 transition-colors">
+              className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors">
               Cancel
             </button>
           </div>
@@ -185,7 +197,7 @@ export default function RAGPanel() {
       ) : indexes.length === 0 ? (
         <div className="text-center py-16 text-artha-muted">
           <FolderSearch size={32} className="mx-auto mb-3 opacity-30" />
-          <p className="text-sm font-medium text-white mb-1">No indexes yet</p>
+          <p className="text-sm font-medium text-artha-text mb-1">No indexes yet</p>
           <p className="text-xs">Index a folder to let Artha search and cite your own files.</p>
         </div>
       ) : (
@@ -197,18 +209,18 @@ export default function RAGPanel() {
                 <Database size={16} className="text-artha-accent" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white truncate">{idx.name}</p>
+                <p className="text-sm font-medium text-artha-text truncate">{idx.name}</p>
                 <code className="text-[11px] text-artha-muted font-mono truncate block">{idx.directory_path}</code>
                 <p className="text-[11px] text-artha-muted mt-0.5">
                   {idx.doc_count} chunks · indexed {relativeTime(idx.last_indexed)}
                 </p>
               </div>
               <button onClick={() => rebuild(idx)} disabled={rebuilding === idx.index_id} title="Rebuild"
-                className="p-1.5 text-artha-muted hover:text-white hover:bg-white/5 rounded-lg transition-colors disabled:opacity-40">
+                className="p-1.5 text-artha-muted hover:text-artha-text hover:bg-artha-text/5 rounded-lg transition-colors disabled:opacity-40">
                 <RefreshCw size={14} className={rebuilding === idx.index_id ? 'animate-spin' : ''} />
               </button>
               <button onClick={() => remove(idx)} title="Delete"
-                className="p-1.5 text-artha-muted hover:text-red-400 hover:bg-white/5 rounded-lg transition-colors">
+                className="p-1.5 text-artha-muted hover:text-red-400 hover:bg-artha-text/5 rounded-lg transition-colors">
                 <Trash2 size={14} />
               </button>
             </div>

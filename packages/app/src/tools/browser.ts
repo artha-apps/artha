@@ -189,6 +189,14 @@ export function setBrowserToolEmitter(e: ToolEmitter): void {
   emitter = e;
 }
 
+/**
+ * Dispatch a browser tool call. Fetches the singleton BrowserController and
+ * asserts agent ownership before forwarding to the appropriate action helper.
+ *
+ * Returns serialised JSON on success, or throws on unknown tool name. Individual
+ * action helpers throw on Electron/webContents errors, which the orchestrator
+ * surfaces to the model as tool-call failures.
+ */
 export async function invokeBrowserTool(name: string, args: Record<string, unknown>): Promise<string> {
   const controller = BrowserController.getInstance();
   const wc = controller.getWebContents();
@@ -258,6 +266,8 @@ export async function invokeBrowserTool(name: string, args: Record<string, unkno
   }
 }
 
+/** Returns true when `name` is a built-in browser tool — used by MCPRegistry
+ *  for routing without importing the full schema list. */
 export function isBrowserTool(name: string): boolean {
   return name.startsWith('browser_');
 }
