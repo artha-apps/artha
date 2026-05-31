@@ -73,7 +73,7 @@ export default function ToolCallInline({ events }: Props) {
         {/* Natural-language summary of what the agent did — no code in the
             collapsed view. The first action, plus "+N more" when there are more. */}
         <span className="text-artha-muted truncate">
-          {pairs.length > 0 ? describeTool(pairs[0].invoke.name, pairs[0].invoke.args) : 'Working…'}
+          {pairs.length > 0 ? describeTool(pairs[0].invoke.name ?? '', pairs[0].invoke.args) : 'Working…'}
           {pairs.length > 1 && ` · +${pairs.length - 1} more step${pairs.length - 1 !== 1 ? 's' : ''}`}
         </span>
         {errorCount > 0 && <span className="text-artha-danger ml-1 shrink-0">· {errorCount} error{errorCount !== 1 ? 's' : ''}</span>}
@@ -91,7 +91,7 @@ export default function ToolCallInline({ events }: Props) {
                   : <CheckCircle2 size={11} className="text-artha-success shrink-0 mt-0.5" />}
                 <div className="min-w-0">
                   {/* Plain-English action — no tool names, no JSON. */}
-                  <div className="text-artha-text">{describeTool(pair.invoke.name, pair.invoke.args)}</div>
+                  <div className="text-artha-text">{describeTool(pair.invoke.name ?? '', pair.invoke.args)}</div>
                   {outcome && (
                     <div className={`text-[11px] ${isError ? 'text-artha-danger/90' : 'text-artha-muted'}`}>{outcome}</div>
                   )}

@@ -14,8 +14,13 @@
  *   shutdown()       — cancels all jobs (called on app quit).
  */
 import * as schedule from 'node-schedule';
+import { app } from 'electron';
 import { getDb } from '../db/schema';
 import { sendNotification } from '../notify';
+import { startCheckIn, finishCheckIn, addBreadcrumb, captureException } from '../sentry';
+
+/** Sentry cron-monitor slug for the daily health check. */
+const HEALTH_MONITOR_SLUG = 'artha-daily-health';
 
 /** Shape of a row from the scheduled_tasks table. */
 export interface ScheduledTask {
@@ -52,6 +57,8 @@ export class SchedulerService {
   private static instance: SchedulerService;
   /** In-memory map of task_id → node-schedule Job. */
   private jobs = new Map<string, schedule.Job>();
+  /** The daily 03:00 health-check job (distinct from user tasks). */
+  private healthJob: schedule.Job | null = null;
   /** Injected by init() — avoids circular import with the orchestrator. */
   private runTask: ((prompt: string) => Promise<void>) | null = null;
 
@@ -78,7 +85,82 @@ export class SchedulerService {
     for (const task of tasks) {
       this.scheduleTask(task);
     }
+
+    // Business-continuity heartbeat: a daily health check at 03:00 local time
+    // that emits a Sentry monitor check-in. This gives a per-install heartbeat
+    // so a bad release that silently breaks Ollama/SQLite for non-reporting
+    // users still shows up as "missed check-ins" in cron monitoring.
+    this.scheduleHealthCheck();
+
     console.log(`[Artha] Scheduler initialised — ${tasks.length} task(s) loaded.`);
+  }
+
+  /** Register the daily 03:00 health check. Idempotent. */
+  private scheduleHealthCheck(): void {
+    if (this.healthJob) { this.healthJob.cancel(); this.healthJob = null; }
+    // '0 3 * * *' — every day at 03:00 local time.
+    this.healthJob = schedule.scheduleJob('artha-health', '0 3 * * *', () => {
+      void this.runHealthCheck();
+    });
+    if (this.healthJob) console.log('[Artha] Daily health check scheduled (03:00).');
+  }
+
+  /**
+   * Run the daily health check and report it as a Sentry cron monitor check-in.
+   * Checks three things, all locally:
+   *   1. Ollama reachability (localhost:11434).
+   *   2. SQLite integrity (PRAGMA integrity_check).
+   *   3. Free disk space on the userData volume.
+   * Only non-PII signals (booleans + numbers) are attached to the breadcrumb;
+   * no paths, settings, or content. The check-in is 'error' when integrity is
+   * not 'ok' or disk is critically low, else 'ok'.
+   */
+  async runHealthCheck(): Promise<{ ollama: boolean; integrityOk: boolean; freeDiskGb: number }> {
+    const checkInId = startCheckIn(HEALTH_MONITOR_SLUG);
+
+    let ollama = false;
+    let integrityOk = false;
+    let freeDiskGb = -1;
+    try {
+      // 1. Ollama reachability (short timeout so a down runtime can't hang us).
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch('http://localhost:11434/api/tags', { signal: controller.signal });
+        clearTimeout(t);
+        ollama = res.ok;
+      } catch { ollama = false; }
+
+      // 2. SQLite integrity.
+      try {
+        const result = getDb().pragma('integrity_check', { simple: true }) as string;
+        integrityOk = result === 'ok';
+      } catch { integrityOk = false; }
+
+      // 3. Free disk space on the userData volume.
+      try {
+        const fs = await import('fs');
+        // statfs is available on Node 18+. bavail * bsize = bytes available.
+        const stat = await fs.promises.statfs(app.getPath('userData'));
+        freeDiskGb = Math.round((stat.bavail * stat.bsize) / 1024 / 1024 / 1024);
+      } catch { freeDiskGb = -1; }
+
+      // Non-PII breadcrumb so the result is visible in any later crash report.
+      addBreadcrumb('artha.health_check', 'daily health check', {
+        ollama_connected: ollama,
+        sqlite_integrity_ok: integrityOk,
+        free_disk_gb: freeDiskGb,
+      });
+
+      // Disk under 1 GB is treated as critical for continuity purposes.
+      const diskCritical = freeDiskGb >= 0 && freeDiskGb < 1;
+      finishCheckIn(HEALTH_MONITOR_SLUG, checkInId, integrityOk && !diskCritical ? 'ok' : 'error');
+    } catch (err) {
+      captureException(err);
+      finishCheckIn(HEALTH_MONITOR_SLUG, checkInId, 'error');
+    }
+
+    return { ollama, integrityOk, freeDiskGb };
   }
 
   /** (Re-)schedule a single task from its DB row. Safe to call after upsert. */
@@ -127,6 +209,7 @@ export class SchedulerService {
       job.cancel();
       this.jobs.delete(id);
     }
+    if (this.healthJob) { this.healthJob.cancel(); this.healthJob = null; }
     console.log('[Artha] Scheduler shut down.');
   }
 
