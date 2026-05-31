@@ -60,6 +60,11 @@ export default function App() {
   // structural until we know, to avoid a flash of the empty chat behind it.
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
 
+  // In-app "update available" banner — set when the main process detects a
+  // newer GitHub release. Notification-only; the button opens the download page.
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  useEffect(() => window.artha.updates.onAvailable(({ version }) => setUpdateVersion(version)), []);
+
   useEffect(() => {
     window.artha.settings.get().then((s: { onboardingComplete?: boolean }) => {
       setShowOnboarding(!s?.onboardingComplete);
@@ -193,6 +198,29 @@ export default function App() {
         <ClarificationModal />
 
         {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
+
+        {/* Update-available banner — bottom-right, non-blocking. */}
+        {updateVersion && (
+          <div className="fixed bottom-4 right-4 z-[60] flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-accent/40 shadow-lifted text-sm">
+            <span className="text-base leading-none">🎉</span>
+            <span className="text-artha-text">
+              Artha <strong>v{updateVersion}</strong> is available
+            </span>
+            <button
+              onClick={() => window.artha.updates.openDownload()}
+              className="px-3 py-1 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-xs font-medium transition-colors"
+            >
+              Download
+            </button>
+            <button
+              onClick={() => setUpdateVersion(null)}
+              className="text-artha-muted hover:text-artha-text transition-colors"
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
     </TooltipProvider>
   );

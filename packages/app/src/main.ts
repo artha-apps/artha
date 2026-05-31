@@ -130,6 +130,9 @@ async function createWindow(): Promise<void> {
     });
     autoUpdater.on('update-available', (info) => {
       console.log(`[Artha] Update available: ${info.version} (current ${app.getVersion()})`);
+      // Tell the renderer so it can show an in-app "update available" banner.
+      // Notification-only: we don't auto-download; the banner links to the site.
+      mainWindow?.webContents.send('update:available', { version: info.version });
     });
     autoUpdater.on('update-not-available', () => {
       console.log(`[Artha] Up to date (${app.getVersion()})`);

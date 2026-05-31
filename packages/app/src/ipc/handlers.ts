@@ -909,6 +909,12 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return row?.ollama_name ?? null;
   });
 
+  // Opens the public download page in the user's browser — used by the in-app
+  // "update available" banner (notification-only; we don't silent-install).
+  ipcMain.handle('updates:openDownload', () => {
+    shell.openExternal('https://artha.space');
+  });
+
   ipcMain.handle('llm:setActiveModel', (_e, modelName: string) => {
     const db = getDb();
     // Upsert by ollama_name so any model from the Ollama list can be activated
