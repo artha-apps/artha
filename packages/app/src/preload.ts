@@ -183,6 +183,17 @@ const api = {
     removeModel: (modelId: string) => ipcRenderer.invoke('llm:removeModel', modelId),
   },
 
+  // ── Updates ───────────────────────────────────────────────────────────────
+  updates: {
+    /** Fires when the main process detects a newer GitHub release. */
+    onAvailable: (cb: (info: { version: string }) => void) => {
+      ipcRenderer.on('update:available', (_e, info) => cb(info));
+      return () => ipcRenderer.removeAllListeners('update:available');
+    },
+    /** Open the public download page (artha.space) in the default browser. */
+    openDownload: () => ipcRenderer.invoke('updates:openDownload'),
+  },
+
   // ── MCP Tools ────────────────────────────────────────────────────────────
   mcp: {
     listTools: () => ipcRenderer.invoke('mcp:listTools'),
