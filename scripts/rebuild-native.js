@@ -24,11 +24,19 @@ try {
   console.log('[postinstall] Rebuilding better-sqlite3 against the installed Electron…');
   // Use npx so this resolves the local bin whether run by npm (PATH includes
   // node_modules/.bin) or standalone.
-  execSync('npx electron-rebuild -f -w better-sqlite3', { stdio: 'inherit' });
+  //
+  // Use `-o` (--only), NOT `-w` (--which-module): `-w` still walks the whole
+  // dependency tree and compiles every native module matching the default
+  // `--types prod,optional`, which drags in `cpu-features` (an OPTIONAL
+  // transitive dep via dockerode → docker-modem → ssh2). cpu-features needs a
+  // full C++ toolchain, frequently fails to build, and the app never loads it
+  // (ssh2 works without it) — so a failed cpu-features build would needlessly
+  // sink this rebuild. `-o better-sqlite3` builds ONLY better-sqlite3.
+  execSync('npx electron-rebuild -f -o better-sqlite3', { stdio: 'inherit' });
 } catch (err) {
   console.warn('[postinstall] electron-rebuild failed:', err && err.message);
   console.warn('[postinstall] Run it manually before launching the app:');
-  console.warn('[postinstall]   npx electron-rebuild -f -w better-sqlite3');
+  console.warn('[postinstall]   npx electron-rebuild -f -o better-sqlite3');
   // Do not fail the install.
   process.exit(0);
 }
@@ -40,9 +48,11 @@ try {
 try {
   require.resolve('@nut-tree-fork/nut-js');
   console.log('[postinstall] Rebuilding @nut-tree-fork/nut-js (optional desktop control)…');
-  execSync('npx electron-rebuild -f -w @nut-tree-fork/nut-js', { stdio: 'inherit' });
+  // `-o` (only) for the same reason as above — never let the tree-walk pull in
+  // cpu-features or other optional natives.
+  execSync('npx electron-rebuild -f -o @nut-tree-fork/nut-js', { stdio: 'inherit' });
 } catch (err) {
   console.warn('[postinstall] Skipped @nut-tree-fork/nut-js rebuild (optional):', err && err.message);
   console.warn('[postinstall] Desktop control stays disabled until you run:');
-  console.warn('[postinstall]   npx electron-rebuild -f -w @nut-tree-fork/nut-js');
+  console.warn('[postinstall]   npx electron-rebuild -f -o @nut-tree-fork/nut-js');
 }

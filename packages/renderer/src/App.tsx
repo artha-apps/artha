@@ -65,6 +65,20 @@ export default function App() {
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   useEffect(() => window.artha.updates.onAvailable(({ version }) => setUpdateVersion(version)), []);
 
+  // One-time crash-reporting disclosure. Crash reports are opt-out (on by
+  // default); on first launch we tell the user once and let them disable it in
+  // Settings. Shown until acknowledged, then never again.
+  const [showSentryDisclosure, setShowSentryDisclosure] = useState(false);
+  useEffect(() => {
+    window.artha.settings.getSentry()
+      .then(({ disclosureAck }) => { if (!disclosureAck) setShowSentryDisclosure(true); })
+      .catch(() => { /* fresh DB / no handler — skip */ });
+  }, []);
+  const ackSentryDisclosure = () => {
+    setShowSentryDisclosure(false);
+    window.artha.settings.ackSentryDisclosure().catch(() => { /* best-effort */ });
+  };
+
   // Show the "How to use Artha" guide once, right after onboarding completes,
   // for first-time users. Reopenable anytime from the Help (?) button.
   useEffect(() => {
@@ -228,6 +242,25 @@ export default function App() {
             >
               ✕
             </button>
+          </div>
+        )}
+
+        {/* One-time crash-reporting disclosure — bottom-left, non-blocking. */}
+        {showSentryDisclosure && (
+          <div className="fixed bottom-4 left-4 z-[60] max-w-sm flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border shadow-lifted text-sm">
+            <span className="text-base leading-none mt-0.5">🛡️</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-artha-text leading-snug">
+                Artha sends anonymous crash reports to help fix bugs. No files or
+                conversations are included. You can disable this in Settings.
+              </p>
+              <button
+                onClick={ackSentryDisclosure}
+                className="mt-2 px-3 py-1 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-xs font-medium transition-colors"
+              >
+                Got it
+              </button>
+            </div>
           </div>
         )}
       </div>

@@ -1,6 +1,6 @@
 # Artha — Workspace Sitemap
 
-> Last updated: 2026-05-28 (added licensing / tier entitlements, forked onboarding, org-hub packaging)
+> Last updated: 2026-05-30 (added extended <think> reasoning, local context-gather, and opt-out Sentry resilience)
 
 ## Root
 
@@ -30,13 +30,16 @@
 | `src/main.ts` | Entry point — BrowserWindow creation, IPC setup, auto-updater, tray |
 | `src/preload.ts` | Context bridge — exposes `window.artha.*` API to renderer (zero Node access in renderer) |
 | `src/notify.ts` | `sendNotification()` — Electron native notifications with focus-on-click |
+| `src/sentry.ts` | Sentry init (opt-out, PII-scrubbed `beforeSend`/`beforeBreadcrumb`), release/env + `artha.ollama_connected`/`artha.mcp_server_count` tags, `withTransaction` (migration spans), `addBreadcrumb`, `captureException`, cron `startCheckIn`/`finishCheckIn`, runtime kill-switch |
 | `tsconfig.json` | TypeScript config for main process (CommonJS, Node 20 types) |
 | **db/** | |
 | `src/db/schema.ts` | SQLite schema + `getDb()` singleton — all `CREATE TABLE` + additive `ALTER TABLE` migrations; opens/migrates the DB on first call |
 | `src/db/scopes.ts` | Per-chat scope helpers — `getSessionScopes`/`getSessionAllowedRoots`/`getSessionPrimaryFolder`/`recomputePrimaryProject`; backs the folder/file sandbox + context |
+| `src/db/health.ts` | DB health heartbeat — `startHealthCheckpointing()` writes a `db_health.checkpointed_at` row + Sentry breadcrumb every 30 min (disaster-recovery forensics) |
 | **agent/** | |
 | `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory + live-environment context injection (date/time/timezone/OS/user), tool dispatch |
 | `src/agent/folderTree.ts` | `buildShallowTree()` — renders a shallow, noise-filtered directory tree for the working-scope context block |
+| `src/agent/contextGather.ts` | `gatherContext()` — pre-`<think>` local context assembly: top-5 memories by semantic similarity (local Ollama embeddings, keyword fallback) + last-3-turn recap + active scopes → `<context>` block + `contextScore` |
 | **skills/** | |
 | `src/skills/registry.ts` | `SkillRegistry` singleton — loads/creates/toggles YAML skill files, resolves `/slug` + auto-match, filters tool schemas per skill |
 | `src/skills/util.ts` | Pure skill helpers — slug normalisation, `/slug` parsing, import parsing, tool-allowlist filtering (unit-tested) |

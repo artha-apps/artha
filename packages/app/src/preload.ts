@@ -74,6 +74,13 @@ const api = {
       ipcRenderer.on('agent:citations', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:citations');
     },
+    // Internal chain-of-thought from the <think> phase. Emitted once per run
+    // before tool use. `showReasoning` mirrors the Settings toggle so the
+    // renderer can hide the disclosure while the phase still runs server-side.
+    onReasoning: (cb: (payload: { steps: { phase: string; content: string; context_score: number }[]; showReasoning: boolean }) => void) => {
+      ipcRenderer.on('agent:reasoning', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:reasoning');
+    },
     approvePlan: (workflowId: string, approved: boolean) =>
       ipcRenderer.invoke('agent:approvePlan', workflowId, approved),
     onSkillActive: (cb: (payload: { slug: string; name: string; icon: string }) => void) => {
@@ -254,6 +261,11 @@ const api = {
     // Desktop-control master switch (default off).
     getDesktopControl: () => ipcRenderer.invoke('settings:getDesktopControl') as Promise<boolean>,
     setDesktopControl: (enabled: boolean) => ipcRenderer.invoke('settings:setDesktopControl', enabled) as Promise<boolean>,
+    // Sentry crash reporting (opt-out, default ON). `getSentry` also reports
+    // whether the one-time first-launch disclosure has been acknowledged.
+    getSentry: () => ipcRenderer.invoke('settings:getSentry') as Promise<{ enabled: boolean; disclosureAck: boolean }>,
+    setSentry: (enabled: boolean) => ipcRenderer.invoke('settings:setSentry', enabled) as Promise<{ enabled: boolean }>,
+    ackSentryDisclosure: () => ipcRenderer.invoke('settings:ackSentryDisclosure') as Promise<boolean>,
   },
 
   // ── Cloud OAuth (Google Workspace) ────────────────────────────────────────

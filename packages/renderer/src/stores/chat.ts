@@ -20,6 +20,16 @@ export interface MessageAttachment {
   data: string; // base64
 }
 
+/** One entry in the agent's internal chain-of-thought, produced by the
+ *  orchestrator's <think> phase. `contextScore` (0-1) reflects how strongly the
+ *  assembled local context influenced this step. Rendered in the collapsible
+ *  "Thinking" disclosure. */
+export interface ReasoningStep {
+  phase: 'context' | 'think' | string;
+  content: string;
+  context_score: number;
+}
+
 /** Chat bubble. `senderType='tool'` is reserved — current code stores tool
  *  output on the assistant message via `toolEvents` rather than a separate
  *  bubble, which keeps the visual thread tidy. */
@@ -34,6 +44,8 @@ export interface Message {
   toolEvents?: ToolCallEvent[];
   citations?: Citation[];
   attachments?: MessageAttachment[];
+  /** Persisted chain-of-thought trace from the <think> phase, if any. */
+  reasoning?: ReasoningStep[];
 }
 
 /** One entry in the live execution log. Mirrors the orchestrator's
@@ -125,6 +137,12 @@ interface ChatState {
   pendingClarify: ClarifyRequest | null;
   pendingToolEvents: ToolCallEvent[];
   pendingCitations: Citation[];
+  /** Live chain-of-thought for the in-flight run (from the `agent:reasoning`
+   *  event). Folded onto the assistant message in `finaliseStream`. */
+  liveReasoning: ReasoningStep[] | null;
+  /** Mirror of the `show_reasoning` setting reported with the reasoning event —
+   *  when false the disclosure is hidden though the phase still ran. */
+  showReasoning: boolean;
   activeView: ActiveView;
   /** Which top-level tab is showing inside the Chat view. Ignored when
    *  `activeView !== 'chat'` (because a settings modal is open). */
@@ -159,6 +177,8 @@ interface ChatState {
   finaliseStream: () => void;
   addToolEvent: (ev: ToolCallEvent) => void;
   addCitations: (citations: Citation[]) => void;
+  /** Set the live reasoning trace + visibility for the in-flight run. */
+  setLiveReasoning: (steps: ReasoningStep[], show: boolean) => void;
   setPendingPlan: (plan: AgentPlan | null) => void;
   setPendingClarify: (req: ClarifyRequest | null) => void;
   setActiveView: (view: ActiveView) => void;
@@ -250,6 +270,8 @@ export const useChatStore = create<ChatState>((set) => ({
   pendingClarify: null,
   pendingToolEvents: [],
   pendingCitations: [],
+  liveReasoning: null,
+  showReasoning: true,
   activeView: 'chat',
   activeTab: loadActiveTab(),
   workspaceSettingsOpen: false,
@@ -272,7 +294,7 @@ export const useChatStore = create<ChatState>((set) => ({
     activeSessionId: id, messages: [], streamingContent: '',
     isStreaming: false, executionLog: [], pendingToolEvents: [],
     pendingCitations: [], activeWorkflowId: null, activeSkill: null,
-    scopes: [],
+    scopes: [], liveReasoning: null,
   }),
   setMessages: (messages) => set({ messages }),
 
@@ -308,7 +330,7 @@ export const useChatStore = create<ChatState>((set) => ({
       const hasCitations = s.pendingCitations.length > 0;
       // Only skip if there's truly nothing to show and no session
       if ((!hasContent && !hasToolEvents) || !s.activeSessionId) {
-        return { streamingContent: '', isStreaming: false, pendingToolEvents: [], pendingCitations: [], activeWorkflowId: null, activeSkill: null };
+        return { streamingContent: '', isStreaming: false, pendingToolEvents: [], pendingCitations: [], activeWorkflowId: null, activeSkill: null, liveReasoning: null };
       }
       return {
         messages: [...s.messages, {
@@ -317,6 +339,7 @@ export const useChatStore = create<ChatState>((set) => ({
           timestamp: Date.now(),
           toolEvents: hasToolEvents ? [...s.pendingToolEvents] : undefined,
           citations: hasCitations ? [...s.pendingCitations] : undefined,
+          reasoning: s.liveReasoning ?? undefined,
         }],
         streamingContent: '',
         isStreaming: false,
@@ -324,6 +347,7 @@ export const useChatStore = create<ChatState>((set) => ({
         pendingCitations: [],
         activeWorkflowId: null,
         activeSkill: null,
+        liveReasoning: null,
       };
     }),
 
@@ -343,6 +367,8 @@ export const useChatStore = create<ChatState>((set) => ({
       const fresh = citations.filter(c => !seen.has(c.url));
       return { pendingCitations: [...s.pendingCitations, ...fresh] };
     }),
+
+  setLiveReasoning: (steps, show) => set({ liveReasoning: steps, showReasoning: show }),
 
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
   setPendingClarify: (req) => set({ pendingClarify: req }),
