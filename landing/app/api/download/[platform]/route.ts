@@ -1,11 +1,13 @@
 /**
- * /api/download/:platform — proxies the matching installer through artha.space
- * so the browser never sees a github.com URL. Edge runtime, streamed.
+ * /api/download/:platform — resolves the matching installer for the latest
+ * release and 302-redirects to GitHub's browser_download_url.
  *
- * Repo (artha-apps/artha) is public, so GITHUB_TOKEN is optional. Assets are
- * still fetched via the API endpoint with Accept: application/octet-stream so
- * the browser never sees a github.com URL; the token, when present, only raises
- * the rate limit.
+ * Why redirect instead of proxy-streaming: streaming a ~140 MB binary through an
+ * Edge Function is unreliable (the browser could end up saving the file under
+ * GitHub's storage GUID with no extension when the stream/header path hiccups).
+ * GitHub's download URL carries the correct filename via response-content-
+ * disposition, so a redirect is robust. The repo is public, so there's no
+ * benefit to hiding the github.com URL.
  */
 import type { NextRequest } from 'next/server';
 
@@ -19,7 +21,7 @@ const ALLOWED: ReadonlySet<string> = new Set([
   'linux',
 ]);
 
-type GHAsset = { id: number; name: string; url: string };
+type GHAsset = { id: number; name: string; url: string; browser_download_url: string };
 type GHRelease = { assets: GHAsset[] };
 
 function pickAsset(
@@ -78,39 +80,20 @@ export async function GET(
   }
   const release = (await releaseRes.json()) as GHRelease;
   const asset = pickAsset(release.assets ?? [], platform);
-  if (!asset) {
+  if (!asset?.browser_download_url) {
     return new Response('No installer for that platform yet', {
       status: 404,
     });
   }
 
-  // Fetch the asset binary via the API endpoint with octet-stream accept.
-  // GitHub returns a 302 to its CDN with a short-lived signed URL;
-  // redirect:follow handles it. Auth is optional for a public repo.
-  const fileRes = await fetch(asset.url, {
+  // Redirect to GitHub's download URL — it serves the binary from its CDN with
+  // the correct filename. 302 (not 308) so the browser re-resolves on each
+  // download as new releases ship; don't let the redirect itself be cached long.
+  return new Response(null, {
+    status: 302,
     headers: {
-      'User-Agent': 'artha-space',
-      Accept: 'application/octet-stream',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    redirect: 'follow',
-  });
-  if (!fileRes.ok || !fileRes.body) {
-    return new Response('Download proxy failed', { status: 502 });
-  }
-
-  const safeName = asset.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-
-  return new Response(fileRes.body, {
-    status: 200,
-    headers: {
-      'content-type':
-        fileRes.headers.get('content-type') ?? 'application/octet-stream',
-      'content-disposition': `attachment; filename="${safeName}"`,
-      ...(fileRes.headers.get('content-length')
-        ? { 'content-length': fileRes.headers.get('content-length') as string }
-        : {}),
-      'cache-control': 'public, max-age=0, s-maxage=300',
+      location: asset.browser_download_url,
+      'cache-control': 'public, max-age=0, s-maxage=60',
     },
   });
 }
