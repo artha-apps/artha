@@ -24,6 +24,9 @@ release/
 *.key
 .artha-license-key.pem
 
+# Comp/beta license records — hold live license keys + customer emails. NEVER commit.
+demo_beta_test.md
+
 # Artha runtime data (never commit user data)
 artha-data/
 *.artha.db

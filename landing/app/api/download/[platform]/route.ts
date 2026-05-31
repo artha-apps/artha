@@ -72,7 +72,7 @@ export async function GET(
         Accept: 'application/vnd.github+json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      next: { revalidate: 300 },
+      next: { revalidate: 60 },
     },
   );
   if (!releaseRes.ok) {
