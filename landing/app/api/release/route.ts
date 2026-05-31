@@ -24,22 +24,28 @@ function platformOf(filename: string): Platform | null {
   return null;
 }
 
+/** Fetch the latest release. Tries the token (higher rate limit) first, but the
+ *  repo is public — so if the token is missing/expired (401/403), retry
+ *  unauthenticated rather than getting stuck serving a stale cached release. */
+async function fetchLatest(token?: string): Promise<Response> {
+  const url = `https://api.github.com/repos/${REPO}/releases/latest`;
+  const headers = (auth: boolean) => ({
+    'User-Agent': 'artha-space',
+    Accept: 'application/vnd.github+json',
+    ...(auth && token ? { Authorization: `Bearer ${token}` } : {}),
+  });
+  // Short revalidate so a freshly-published release shows up within ~1 min.
+  let res = await fetch(url, { headers: headers(true), next: { revalidate: 60 } });
+  if ((res.status === 401 || res.status === 403) && token) {
+    res = await fetch(url, { headers: headers(false), next: { revalidate: 60 } });
+  }
+  return res;
+}
+
 export async function GET(_req: NextRequest) {
   const token = process.env.GITHUB_TOKEN;
 
-  const ghRes = await fetch(
-    `https://api.github.com/repos/${REPO}/releases/latest`,
-    {
-      headers: {
-        'User-Agent': 'artha-space',
-        Accept: 'application/vnd.github+json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      // Short revalidate so a freshly-published release shows up within ~1 min
-      // (a public-repo GH call is cheap, and GITHUB_TOKEN raises the rate limit).
-      next: { revalidate: 60 },
-    },
-  );
+  const ghRes = await fetchLatest(token);
 
   if (!ghRes.ok) {
     return Response.json(

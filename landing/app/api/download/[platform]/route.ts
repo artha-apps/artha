@@ -64,17 +64,18 @@ export async function GET(
 
   const token = process.env.GITHUB_TOKEN;
 
-  const releaseRes = await fetch(
-    `https://api.github.com/repos/${REPO}/releases/latest`,
-    {
-      headers: {
-        'User-Agent': 'artha-space',
-        Accept: 'application/vnd.github+json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      next: { revalidate: 60 },
-    },
-  );
+  // Repo is public — if the token is missing/expired (401/403), retry
+  // unauthenticated so a bad token can't wedge downloads on a stale release.
+  const url = `https://api.github.com/repos/${REPO}/releases/latest`;
+  const hdrs = (auth: boolean) => ({
+    'User-Agent': 'artha-space',
+    Accept: 'application/vnd.github+json',
+    ...(auth && token ? { Authorization: `Bearer ${token}` } : {}),
+  });
+  let releaseRes = await fetch(url, { headers: hdrs(true), next: { revalidate: 60 } });
+  if ((releaseRes.status === 401 || releaseRes.status === 403) && token) {
+    releaseRes = await fetch(url, { headers: hdrs(false), next: { revalidate: 60 } });
+  }
   if (!releaseRes.ok) {
     return new Response('Release lookup failed', { status: 502 });
   }
