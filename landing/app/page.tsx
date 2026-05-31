@@ -303,37 +303,15 @@ export default function Page() {
         <section className="pricing" id="pricing">
           <div className="container">
             <div className="section-header">
-              <h2>Start free. Upgrade when you need more.</h2>
+              <h2>One purchase. Yours forever.</h2>
               <p>
-                Artha runs entirely on your device — no account, no telemetry.
-                Pro adds advanced skills and unlocks the full agent. One payment,
-                yours forever.
+                Artha is a one-time purchase — no subscription, no accounts.
+                Buy a license, run it locally on your machine, and own it forever.
               </p>
             </div>
-            <div className="price-grid">
-              <div className="price-card">
-                <div className="price-tier">Free</div>
-                <div className="price-amount">
-                  $0<span className="price-suffix">forever</span>
-                </div>
-                <p className="price-desc">
-                  The full local AI agent on your hardware. No strings attached.
-                </p>
-                <ul className="price-features">
-                  <li>Unlimited local AI conversations (Ollama)</li>
-                  <li>Local document indexing &amp; RAG</li>
-                  <li>Persistent agent memory</li>
-                  <li>DOCX / XLSX / PPTX / PDF generation</li>
-                  <li>Works fully offline · zero telemetry</li>
-                </ul>
-                <a className="price-cta secondary" href={downloadHref(primaryPlatform)}>
-                  Download free
-                </a>
-              </div>
-
+            <div className="price-grid single">
               <div className="price-card highlight">
-                <div className="price-badge">Most popular</div>
-                <div className="price-tier">Pro</div>
+                <div className="price-tier">Artha License</div>
                 <div className="price-amount">
                   {price?.configured && price.display ? (
                     <>{price.display}</>
@@ -345,14 +323,15 @@ export default function Page() {
                   {price?.oneTime && <span className="price-suffix">one-time</span>}
                 </div>
                 <p className="price-desc">
-                  Everything in Free, plus advanced skills and priority support.
-                  A perpetual license — never expires.
+                  A perpetual license to run Artha locally. Pay once, use forever —
+                  your key is delivered by email instantly.
                 </p>
                 <ul className="price-features">
-                  <li>Everything in Free</li>
-                  <li>Advanced agent skills</li>
+                  <li>Run Artha locally on your machine</li>
+                  <li>Perpetual license key — never expires</li>
+                  <li>Local AI, document generation &amp; RAG</li>
+                  <li>Fully offline · zero telemetry</li>
                   <li>Priority email support</li>
-                  <li>Perpetual license key, delivered by email</li>
                 </ul>
                 <button
                   className="price-cta primary"
@@ -362,7 +341,7 @@ export default function Page() {
                   {checkoutLoading
                     ? 'Redirecting to checkout…'
                     : price?.configured
-                      ? 'Upgrade to Pro'
+                      ? 'Buy a license'
                       : 'Coming soon'}
                 </button>
                 {checkoutError && <p className="price-error">{checkoutError}</p>}
