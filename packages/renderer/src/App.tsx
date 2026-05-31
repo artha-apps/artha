@@ -12,7 +12,7 @@
  * the matching section, so old call-sites keep working without refactor.
  */
 import { useEffect, useState } from 'react';
-import { useChatStore } from './stores/chat';
+import { useChatStore, type Session } from './stores/chat';
 import Onboarding from './components/Onboarding/Onboarding';
 import Sidebar from './components/Sidebar/Sidebar';
 import ChatWindow from './components/Chat/ChatWindow';
@@ -63,7 +63,10 @@ export default function App() {
   // In-app "update available" banner — set when the main process detects a
   // newer GitHub release. Notification-only; the button opens the download page.
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
-  useEffect(() => window.artha.updates.onAvailable(({ version }) => setUpdateVersion(version)), []);
+  useEffect(() => {
+    const off = window.artha.updates.onAvailable(({ version }) => setUpdateVersion(version));
+    return () => { off(); };
+  }, []);
 
   // One-time crash-reporting disclosure. Crash reports are opt-out (on by
   // default); on first launch we tell the user once and let them disable it in
@@ -156,7 +159,7 @@ export default function App() {
     (async () => {
       const list = await window.artha.sessions.list();
       if (cancelled) return;
-      const general = list.filter((s) => !s.project_id);
+      const general = list.filter((s: Session) => !s.project_id);
       if (general.length > 0) {
         setSessions(list);
         setActiveSession(general[0].session_id);
