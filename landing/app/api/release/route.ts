@@ -35,9 +35,11 @@ async function fetchLatest(token?: string): Promise<Response> {
     ...(auth && token ? { Authorization: `Bearer ${token}` } : {}),
   });
   // Short revalidate so a freshly-published release shows up within ~1 min.
-  let res = await fetch(url, { headers: headers(true), next: { revalidate: 60 } });
+  // no-store: never use Next's durable Data Cache (it wedged on a stale release
+  // and wouldn't revalidate). The CDN response cache below absorbs bursts.
+  let res = await fetch(url, { headers: headers(true), cache: 'no-store' });
   if ((res.status === 401 || res.status === 403) && token) {
-    res = await fetch(url, { headers: headers(false), next: { revalidate: 60 } });
+    res = await fetch(url, { headers: headers(false), cache: 'no-store' });
   }
   return res;
 }
@@ -70,7 +72,7 @@ export async function GET(_req: NextRequest) {
     { tag_name: release.tag_name, assets: assetsByPlatform },
     {
       headers: {
-        'cache-control': 'public, max-age=0, s-maxage=300',
+        'cache-control': 'public, max-age=0, s-maxage=60',
       },
     },
   );
