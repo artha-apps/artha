@@ -115,8 +115,8 @@
 | `HandoffBanner.tsx` | Banner shown when the agent hands the browser to the user (resume / cancel) |
 | **components/ExecutionLog/** | |
 | `ExecutionLog.tsx` | Live step-by-step view of the ReAct loop's actions |
-| **components/Guide/** | |
-| `Guide.tsx` | "How to use Artha" modal — one card per core feature (chat, file tasks, docs, file-search, models, privacy) with step-by-step + example prompt. Opened from the TabBar `?` button; auto-shown once after onboarding (localStorage `artha_guide_seen`) |
+| `Settings/GuidePanel.tsx` | "How to use Artha" — Workspace Settings ▸ User Guide. Feature list; selecting one floats that feature's card (steps + example prompt). Opened by the TabBar `?` button and once after onboarding |
+| `Settings/AboutPanel.tsx` | Workspace Settings ▸ About — version/release + Electron/Chromium/Node/platform (via `system:appInfo`), check-for-updates, release-notes link, Shree Labs credit |
 | **components/Onboarding/** | |
 | `Onboarding.tsx` | First-run setup — persona picker (Individual vs Organization admin), then Ollama+model flow for individuals with optional Pro-license paste; routes organization admins to `OrgSetup` |
 | `OrgSetup.tsx` | Three-step admin sub-flow — paste org license, start the LAN/hub server, provision seats (mints a `team_members` row + bound API key per teammate, renders copyable connection cards) |

@@ -366,6 +366,11 @@ const api = {
       ipcRenderer.invoke('system:checkPoppler') as Promise<{ installed: boolean; path?: string }>,
     /** Open Finder / Explorer at the given path. No-op on bad input. */
     revealInFolder: (p: string) => ipcRenderer.invoke('system:revealInFolder', p),
+    /** App version + runtime versions, for the About panel. */
+    getAppInfo: () =>
+      ipcRenderer.invoke('system:appInfo') as Promise<{
+        version: string; electron: string; node: string; chrome: string; platform: string;
+      }>,
   },
 
   // ── Router ───────────────────────────────────────────────────────────────
