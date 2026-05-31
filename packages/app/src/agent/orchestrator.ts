@@ -460,8 +460,7 @@ Respond ONLY with a valid JSON object (no markdown, no explanation):
 {
   "steps": [
     { "index": 0, "description": "List files in ~/Desktop to see what screenshots exist", "toolName": "fs_list_directory" },
-    { "index": 1, "description": "Create a Screenshots folder", "toolName": "fs_create_directory" },
-    { "index": 2, "description": "Move each screenshot into the folder", "toolName": "fs_move_file" }
+    { "index": 1, "description": "Move all matching screenshots into the target folder in one batch", "toolName": "fs_move_batch" }
   ],
   "requiresApproval": true,
   "requiresParallel": false,
@@ -536,7 +535,9 @@ Rules:
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
         role: 'system',
-        content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools.
+        content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools, and you ACT.
+
+When the user asks you to move, organise, rename, create, or delete files, you DO it by calling tools — you NEVER just list a folder and then describe it or ask what to do next. Listing a directory (fs_list_directory) is only the FIRST step to see what's there; you must IMMEDIATELY continue calling tools to perform the actual task, and keep going until it is fully done and verified. Do not summarise the folder contents back to the user instead of acting. Only write a plain-English reply once the task is COMPLETE (or you are genuinely blocked and must ask one specific question).
 
 ${memoryBlock}${skillBlock}${projectBlock}
 
@@ -551,9 +552,9 @@ ${destHint ? `DESTINATION (extracted from user request): ${destHint}\nUse THIS p
 RULES — follow exactly, no exceptions:
 1. Resolve folder names: bare names (e.g. "ss26", "Screenshots") must be found by trying ~/Desktop/NAME → ~/Documents/NAME → ~/Downloads/NAME → ~/NAME with fs_list_directory.
 2. NEVER fabricate results. If you did not call a tool, do NOT claim the action happened. Every statement about a file being moved, created, or deleted MUST have a corresponding tool call.
-3. To move files: call fs_list_directory first, then call fs_move_file for EACH file individually — one tool call per file.
-4. After ALL moves, call fs_list_directory on the SOURCE to confirm it is empty, and on the DESTINATION to confirm files arrived.
-5. Do NOT stop calling tools until every file is moved and verified.
+3. To move files: call fs_list_directory first to see what exists, then move them. For MULTIPLE files (e.g. organising a folder), call fs_move_batch ONCE with every { source, destination } pair — this is far faster than one call per file. Use fs_move_file only for a single file.
+4. After moving, call fs_list_directory on the DESTINATION to confirm files arrived (and on the SOURCE if the user expects it emptied).
+5. Do NOT stop calling tools until the task is fully done and verified. Listing the folder is NOT the task — moving the files is.
 6. Destination path for fs_move_file MUST include the filename: e.g. ${homeDir}/Desktop/FolderName/file.png
 7. NEVER respond with JSON. Always write plain conversational English.
 8. Write a plain-English summary ONLY after all tool calls and verification are complete.
