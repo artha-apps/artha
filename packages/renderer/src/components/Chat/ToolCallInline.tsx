@@ -83,32 +83,19 @@ export default function ToolCallInline({ events }: Props) {
         <div className="divide-y divide-artha-border">
           {pairs.map((pair, i) => {
             const isError = String(pair.result?.result ?? '').startsWith('Error');
-            let args: Record<string, unknown> = {};
-            try { args = JSON.parse(pair.invoke.args ?? '{}'); } catch { /**/ }
-
+            const outcome = summariseResult(pair.result?.result);
             return (
-              <div key={i} className="px-3 py-2 space-y-1 bg-artha-bg/40">
-                <div className="flex items-center gap-2">
-                  {isError
-                    ? <XCircle size={10} className="text-artha-danger shrink-0" />
-                    : <CheckCircle2 size={10} className="text-artha-success shrink-0" />}
-                  <span className="text-artha-text">{describeTool(pair.invoke.name, pair.invoke.args)}</span>
-                  <code className="font-mono text-artha-subtle text-[10px] ml-auto shrink-0">{pair.invoke.name}</code>
+              <div key={i} className="flex items-start gap-2 px-3 py-2 bg-artha-bg/40">
+                {isError
+                  ? <XCircle size={11} className="text-artha-danger shrink-0 mt-0.5" />
+                  : <CheckCircle2 size={11} className="text-artha-success shrink-0 mt-0.5" />}
+                <div className="min-w-0">
+                  {/* Plain-English action — no tool names, no JSON. */}
+                  <div className="text-artha-text">{describeTool(pair.invoke.name, pair.invoke.args)}</div>
+                  {outcome && (
+                    <div className={`text-[11px] ${isError ? 'text-artha-danger/90' : 'text-artha-muted'}`}>{outcome}</div>
+                  )}
                 </div>
-                {Object.keys(args).length > 0 && (
-                  // Truncate args at 300 chars to avoid enormous filesystem paths /
-                  // base64 blobs making the bubble unreadable.
-                  <pre className="font-mono text-artha-muted whitespace-pre-wrap break-all pl-4 leading-relaxed">
-                    {JSON.stringify(args, null, 2).slice(0, 300)}
-                  </pre>
-                )}
-                {pair.result?.result && (
-                  // Results are often verbose (file listings, shell output) — clamp
-                  // to 250 chars to keep the bubble compact.
-                  <pre className={`font-mono whitespace-pre-wrap break-all pl-4 leading-relaxed ${isError ? 'text-artha-danger/90' : 'text-artha-success/90'}`}>
-                    {String(pair.result.result).slice(0, 250)}
-                  </pre>
-                )}
               </div>
             );
           })}
@@ -116,4 +103,28 @@ export default function ToolCallInline({ events }: Props) {
       )}
     </div>
   );
+}
+
+/** Turn a tool's JSON result into a one-line plain-English outcome. Never shows
+ *  raw JSON — just what happened, so the step list reads like prose. */
+function summariseResult(raw?: string): string {
+  if (!raw) return '';
+  const s = String(raw);
+  if (s.startsWith('Error')) return s.replace(/^Error:?\s*/, '').slice(0, 160);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let r: any;
+  try { r = JSON.parse(s); } catch { return s.slice(0, 120); }
+  if (r?.error) return String(r.error).slice(0, 160);
+  if (typeof r?.moved === 'number') return `Moved ${r.moved} file${r.moved === 1 ? '' : 's'}${r.failed ? `, ${r.failed} couldn’t be moved` : ''}`;
+  if (r?.moved || r?.to) return 'Moved';
+  if (r?.created) return 'Created the folder';
+  if (r?.trashed) return 'Moved to Trash';
+  if (r?.deleted) return 'Deleted';
+  if (r?.copied) return 'Copied';
+  if (Array.isArray(r?.files) || Array.isArray(r?.entries)) {
+    const n = (r.files ?? r.entries).length;
+    return `Found ${n} item${n === 1 ? '' : 's'}`;
+  }
+  if (r?.content !== undefined) return 'Read the file';
+  return 'Done';
 }
