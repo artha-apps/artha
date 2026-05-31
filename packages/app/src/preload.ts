@@ -4,6 +4,11 @@
  */
 import { contextBridge, ipcRenderer } from 'electron';
 
+/**
+ * The full type of `window.artha` as seen by the renderer. Inferred from the
+ * `api` object so the renderer and main process can never drift out of sync —
+ * adding a channel here automatically widens the type.
+ */
 export type ArthaAPI = typeof api;
 
 /** A folder or file attached to a single chat (see `session_scopes`). */
@@ -16,6 +21,16 @@ export interface SessionScope {
   added_at: number;
 }
 
+/**
+ * The preload API surface exposed on `window.artha`.
+ *
+ * Convention for event-listener helpers (e.g. `onToken`, `onStreamEnd`):
+ *   - They register a listener and return an unsubscribe function.
+ *   - Callers must invoke the returned cleanup when the component unmounts;
+ *     failing to do so leaks listeners across re-renders.
+ *
+ * All `invoke` calls map 1-to-1 to an `ipcMain.handle` in `ipc/handlers.ts`.
+ */
 const api = {
   // ── Agent ────────────────────────────────────────────────────────────────
   agent: {
@@ -43,10 +58,14 @@ const api = {
       ipcRenderer.on('agent:streamEnd', () => cb());
       return () => ipcRenderer.removeAllListeners('agent:streamEnd');
     },
+    // Fired when the orchestrator resets its in-progress stream (e.g. on cancel
+    // or re-send) so the renderer can clear its partial token accumulator.
     onStreamReset: (cb: () => void) => {
       ipcRenderer.on('agent:streamReset', () => cb());
       return () => ipcRenderer.removeAllListeners('agent:streamReset');
     },
+    // Carries the workflow ID the orchestrator assigned to this run. The renderer
+    // needs it to call `cancelTask` or `approvePlan` for the in-flight workflow.
     onWorkflowStart: (cb: (workflowId: string) => void) => {
       ipcRenderer.on('agent:workflowStart', (_e, id) => cb(id));
       return () => ipcRenderer.removeAllListeners('agent:workflowStart');
@@ -80,11 +99,39 @@ const api = {
     },
   },
 
+  // ── Projects ─────────────────────────────────────────────────────────────
+  // Project = a folder + auto-built RAG index + rolling cross-session memory.
+  // The renderer uses these to drive the switcher, the sidebar list, and
+  // `@project` references in the composer.
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list') as Promise<Array<{
+      project_id: string;
+      name: string;
+      root_path: string;
+      rag_index_id: string | null;
+      summary: string | null;
+      created_at: number;
+    }>>,
+    get: (projectId: string) => ipcRenderer.invoke('projects:get', projectId),
+    create: () => ipcRenderer.invoke('projects:create'),
+  },
+
+  // ── Filesystem reads (renderer-safe, read-only) ──────────────────────────
+  fs: {
+    /** Depth-2 directory tree as a multi-line string (Cowork-style). Used by
+     *  the Code tab's file pane; returns '' for empty / unreadable paths. */
+    tree: (rootPath: string, maxEntries?: number) =>
+      ipcRenderer.invoke('fs:tree', rootPath, maxEntries) as Promise<string>,
+  },
+
   // ── Sessions & History ───────────────────────────────────────────────────
   sessions: {
     list: () => ipcRenderer.invoke('sessions:list'),
     create: (projectId?: string | null) => ipcRenderer.invoke('sessions:create', projectId),
     delete: (id: string) => ipcRenderer.invoke('sessions:delete', id),
+    /** Sessions filtered to one project (or `null` for no-project). */
+    listByProject: (projectId: string | null) =>
+      ipcRenderer.invoke('sessions:listByProject', projectId),
     getMessages: (sessionId: string) =>
       ipcRenderer.invoke('sessions:getMessages', sessionId),
     onTitleUpdated: (cb: (payload: { sessionId: string; title: string }) => void) => {
@@ -100,6 +147,10 @@ const api = {
   scopes: {
     list: (sessionId: string) => ipcRenderer.invoke('scopes:list', sessionId) as Promise<SessionScope[]>,
     addFolder: (sessionId: string) => ipcRenderer.invoke('scopes:addFolder', sessionId) as Promise<SessionScope | null>,
+    /** Programmatic add-by-path — no dialog. Idempotent. Used to auto-attach
+     *  the active project's root to fresh sessions. */
+    addFolderPath: (sessionId: string, rootPath: string) =>
+      ipcRenderer.invoke('scopes:addFolderPath', sessionId, rootPath) as Promise<SessionScope | null>,
     addFile: (sessionId: string) => ipcRenderer.invoke('scopes:addFile', sessionId) as Promise<SessionScope[]>,
     remove: (scopeId: string) => ipcRenderer.invoke('scopes:remove', scopeId) as Promise<boolean>,
     // Rebuild a folder scope's RAG index. Returns chunk count.
@@ -206,12 +257,38 @@ const api = {
 
   // ── LAN collaboration server ──────────────────────────────────────────────
   // Exposes the agent over the local network (0.0.0.0:7842) for teammates.
+  // `start` may return an error string when the current license tier does not
+  // include the LAN server (Free → must upgrade).
   lan: {
-    start: () => ipcRenderer.invoke('lan:start') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
+    start: () => ipcRenderer.invoke('lan:start') as Promise<{ running: boolean; url: string | null; localIp: string | null; error?: string }>,
     stop: () => ipcRenderer.invoke('lan:stop') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
     getStatus: () => ipcRenderer.invoke('lan:getStatus') as Promise<{ running: boolean; url: string | null; localIp: string | null }>,
     setAutostart: (enabled: boolean) => ipcRenderer.invoke('lan:setAutostart', enabled) as Promise<boolean>,
     getAutostart: () => ipcRenderer.invoke('lan:getAutostart') as Promise<boolean>,
+  },
+
+  // ── License ──────────────────────────────────────────────────────────────
+  // Offline Ed25519-signed keys gate Pro/Enterprise capabilities (LAN server,
+  // shared memories, RBAC, seat counts). The raw key never leaves the main
+  // process after `apply` — the renderer only sees derived entitlements.
+  license: {
+    get: () => ipcRenderer.invoke('license:get') as Promise<{
+      entitlements: {
+        tier: 'free' | 'pro' | 'enterprise';
+        seats: number; lanServer: boolean; sharedMemory: boolean;
+        orgHub: boolean; rbac: boolean; auditExport: boolean;
+        org: string | null; expiresAt: number | null;
+      };
+      hasKey: boolean;
+    }>,
+    apply: (rawKey: string) => ipcRenderer.invoke('license:apply', rawKey) as Promise<
+      | { ok: true; entitlements: { tier: 'free' | 'pro' | 'enterprise'; seats: number; lanServer: boolean; sharedMemory: boolean; orgHub: boolean; rbac: boolean; auditExport: boolean; org: string | null; expiresAt: number | null } }
+      | { ok: false; error: string }
+    >,
+    clear: () => ipcRenderer.invoke('license:clear') as Promise<{
+      ok: true;
+      entitlements: { tier: 'free'; seats: number; lanServer: boolean; sharedMemory: boolean; orgHub: boolean; rbac: boolean; auditExport: boolean; org: null; expiresAt: null };
+    }>,
   },
 
   // ── Desktop control ───────────────────────────────────────────────────────
@@ -270,12 +347,14 @@ const api = {
   },
 
   // ── System ───────────────────────────────────────────────────────────────
-  // Probes for optional native dependencies the app shells out to.
+  // Native-dep probes + small shell shortcuts.
   system: {
     // PDF reading needs Poppler's `pdftoppm`; the chat composer checks this
     // before opening the PDF picker so it can show an install hint.
     checkPoppler: () =>
       ipcRenderer.invoke('system:checkPoppler') as Promise<{ installed: boolean; path?: string }>,
+    /** Open Finder / Explorer at the given path. No-op on bad input. */
+    revealInFolder: (p: string) => ipcRenderer.invoke('system:revealInFolder', p),
   },
 
   // ── Router ───────────────────────────────────────────────────────────────
@@ -401,8 +480,10 @@ const api = {
       key_id: string; name: string; created_at: number;
       last_used_at: number | null; is_enabled: number;
     }[]>,
-    create: (name: string) =>
-      ipcRenderer.invoke('apikeys:create', name) as Promise<{ key_id: string; plaintext: string }>,
+    // Two call shapes for back-compat: a plain name (legacy) or an object that
+    // binds the key to a teammate. Bound keys carry identity into LAN auth.
+    create: (args: string | { name: string; memberId?: string }) =>
+      ipcRenderer.invoke('apikeys:create', args) as Promise<{ key_id: string; plaintext: string }>,
     toggle: (keyId: string, enabled: boolean) =>
       ipcRenderer.invoke('apikeys:toggle', keyId, enabled) as Promise<boolean>,
     revoke: (keyId: string) =>

@@ -1,6 +1,19 @@
+/**
+ * Unit tests for the pure formatting helpers in ragFormat.ts. No mocking
+ * needed — just inputs and expected output strings.
+ *
+ * Verifies:
+ *   - formatRagResults: actionable message on zero hits (no hallucination bait)
+ *   - formatRagResults: hit list includes basename, relevance score, and snippet
+ *   - formatRagResults: internal whitespace in snippets is collapsed
+ *   - formatRagResults: long text is truncated to SNIPPET_CHARS
+ *   - formatIndexList: actionable message on empty index list
+ *   - formatIndexList: index names and chunk counts are rendered
+ */
 import { describe, it, expect } from 'vitest';
 import { formatRagResults, formatIndexList, type RagHit } from './ragFormat';
 
+// ── formatRagResults ──────────────────────────────────────────────────────────
 describe('formatRagResults', () => {
   it('returns an actionable message when there are no hits', () => {
     const out = formatRagResults('quarterly goals', []);
@@ -29,6 +42,7 @@ describe('formatRagResults', () => {
   });
 });
 
+// ── formatIndexList ───────────────────────────────────────────────────────────
 describe('formatIndexList', () => {
   it('handles the empty case', () => {
     expect(formatIndexList([])).toMatch(/no rag indexes/i);

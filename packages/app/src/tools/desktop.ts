@@ -114,6 +114,8 @@ export const DESKTOP_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
 
 const DESKTOP_TOOL_NAMES = new Set(DESKTOP_TOOL_SCHEMAS.map(t => t.function.name));
 
+/** Returns true when `name` is a built-in desktop tool — used by MCPRegistry
+ *  to route calls without importing the full schema list. */
 export function isDesktopTool(name: string): boolean {
   return DESKTOP_TOOL_NAMES.has(name);
 }
@@ -143,11 +145,15 @@ async function captureScreenshot(): Promise<string> {
   return first.thumbnail.toPNG().toString('base64');
 }
 
-/** Resolve a "cmd+shift+c"-style combo into nut-js Key values. */
+/** Resolve a "cmd+shift+c"-style combo into an array of nut-js Key values
+ *  suitable for spread into `keyboard.pressKey(...keys)`. Tokens not found in
+ *  the named map are looked up as `Key[token.toUpperCase()]` — covers letters
+ *  (a–z) and function keys (f1–f12) without enumerating them explicitly. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function resolveKeys(nut: any, combo: string): unknown[] {
   const Key = nut.Key;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /** Human-friendly modifier and special-key aliases → nut-js Key enum values. */
   const named: Record<string, any> = {
     cmd: Key.LeftSuper, command: Key.LeftSuper, meta: Key.LeftSuper, win: Key.LeftSuper, super: Key.LeftSuper,
     ctrl: Key.LeftControl, control: Key.LeftControl,
@@ -168,6 +174,11 @@ function resolveKeys(nut: any, combo: string): unknown[] {
   }).filter((k): k is unknown => k !== undefined);
 }
 
+/**
+ * Dispatch a desktop tool call. All errors are caught and returned as
+ * `"Error: ..."` strings rather than thrown, so the ReAct loop can relay the
+ * message to the model and retry or gracefully stop without crashing.
+ */
 export async function invokeDesktopTool(name: string, args: Record<string, unknown>): Promise<string> {
   try {
     switch (name) {
@@ -223,6 +234,8 @@ export async function invokeDesktopTool(name: string, args: Record<string, unkno
         try {
           const fs = await import('fs');
           const os = await import('os');
+          // nut-js imageResource() requires a file path, not a buffer, so we
+          // write a temp PNG and clean up immediately after the match attempt.
           const tmp = `${os.tmpdir()}/artha-find-${Date.now()}.png`;
           fs.writeFileSync(tmp, Buffer.from(b64, 'base64'));
           const region = await nut.screen.find(nut.imageResource(tmp));

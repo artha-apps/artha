@@ -363,10 +363,16 @@ export async function initDatabase(): Promise<void> {
     -- is shown to the user once on creation and never stored in plaintext —
     -- only a SHA-256 hex digest is persisted here. The LAN server hashes
     -- incoming tokens and compares against key_hash.
+    -- member_id / role link a key to its team_members row so the LAN server
+    -- can resolve "which teammate is calling" from the Bearer token alone.
+    -- role is cached here to avoid a join on every authorised request; it's
+    -- kept in sync by apikeys:create when the key is issued for a member.
     CREATE TABLE IF NOT EXISTS api_keys (
       key_id       TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
       name         TEXT NOT NULL,
       key_hash     TEXT NOT NULL UNIQUE,
+      member_id    TEXT,
+      role         TEXT,
       created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
       last_used_at INTEGER,
       is_enabled   INTEGER NOT NULL DEFAULT 1
@@ -450,10 +456,16 @@ export async function initDatabase(): Promise<void> {
       );
   `);
 
-  // Best-effort migration for existing DBs that pre-date citations_json.
-  // CREATE TABLE IF NOT EXISTS only creates *new* tables; an existing
-  // messages table from a pre-web build needs an explicit ALTER. Swallow
-  // errors so a malformed sqlite_master row can't brick boot.
+  // ── Additive column migrations ───────────────────────────────────────────
+  // SQLite's CREATE TABLE IF NOT EXISTS never modifies existing tables, so any
+  // column added after the initial release must be back-filled with ALTER TABLE.
+  // Each block below follows the same pattern:
+  //   1. PRAGMA table_info() to check whether the column already exists.
+  //   2. ALTER TABLE … ADD COLUMN (safe — SQLite allows this at any time).
+  //   3. Swallow errors so a corrupt sqlite_master row can't prevent boot.
+
+  // Migration v1→v2: citations_json on messages — records web source URLs
+  // returned by web_search/web_fetch so the renderer can render citation chips.
   try {
     const cols = db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
     if (!cols.some(c => c.name === 'citations_json')) {
@@ -463,8 +475,8 @@ export async function initDatabase(): Promise<void> {
     console.warn('[Artha] citations_json migration skipped:', err);
   }
 
-  // Migration: add context_window to llm_models for DBs created before this
-  // column existed. Default 4096 keeps existing model rows unchanged.
+  // Migration v2→v3: context_window on llm_models — user-configurable max
+  // tokens passed to the model; default 4096 keeps existing rows unchanged.
   try {
     const llmCols = db.prepare(`PRAGMA table_info(llm_models)`).all() as { name: string }[];
     if (!llmCols.some(c => c.name === 'context_window')) {
@@ -474,8 +486,8 @@ export async function initDatabase(): Promise<void> {
     console.warn('[Artha] context_window migration skipped:', err);
   }
 
-  // Migration: add project_id to chat_sessions for DBs created before projects
-  // existed. NULL means the session belongs to no project (general chat).
+  // Migration v3→v4: project_id on chat_sessions — links a session to a
+  // project workspace (NULL = general chat with no folder scope).
   try {
     const sessCols = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
     if (!sessCols.some(c => c.name === 'project_id')) {
@@ -485,8 +497,8 @@ export async function initDatabase(): Promise<void> {
     console.warn('[Artha] project_id migration skipped:', err);
   }
 
-  // Migration: add rag_index_id + summary to projects (Phase 2/3 columns) for
-  // DBs whose projects table pre-dates them.
+  // Migration v4→v5: rag_index_id + summary on projects — Phase 2/3 columns
+  // for auto-built RAG indexes and rolling cross-session project memory.
   try {
     const projCols = db.prepare(`PRAGMA table_info(projects)`).all() as { name: string }[];
     if (projCols.length) {
@@ -497,8 +509,8 @@ export async function initDatabase(): Promise<void> {
     console.warn('[Artha] projects column migration skipped:', err);
   }
 
-  // Migration: add project_id to memory_entities so memories can be scoped to a
-  // project. NULL = global memory available in every conversation.
+  // Migration v5→v6: project_id on memory_entities — scopes a memory to one
+  // project (NULL = global, injected in every conversation).
   try {
     const memCols = db.prepare(`PRAGMA table_info(memory_entities)`).all() as { name: string }[];
     if (memCols.length && !memCols.some(c => c.name === 'project_id')) {
@@ -508,9 +520,8 @@ export async function initDatabase(): Promise<void> {
     console.warn('[Artha] memory project_id migration skipped:', err);
   }
 
-  // Migration: add is_shared flag to memory_entities (team shared memories).
-  // When 1, this memory is injected into LAN server sessions so remote teammates
-  // get the same persistent context as the local user.
+  // Migration v6→v7: is_shared on memory_entities — when 1, the memory is also
+  // injected into LAN server sessions so remote teammates share the same context.
   try {
     const memCols2 = db.prepare(`PRAGMA table_info(memory_entities)`).all() as { name: string }[];
     if (memCols2.length && !memCols2.some(c => c.name === 'is_shared')) {
@@ -518,6 +529,20 @@ export async function initDatabase(): Promise<void> {
     }
   } catch (err) {
     console.warn('[Artha] memory is_shared migration skipped:', err);
+  }
+
+  // Migration v7→v8: member_id + role on api_keys — link a Bearer-token key to
+  // the team_members row that owns it, so the LAN server can resolve identity
+  // (and role for RBAC on Enterprise) from the token alone. Nullable for keys
+  // issued before team mode existed.
+  try {
+    const akCols = db.prepare(`PRAGMA table_info(api_keys)`).all() as { name: string }[];
+    if (akCols.length) {
+      if (!akCols.some(c => c.name === 'member_id')) db.exec(`ALTER TABLE api_keys ADD COLUMN member_id TEXT`);
+      if (!akCols.some(c => c.name === 'role')) db.exec(`ALTER TABLE api_keys ADD COLUMN role TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] api_keys member_id/role migration skipped:', err);
   }
 
   console.log('[Artha] Database initialised at', dbPath);

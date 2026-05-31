@@ -1,10 +1,28 @@
+/**
+ * Sticky top navigation bar for the Artha landing page.
+ *
+ * The bar is fixed so it stays visible while the user scrolls. Links use
+ * in-page fragment anchors (#how, #features) for the two main sections,
+ * plus an external GitHub link. The "Download" CTA button receives the
+ * resolved release URL from the parent so it always points at the latest tag.
+ */
 'use client';
 
+// Duplicated from page.tsx because NavBar is a standalone component that may
+// be used independently; import from a shared constants module if this grows.
 const GITHUB_OWNER = 'Noopurtrivedi';
 const GITHUB_REPO = 'artha';
 
-export default function NavBar({ releaseUrl }: { releaseUrl: string }) {
+/** Props accepted by NavBar. */
+interface NavBarProps {
+  /** Fully resolved GitHub release page URL (e.g. /releases/tag/v1.2.0). */
+  releaseUrl: string;
+}
+
+/** @see NavBarProps */
+export default function NavBar({ releaseUrl }: NavBarProps) {
   return (
+    {/* backdrop-blur-sm + semi-transparent bg creates the frosted-glass effect over page content */}
     <nav className="fixed top-0 left-0 right-0 z-50 border-b border-gray-800/80 bg-gray-950/80 backdrop-blur-sm">
       <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
         {/* Logo */}
@@ -15,7 +33,7 @@ export default function NavBar({ releaseUrl }: { releaseUrl: string }) {
           Artha
         </a>
 
-        {/* Links */}
+        {/* Links — hidden on mobile (< sm) to avoid cramping the narrow bar */}
         <div className="hidden sm:flex items-center gap-6 text-sm text-gray-400">
           <a href="#how" className="hover:text-white transition-colors">How it works</a>
           <a href="#features" className="hover:text-white transition-colors">Features</a>

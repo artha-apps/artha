@@ -17,9 +17,11 @@ export default function ExecutionLog() {
   if (executionLog.length === 0 && !isStreaming) return null;
 
   return (
-    <aside className={`${open ? 'w-72' : 'w-10'} bg-artha-s2 border-l border-artha-border transition-all duration-200 flex flex-col`}>
+    <aside className={`${open ? 'w-72' : 'w-10'} bg-artha-surface2 border-l border-artha-border transition-all duration-200 flex flex-col`}>
+      {/* ChevronRight when open = points toward the collapse direction (left edge).
+          ChevronDown when collapsed = points downward as an "expand" affordance. */}
       <button onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 px-3 py-3 border-b border-artha-border text-xs font-medium text-artha-muted hover:text-white transition-colors">
+        className="flex items-center gap-2 px-3 py-3 border-b border-artha-border text-xs font-medium text-artha-muted hover:text-artha-text transition-colors">
         {open ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
         {open && <><Zap size={12} className="text-artha-accent" /> Execution Log</>}
       </button>
@@ -32,13 +34,13 @@ export default function ExecutionLog() {
             </div>
           )}
           {executionLog.map((ev, i) => (
-            <div key={i} className="text-xs rounded-lg border border-artha-border bg-artha-surface p-2 space-y-1">
+            <div key={i} className="text-xs rounded-lg border border-artha-border bg-artha-surface p-2 space-y-1 shadow-soft">
               <div className="flex items-center gap-1.5 font-medium">
                 {ev.type === 'tool_result'
-                  ? <CheckCircle size={11} className="text-green-400" />
+                  ? <CheckCircle size={11} className="text-artha-success" />
                   : ev.type === 'step_start'
                   ? <Loader size={11} className="animate-spin text-artha-accent" />
-                  : <Zap size={11} className="text-yellow-400" />}
+                  : <Zap size={11} className="text-artha-warn" />}
                 <span className="text-artha-text capitalize">{ev.type.replace('_', ' ')}</span>
                 {ev.name && <code className="text-artha-accent ml-auto font-mono">{ev.name}</code>}
               </div>
@@ -48,7 +50,7 @@ export default function ExecutionLog() {
                 </pre>
               )}
               {ev.result && (
-                <pre className="text-green-300/70 font-mono overflow-x-auto whitespace-pre-wrap break-all">
+                <pre className="text-artha-success/90 font-mono overflow-x-auto whitespace-pre-wrap break-all">
                   {String(ev.result).slice(0, 300)}
                 </pre>
               )}

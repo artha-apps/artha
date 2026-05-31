@@ -143,6 +143,9 @@ export class RAGIndexer {
       .slice(0, topK);
   }
 
+  /** Recursively enumerate every file under `dir` whose extension is in
+   *  `SUPPORTED_EXTENSIONS`. Hidden directories (names starting with `.`) are
+   *  skipped so `.git`, `.node_modules` etc. are never indexed. */
   private collectFiles(dir: string): string[] {
     const results: string[] = [];
     const walk = (d: string) => {
@@ -158,6 +161,9 @@ export class RAGIndexer {
     return results;
   }
 
+  /** Split `text` into boundary-aligned chunks and assign each a stable MD5 id
+   *  derived from `filePath:offset`, so re-indexing an unchanged file produces
+   *  the same ids and the cache in `buildIndex` can forward them cheaply. */
   private chunkText(text: string, filePath: string): Omit<Chunk, 'embedding'>[] {
     // Break on sentence/word boundaries (see rag/chunk.ts) so embeddings see
     // whole words/sentences instead of arbitrary 512-char slices.

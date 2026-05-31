@@ -176,11 +176,15 @@ const MODEL_CATALOG = [
 ];
 
 /** Bytes → human-readable size for the model card. */
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Bytes → human-readable size for the model card. */
 function formatSize(bytes: number): string {
   const gb = bytes / 1024 / 1024 / 1024;
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 }
 
+/** Derive the family label from the raw Ollama model name for the colored badge. */
 function modelFamily(name: string): string {
   const n = name.toLowerCase();
   if (n.includes('qwen')) return 'Qwen';
@@ -194,6 +198,7 @@ function modelFamily(name: string): string {
   return 'Model';
 }
 
+/** Map a family name to a Tailwind color class pair for the inline badge. */
 function familyColor(family: string): string {
   const map: Record<string, string> = {
     Qwen: 'text-blue-400 bg-blue-400/10',
@@ -205,25 +210,28 @@ function familyColor(family: string): string {
     CodeLlama: 'text-yellow-400 bg-yellow-400/10',
     Nomic: 'text-green-400 bg-green-400/10',
   };
-  return map[family] ?? 'text-artha-muted bg-white/5';
+  return map[family] ?? 'text-artha-muted bg-artha-text/5';
 }
 
+/** Models panel — Ollama model management + BYOK cloud model configuration. */
 export default function ModelsPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [activeModel, setActiveModelState] = useState<string | null>(null);
   const [hardware, setHardware] = useState<HardwareInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  // `switching` holds the name being activated so we can show a spinner on that row only.
   const [switching, setSwitching] = useState<string | null>(null);
   const [ollamaOnline, setOllamaOnline] = useState(true);
 
-  // Pull progress — keyed by model tag
+  // Pull progress — keyed by model tag so multiple concurrent pulls can coexist.
   const [pulling, setPulling] = useState<Record<string, PullProgress>>({});
 
-  // Context window state
+  // Context-window slider state — mirrors `llm_models.context_window` for the active model.
   const [ctxWindow, setCtxWindow] = useState<number>(4096);
   const [ctxSaving, setCtxSaving] = useState(false);
 
-  // BYOK cloud state
+  // BYOK cloud state — form fields + saved rows from `llm_models`.
   const [configured, setConfigured] = useState<ConfiguredModel[]>([]);
   const [showCloudForm, setShowCloudForm] = useState(false);
   const [cloudProvider, setCloudProvider] = useState<keyof typeof CLOUD_PROVIDERS>('openai');
@@ -233,7 +241,7 @@ export default function ModelsPanel() {
   const [savingCloud, setSavingCloud] = useState(false);
   const [cloudError, setCloudError] = useState('');
 
-  // Catalog tab: 'installed' | 'browse'
+  // Tab controls which list is shown: models already on disk vs the pull catalog.
   const [tab, setTab] = useState<'installed' | 'browse'>('installed');
 
   /** Pull model list + hardware info + active model.
@@ -282,11 +290,13 @@ export default function ModelsPanel() {
     }
   };
 
-  // Subscribe to pull progress events
+  // ── Effects ────────────────────────────────────────────────────────────────
+
+  // Subscribe to streaming pull-progress events from the main process.
   useEffect(() => {
     const unsub = window.artha.llm.onPullProgress((p: PullProgress) => {
       setPulling(prev => ({ ...prev, [p.name]: p }));
-      // On success, refresh the installed list, clear progress, and switch to Installed tab
+      // On success, refresh the installed list, clear progress, and switch to Installed tab.
       if (p.status === 'success') {
         setTimeout(() => {
           setPulling(prev => { const n = { ...prev }; delete n[p.name]; return n; });
@@ -296,16 +306,21 @@ export default function ModelsPanel() {
       }
     });
     // Wrap in a void arrow — the preload unsub returns IpcRenderer, which is not
-    // a valid useEffect Destructor (must return void).
+    // a valid useEffect destructor (must return void).
     return () => { unsub(); };
   }, []);
 
+  // Initial data load on mount.
   useEffect(() => { load(); }, []);
 
+  // ── Derived ────────────────────────────────────────────────────────────────
+
+  // Separate cloud rows from local Ollama rows — cloud models point at non-localhost URLs.
   const cloudModels = configured.filter(
     m => !m.base_url.includes('localhost') && !m.base_url.includes('127.0.0.1')
   );
 
+  // Used by the Browse tab to mark already-pulled catalog entries as installed.
   const installedTags = new Set(models.map(m => m.name));
 
   /** Pull a model from the catalog using the streaming endpoint. */
@@ -359,9 +374,11 @@ export default function ModelsPanel() {
     await load();
   };
 
+  /** Persist the context window for the active model, clamping to [512, 128 000]. */
   const saveContextWindow = async () => {
     const active = configured.find(m => m.is_active);
     if (!active) return;
+    // Clamp before write so the slider can overshoot without causing an invalid DB value.
     const clamped = Math.max(512, Math.min(128_000, Math.round(ctxWindow)));
     setCtxSaving(true);
     try {
@@ -401,12 +418,12 @@ export default function ModelsPanel() {
             <Cpu size={16} className="text-artha-accent" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-white">Models</h1>
+            <h1 className="text-base font-semibold text-artha-text">Models</h1>
             <p className="text-xs text-artha-muted">Local Ollama models + cloud API keys</p>
           </div>
         </div>
         <button onClick={load} disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors disabled:opacity-40">
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs transition-colors disabled:opacity-40">
           <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Refresh
         </button>
       </div>
@@ -417,7 +434,7 @@ export default function ModelsPanel() {
           {/* GPU · RAM summary line */}
           <div className="flex items-center gap-2 flex-wrap">
             <Cpu size={15} className="text-artha-accent shrink-0" />
-            <span className="text-sm font-medium text-white">
+            <span className="text-sm font-medium text-artha-text">
               {hardware.gpuName && <>{hardware.gpuName} · </>}
               {hardware.gbRam} GB RAM
               {hardware.vramGb ? <> · {hardware.vramGb} GB VRAM</> : null}
@@ -427,7 +444,7 @@ export default function ModelsPanel() {
           <div className="flex items-start gap-2 mt-2">
             <HardDrive size={15} className="text-artha-muted mt-0.5 shrink-0" />
             <p className="text-xs text-artha-muted leading-relaxed">
-              Recommended: <span className="text-white">{hardware.recommendation}</span>
+              Recommended: <span className="text-artha-text">{hardware.recommendation}</span>
             </p>
           </div>
         </div>
@@ -444,7 +461,7 @@ export default function ModelsPanel() {
 
       {/* Active model badge + context window */}
       {activeModel && (
-        <div className="mb-5 rounded-xl border border-white/10 bg-white/3 p-4 space-y-3">
+        <div className="mb-5 rounded-xl border border-artha-border bg-white/3 p-4 space-y-3">
           <div className="flex items-center gap-2">
             <CheckCircle2 size={14} className="text-green-400 shrink-0" />
             <span className="text-xs text-artha-muted">Active model: </span>
@@ -463,7 +480,7 @@ export default function ModelsPanel() {
                   onChange={e => setCtxWindow(Number(e.target.value))}
                   onBlur={saveContextWindow}
                   onKeyDown={e => { if (e.key === 'Enter') saveContextWindow(); }}
-                  className="w-24 bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-xs text-white text-right font-mono focus:outline-none focus:border-artha-accent/50"
+                  className="w-24 bg-black/30 border border-artha-border rounded-lg px-2 py-1 text-xs text-artha-text text-right font-mono focus:outline-none focus:border-artha-accent/50"
                 />
                 <span className="text-xs text-artha-muted">tokens</span>
                 {ctxSaving && <RefreshCw size={11} className="text-artha-muted animate-spin" />}
@@ -473,7 +490,7 @@ export default function ModelsPanel() {
               type="range" min={512} max={128000} step={512} value={ctxWindow}
               onChange={e => setCtxWindow(Number(e.target.value))}
               onMouseUp={saveContextWindow} onTouchEnd={saveContextWindow}
-              className="w-full h-1 rounded-full bg-white/10 accent-artha-accent cursor-pointer"
+              className="w-full h-1 rounded-full bg-artha-text/8 accent-artha-accent cursor-pointer"
             />
             <div className="flex justify-between text-[10px] text-artha-muted/60">
               <span>512</span><span>8 k</span><span>32 k</span><span>128 k</span>
@@ -487,7 +504,7 @@ export default function ModelsPanel() {
         <button
           onClick={() => setTab('installed')}
           className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-            tab === 'installed' ? 'bg-artha-accent/20 text-white' : 'text-artha-muted hover:text-white'
+            tab === 'installed' ? 'bg-artha-accent/20 text-artha-text' : 'text-artha-muted hover:text-artha-text'
           }`}
         >
           <CheckCircle2 size={12} />
@@ -501,7 +518,7 @@ export default function ModelsPanel() {
         <button
           onClick={() => setTab('browse')}
           className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-            tab === 'browse' ? 'bg-artha-accent/20 text-white' : 'text-artha-muted hover:text-white'
+            tab === 'browse' ? 'bg-artha-accent/20 text-artha-text' : 'text-artha-muted hover:text-artha-text'
           }`}
         >
           <Download size={12} />
@@ -520,7 +537,7 @@ export default function ModelsPanel() {
         ) : models.length === 0 ? (
           <div className="text-center py-12 text-artha-muted">
             <Cpu size={32} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm font-medium text-white mb-1">No models installed yet</p>
+            <p className="text-sm font-medium text-artha-text mb-1">No models installed yet</p>
             <p className="text-xs mb-4">Switch to the Browse tab to pull your first model.</p>
             <button
               onClick={() => setTab('browse')}
@@ -550,7 +567,7 @@ export default function ModelsPanel() {
                     {family}
                   </span>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">{model.name}</p>
+                    <p className="text-sm font-medium text-artha-text truncate">{model.name}</p>
                     {model.details?.parameter_size && (
                       <p className="text-xs text-artha-muted mt-0.5">
                         {model.details.parameter_size}
@@ -605,7 +622,7 @@ export default function ModelsPanel() {
                   {/* Info */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm font-medium text-white">{entry.label}</p>
+                      <p className="text-sm font-medium text-artha-text">{entry.label}</p>
                       {entry.badge && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-artha-accent/20 text-artha-accent font-medium">
                           {entry.badge}
@@ -652,7 +669,7 @@ export default function ModelsPanel() {
                           {progress.status === 'starting' ? 'Starting…' : `${progress.percent ?? 0}%`}
                         </span>
                         {typeof progress.percent === 'number' && (
-                          <div className="w-24 h-1 rounded-full bg-white/10">
+                          <div className="w-24 h-1 rounded-full bg-artha-text/8">
                             <div
                               className="h-1 rounded-full bg-artha-accent transition-all"
                               style={{ width: `${progress.percent}%` }}
@@ -728,7 +745,7 @@ export default function ModelsPanel() {
                   }`}>
                   <Cloud size={15} className="text-artha-accent shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">{m.name}</p>
+                    <p className="text-sm font-medium text-artha-text truncate">{m.name}</p>
                     <code className="text-[11px] text-artha-muted font-mono truncate block">{m.base_url}</code>
                   </div>
                   {isActive ? (
@@ -737,7 +754,7 @@ export default function ModelsPanel() {
                     </span>
                   ) : (
                     <button onClick={() => activateCloud(m)}
-                      className="px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors">
+                      className="px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs transition-colors">
                       Activate
                     </button>
                   )}
@@ -759,8 +776,8 @@ export default function ModelsPanel() {
                 <button key={p} onClick={() => pickProvider(p)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                     cloudProvider === p
-                      ? 'bg-artha-accent/20 text-white border border-artha-accent/30'
-                      : 'bg-artha-surface border border-artha-border text-artha-muted hover:text-white'
+                      ? 'bg-artha-accent/20 text-artha-text border border-artha-accent/30'
+                      : 'bg-artha-surface border border-artha-border text-artha-muted hover:text-artha-text'
                   }`}>
                   {CLOUD_PROVIDERS[p].label}
                 </button>
@@ -801,7 +818,7 @@ export default function ModelsPanel() {
                 Save &amp; activate
               </button>
               <button onClick={() => { setShowCloudForm(false); setCloudError(''); }}
-                className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-white hover:bg-white/5 transition-colors">
+                className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors">
                 Cancel
               </button>
             </div>

@@ -11,6 +11,8 @@ import {
   Shield, Zap, Store, ExternalLink, Loader2, Globe, Brain,
   GitBranch, MessageSquare, Monitor, Database, Search, Eye,
 } from 'lucide-react';
+import { FeatureGuide } from '../ui/FeatureGuide';
+import { GUIDES } from './guides';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -97,7 +99,7 @@ const MARKETPLACE: MarketplaceServer[] = [
     command: 'npx -y @modelcontextprotocol/server-github',
     requiresEnv: ['GITHUB_PERSONAL_ACCESS_TOKEN'],
     icon: GitBranch,
-    iconColor: 'text-white',
+    iconColor: 'text-artha-text',
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/github',
   },
   {
@@ -276,7 +278,7 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
     Web: 'bg-cyan-400/10 text-cyan-400',
     Search: 'bg-orange-400/10 text-orange-400',
     Memory: 'bg-violet-400/10 text-violet-400',
-    Dev: 'bg-white/10 text-white',
+    Dev: 'bg-artha-text/8 text-artha-text',
     Communication: 'bg-green-400/10 text-green-400',
     Browser: 'bg-yellow-400/10 text-yellow-400',
     Data: 'bg-blue-400/10 text-blue-400',
@@ -295,8 +297,8 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
         {/* Info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-sm font-medium text-white">{server.name}</span>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${categoryColors[server.category] ?? 'bg-white/10 text-white'}`}>
+            <span className="text-sm font-medium text-artha-text">{server.name}</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${categoryColors[server.category] ?? 'bg-artha-text/8 text-artha-text'}`}>
               {server.category}
             </span>
           </div>
@@ -315,7 +317,7 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
               href={server.docs}
               target="_blank"
               rel="noreferrer"
-              className="p-1.5 rounded-lg text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
+              className="p-1.5 rounded-lg text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors"
               title="View docs"
               onClick={e => e.stopPropagation()}
             >
@@ -375,7 +377,7 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
             </button>
             <button
               onClick={() => { setExpanded(false); setError(''); }}
-              className="px-3 py-2 rounded-lg text-xs text-artha-muted hover:text-white hover:bg-white/5 transition-colors"
+              className="px-3 py-2 rounded-lg text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors"
             >
               Cancel
             </button>
@@ -397,7 +399,14 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 
+/**
+ * Three-tab panel that manages all tool-related configuration:
+ *   - Tools tab: view built-ins, add/remove/toggle MCP servers
+ *   - Marketplace tab: one-click curated installs with optional env-var prompts
+ *   - Audit Log tab: live table of every tool invocation with args + results
+ */
 export default function MCPToolsPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [tab, setTab] = useState<'tools' | 'marketplace' | 'audit'>('tools');
   const [tools, setTools] = useState<MCPTool[]>([]);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
@@ -407,11 +416,16 @@ export default function MCPToolsPanel() {
   const [addError, setAddError] = useState('');
   const [marketplaceCategory, setMarketplaceCategory] = useState<string>('All');
 
+  // ── Data loading ───────────────────────────────────────────────────────────
+
+  /** Fetch both tools and audit log in parallel so the count badge in the tab
+   *  bar is always accurate when the user switches tabs. */
   const load = async () => {
     setLoading(true);
     try {
       const [t, a] = await Promise.all([
         window.artha.mcp.listTools() as Promise<MCPTool[]>,
+        // 200 is a practical cap — the full log can grow very large over time.
         window.artha.mcp.getAuditLog(200) as Promise<AuditEntry[]>,
       ]);
       setTools(t);
@@ -469,6 +483,8 @@ export default function MCPToolsPanel() {
     await load();
   };
 
+  // Build a normalized set of installed server commands (ENV: prefixes removed) so
+  // we can detect duplicates without being fooled by extra env-var tokens.
   const installedCommandSet = new Set(
     tools
       .filter(t => t.mcp_server_uri)
@@ -479,6 +495,9 @@ export default function MCPToolsPanel() {
       })
   );
 
+  /** Fuzzy match: check if the catalog entry's npm package name appears in any
+   *  installed command string. Uses just the third token (the package name) to
+   *  tolerate minor argument differences across installs. */
   const isServerInstalled = (server: MarketplaceServer) => {
     const baseCmd = server.command.split(' ').slice(0, 3).join(' ');
     return Array.from(installedCommandSet).some(uri => uri.includes(baseCmd.split(' ')[2] ?? baseCmd));
@@ -492,6 +511,7 @@ export default function MCPToolsPanel() {
 
   return (
     <div className="flex-1 overflow-y-auto px-8 py-8 max-w-3xl mx-auto w-full">
+      <FeatureGuide {...GUIDES.mcp} />
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
@@ -499,12 +519,12 @@ export default function MCPToolsPanel() {
             <Wrench size={16} className="text-artha-accent" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-white">MCP Tools</h1>
+            <h1 className="text-base font-semibold text-artha-text">MCP Tools</h1>
             <p className="text-xs text-artha-muted">Manage tools and extend Artha's capabilities</p>
           </div>
         </div>
         <button onClick={load} disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-white hover:bg-white/5 text-xs transition-colors disabled:opacity-40">
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs transition-colors disabled:opacity-40">
           <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Refresh
         </button>
       </div>
@@ -514,7 +534,7 @@ export default function MCPToolsPanel() {
         {(['tools', 'marketplace', 'audit'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize flex items-center gap-1.5
-              ${tab === t ? 'bg-artha-accent/20 text-white' : 'text-artha-muted hover:text-white'}`}>
+              ${tab === t ? 'bg-artha-accent/20 text-artha-text' : 'text-artha-muted hover:text-artha-text'}`}>
             {t === 'marketplace' && <Store size={12} />}
             {t === 'audit' ? 'Audit Log' : t === 'marketplace' ? 'Marketplace' : 'Tools'}
             {t === 'audit' && auditLog.length > 0 && (
@@ -585,7 +605,7 @@ export default function MCPToolsPanel() {
                   <div key={tool.tool_id}
                     className="flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-white truncate">{tool.name}</p>
+                      <p className="text-sm font-medium text-artha-text truncate">{tool.name}</p>
                       {tool.mcp_server_uri && (
                         <code className="text-xs text-artha-muted font-mono truncate block">
                           {tool.mcp_server_uri.replace(/ENV:[^\s]+ /g, '')}
@@ -595,7 +615,7 @@ export default function MCPToolsPanel() {
 
                     {/* Toggle */}
                     <button onClick={() => toggle(tool)} title={tool.is_enabled ? 'Disable' : 'Enable'}
-                      className="text-artha-muted hover:text-white transition-colors">
+                      className="text-artha-muted hover:text-artha-text transition-colors">
                       {tool.is_enabled
                         ? <ToggleRight size={20} className="text-artha-accent" />
                         : <ToggleLeft size={20} />}
@@ -659,8 +679,8 @@ export default function MCPToolsPanel() {
                   onClick={() => setMarketplaceCategory(cat)}
                   className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
                     marketplaceCategory === cat
-                      ? 'bg-artha-accent/20 text-white border border-artha-accent/30'
-                      : 'bg-artha-s2 border border-artha-border text-artha-muted hover:text-white'
+                      ? 'bg-artha-accent/20 text-artha-text border border-artha-accent/30'
+                      : 'bg-artha-s2 border border-artha-border text-artha-muted hover:text-artha-text'
                   }`}
                 >
                   {cat}
@@ -708,7 +728,7 @@ export default function MCPToolsPanel() {
           ) : auditLog.length === 0 ? (
             <div className="text-center py-16 text-artha-muted">
               <Clock size={32} className="mx-auto mb-3 opacity-30" />
-              <p className="text-sm font-medium text-white mb-1">No tool invocations yet</p>
+              <p className="text-sm font-medium text-artha-text mb-1">No tool invocations yet</p>
               <p className="text-xs">Every tool call Artha makes will appear here</p>
             </div>
           ) : (

@@ -44,13 +44,17 @@ function humanDuration(seconds: number): string {
   return `${Math.round(seconds / 86400)} days`;
 }
 
+/** Web settings panel — configures search providers, cache, and network limits. */
 export default function WebPanel() {
+  // ── State ──────────────────────────────────────────────────────────────────
   const [config, setConfig] = useState<WebConfig | null>(null);
   const [stats, setStats] = useState<CacheStats>({ count: 0, bytes: 0 });
+  // Controlled inputs for the SearXNG and robots override add-forms.
   const [newInstance, setNewInstance] = useState('');
   const [newOverride, setNewOverride] = useState('');
   const [saving, setSaving] = useState(false);
   const [clearing, setClearing] = useState(false);
+  // `saved` drives a transient "Saved ✓" pill that auto-dismisses after 1.5 s.
   const [saved, setSaved] = useState(false);
 
   const load = async () => {
@@ -76,7 +80,10 @@ export default function WebPanel() {
     setTimeout(() => setSaved(false), 1500);
   };
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
   const addInstance = async () => {
+    // Strip trailing slashes so duplicates don't sneak in with differing trailing /.
     const url = newInstance.trim().replace(/\/+$/, '');
     if (!url || !config) return;
     if (!/^https?:\/\//.test(url)) return;
@@ -91,6 +98,7 @@ export default function WebPanel() {
   };
 
   const addOverride = async () => {
+    // Normalise: strip scheme + path so "https://example.com/path" becomes "example.com".
     const host = newOverride.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     if (!host || !config) return;
     if (config.robots_override_hosts.includes(host)) { setNewOverride(''); return; }
@@ -118,6 +126,8 @@ export default function WebPanel() {
     );
   }
 
+  // True when any configured SearXNG instance is not on the local machine — triggers
+  // the privacy advisory banner that recommends a self-hosted instance.
   const usingPublicInstance = config.searxng_instances.some(
     i => !/localhost|127\.0\.0\.1|0\.0\.0\.0/.test(i)
   );
@@ -131,7 +141,7 @@ export default function WebPanel() {
             <Globe size={16} className="text-artha-accent" />
           </div>
           <div>
-            <h1 className="text-base font-semibold text-white">Web</h1>
+            <h1 className="text-base font-semibold text-artha-text">Web</h1>
             <p className="text-xs text-artha-muted">
               Built-in fetch + search. No browser, no MCP install needed.
             </p>
@@ -154,14 +164,14 @@ export default function WebPanel() {
           Artha only contacts the web when the agent explicitly calls{' '}
           <code className="text-artha-accent font-mono">web_fetch</code> or{' '}
           <code className="text-artha-accent font-mono">web_search</code>. Every
-          request is logged in <strong className="text-white">MCP Tools → Audit Log</strong>{' '}
+          request is logged in <strong className="text-artha-text">MCP Tools → Audit Log</strong>{' '}
           and identifies itself with a transparent User-Agent.
         </p>
       </div>
 
       {/* Search provider status summary */}
       <div className="rounded-xl bg-artha-s2 border border-artha-border p-4 mb-6">
-        <p className="text-xs font-semibold text-white mb-2">Search provider priority</p>
+        <p className="text-xs font-semibold text-artha-text mb-2">Search provider priority</p>
         <div className="space-y-1.5">
           {[
             { label: '1. Brave Search API', active: !!config.brave_api_key?.trim(), note: config.brave_api_key?.trim() ? 'Active — fastest, real-time' : 'No key — skipped' },
@@ -170,7 +180,7 @@ export default function WebPanel() {
           ].map(({ label, active, note }) => (
             <div key={label} className="flex items-center gap-2">
               <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${active ? 'bg-green-400' : 'bg-artha-muted/40'}`} />
-              <span className={`text-xs ${active ? 'text-white' : 'text-artha-muted'}`}>{label}</span>
+              <span className={`text-xs ${active ? 'text-artha-text' : 'text-artha-muted'}`}>{label}</span>
               <span className="text-[10px] text-artha-muted ml-auto">{note}</span>
             </div>
           ))}
@@ -293,7 +303,7 @@ export default function WebPanel() {
             className="mt-0.5 accent-artha-accent"
           />
           <div className="flex-1">
-            <p className="text-sm text-white">Respect robots.txt</p>
+            <p className="text-sm text-artha-text">Respect robots.txt</p>
             <p className="text-xs text-artha-muted leading-relaxed mt-0.5">
               Honour each site's crawler rules. Recommended — turning this off
               risks being IP-blocked and is impolite.
@@ -333,7 +343,7 @@ export default function WebPanel() {
             <button
               onClick={addOverride}
               disabled={!newOverride.trim()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-s2 border border-artha-border hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed text-xs text-artha-muted hover:text-white transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-s2 border border-artha-border hover:bg-artha-text/5 disabled:opacity-40 disabled:cursor-not-allowed text-xs text-artha-muted hover:text-artha-text transition-colors"
             >
               <Plus size={11} /> Add host
             </button>
@@ -353,18 +363,18 @@ export default function WebPanel() {
         <div className="grid grid-cols-2 gap-2 mb-3">
           <div className="px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
             <p className="text-[10px] uppercase tracking-wider text-artha-muted mb-1">Cached pages</p>
-            <p className="text-lg font-semibold text-white">{stats.count}</p>
+            <p className="text-lg font-semibold text-artha-text">{stats.count}</p>
           </div>
           <div className="px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
             <p className="text-[10px] uppercase tracking-wider text-artha-muted mb-1">On disk</p>
-            <p className="text-lg font-semibold text-white">{humanBytes(stats.bytes)}</p>
+            <p className="text-lg font-semibold text-artha-text">{humanBytes(stats.bytes)}</p>
           </div>
         </div>
 
         <div className="rounded-xl bg-artha-s2 border border-artha-border p-4 mb-3">
           <label className="block">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-medium text-white flex items-center gap-1.5">
+              <span className="text-xs font-medium text-artha-text flex items-center gap-1.5">
                 <Clock size={11} /> Cache TTL
               </span>
               <span className="text-xs text-artha-accent font-mono">
@@ -408,7 +418,7 @@ export default function WebPanel() {
         <div className="grid grid-cols-2 gap-3">
           <label className="rounded-xl bg-artha-s2 border border-artha-border p-4 block">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-medium text-white">Timeout</span>
+              <span className="text-xs font-medium text-artha-text">Timeout</span>
               <span className="text-xs text-artha-accent font-mono">
                 {(config.timeout_ms / 1000).toFixed(0)}s
               </span>
@@ -422,7 +432,7 @@ export default function WebPanel() {
           </label>
           <label className="rounded-xl bg-artha-s2 border border-artha-border p-4 block">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-medium text-white">Max response</span>
+              <span className="text-xs font-medium text-artha-text">Max response</span>
               <span className="text-xs text-artha-accent font-mono">
                 {humanBytes(config.max_bytes)}
               </span>

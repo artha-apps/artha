@@ -1,11 +1,21 @@
+/**
+ * Unit tests for skill utility helpers (no DB, no LLM). Covers:
+ *   normaliseSlug      — slug sanitisation and fallback
+ *   parseSlashInvocation — "/slug rest" command parsing
+ *   filterToolsByAllowlist — prefix + exact allowlist matching
+ *   parseSkillImport   — tolerant ingestion of hand-edited import files
+ */
 import { describe, it, expect } from 'vitest';
 import OpenAI from 'openai';
 import { normaliseSlug, parseSlashInvocation, filterToolsByAllowlist, parseSkillImport } from './util';
 
+/** Minimal tool stub — only the name matters for allowlist filtering. */
 const tool = (name: string): OpenAI.ChatCompletionTool => ({
   type: 'function',
   function: { name, description: '', parameters: { type: 'object', properties: {} } },
 });
+
+// ── normaliseSlug ─────────────────────────────────────────────────────────────
 
 describe('normaliseSlug', () => {
   it('lowercases and hyphenates', () => {
@@ -23,6 +33,8 @@ describe('normaliseSlug', () => {
   });
 });
 
+// ── parseSlashInvocation ──────────────────────────────────────────────────────
+
 describe('parseSlashInvocation', () => {
   it('splits slug and rest', () => {
     expect(parseSlashInvocation('/research best local LLMs')).toEqual({ slug: 'research', rest: 'best local LLMs' });
@@ -38,6 +50,8 @@ describe('parseSlashInvocation', () => {
     expect(parseSlashInvocation('/')).toBeNull();
   });
 });
+
+// ── filterToolsByAllowlist ────────────────────────────────────────────────────
 
 describe('filterToolsByAllowlist', () => {
   const tools = [tool('fs_list_directory'), tool('fs_move_file'), tool('web_search'), tool('docs_generate')];
@@ -58,6 +72,8 @@ describe('filterToolsByAllowlist', () => {
     expect(names).toEqual(['fs_list_directory']);
   });
 });
+
+// ── parseSkillImport ──────────────────────────────────────────────────────────
 
 describe('parseSkillImport', () => {
   const full = { slug: 'rep', name: 'Rep', description: 'd', instructions: 'i', allowedTools: ['web_'], icon: '📊' };
