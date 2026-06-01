@@ -1,0 +1,43 @@
+name: Mirror to private backup
+
+# Keeps the private backup repo (Noopurtrivedi/artha-backup) in sync with this
+# repo. Runs on every push to any branch/tag, on a daily safety-net schedule,
+# and on manual dispatch. No-ops gracefully until the BACKUP_TOKEN secret is set.
+#
+# Setup (one-time):
+#   1. Create a fine-grained PAT with "Contents: Read and write" scoped to
+#      Noopurtrivedi/artha-backup.
+#   2. Add it as an Actions secret named BACKUP_TOKEN in this repo
+#      (Settings -> Secrets and variables -> Actions).
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  schedule:
+    - cron: '0 6 * * *'   # daily safety net (06:00 UTC)
+  workflow_dispatch:
+
+concurrency:
+  group: mirror-backup
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror all branches and tags to the backup repo
+        env:
+          BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
+        run: |
+          if [ -z "$BACKUP_TOKEN" ]; then
+            echo "BACKUP_TOKEN secret not set yet — skipping mirror. See workflow header for setup."
+            exit 0
+          fi
+          # Bare clone fetches refs/heads/* and refs/tags/* only (no PR refs),
+          # so the push below never trips on GitHub's read-only refs/pull/*.
+          git clone --bare "https://github.com/${GITHUB_REPOSITORY}.git" repo.git
+          cd repo.git
+          git push --force --prune \
+            "https://x-access-token:${BACKUP_TOKEN}@github.com/Noopurtrivedi/artha-backup.git" \
+            "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
