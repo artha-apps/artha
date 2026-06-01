@@ -45,6 +45,9 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [pulling, setPulling] = useState(false);
   const [progress, setProgress] = useState<{ percent?: number; status: string } | null>(null);
   const [error, setError] = useState('');
+  // True only when Ollama isn't installed at all — the one case Artha can't fix
+  // itself (we can't silently install a system dependency).
+  const [notInstalled, setNotInstalled] = useState(false);
 
   // Optional individual-tier license: paste here OR ignore to stay Free.
   const [indivLicense, setIndivLicense] = useState('');
@@ -54,7 +57,16 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const refresh = async () => {
     setChecking(true);
     try {
-      const online = await window.artha.llm.checkOllama();
+      let online = await window.artha.llm.checkOllama();
+      if (!online) {
+        // Artha starts Ollama itself — the user is never told to run a command.
+        // `not_installed` is the only case we can't fix automatically.
+        const st = await window.artha.llm.ensureModel();
+        setNotInstalled(st.phase === 'not_installed');
+        online = await window.artha.llm.checkOllama();
+      } else {
+        setNotInstalled(false);
+      }
       setOllamaOnline(online);
       if (online) {
         const [hw, list] = await Promise.all([
@@ -213,23 +225,34 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             </div>
           </details>
 
-          {/* Step 1: Ollama check */}
+          {/* Step 1: Ollama. Artha starts it for the user automatically — the
+              only manual step is a one-time install if Ollama is missing. */}
           {ollamaOnline === false && (
             <div className="space-y-4">
-              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
-                <p className="text-sm text-artha-text font-medium mb-1">Ollama isn't running</p>
-                <p className="text-xs text-artha-muted leading-relaxed mb-3">
-                  Artha uses <span className="text-artha-text">Ollama</span> to run models locally. Install it, then start it
-                  with <code className="bg-black/30 px-1.5 py-0.5 rounded font-mono">ollama serve</code>.
-                </p>
-                <a href="https://ollama.com/download" target="_blank" rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 text-xs text-artha-accent hover:underline">
-                  Download Ollama <ExternalLink size={11} />
-                </a>
-              </div>
+              {notInstalled ? (
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
+                  <p className="text-sm text-artha-text font-medium mb-1">Install Ollama to run models locally</p>
+                  <p className="text-xs text-artha-muted leading-relaxed mb-3">
+                    Artha uses <span className="text-artha-text">Ollama</span> to run models on your machine. Install it once —
+                    after that, Artha starts it for you automatically.
+                  </p>
+                  <a href="https://ollama.com/download" target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs text-artha-accent hover:underline">
+                    Download Ollama <ExternalLink size={11} />
+                  </a>
+                </div>
+              ) : (
+                <div className="bg-artha-surface border border-artha-border rounded-xl p-4 flex items-start gap-2.5">
+                  <RefreshCw size={14} className="text-artha-accent animate-spin mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm text-artha-text font-medium">Starting your local model…</p>
+                    <p className="text-xs text-artha-muted leading-relaxed">Artha is turning Ollama on for you — this only takes a few seconds.</p>
+                  </div>
+                </div>
+              )}
               <div className="flex gap-2">
                 <button onClick={refresh} disabled={checking}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium transition-colors disabled:opacity-40">
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-white transition-colors disabled:opacity-40">
                   <RefreshCw size={13} className={checking ? 'animate-spin' : ''} /> Recheck
                 </button>
                 <button onClick={skip} className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-artha-text hover:bg-white/5 transition-colors">
