@@ -65,3 +65,21 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --publish always
+
+  # electron-builder uploads to a DRAFT release (its GitHub default) — which is
+  # what we want during the build: the 3 matrix runners all append assets to the
+  # same draft without racing or ever exposing a half-uploaded release. This
+  # final job flips that draft to published + Latest, but ONLY after every
+  # platform build succeeds (`needs: build` won't run if any matrix job fails),
+  # so a release is never published partial. Tag pushes only.
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --latest
