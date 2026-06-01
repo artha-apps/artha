@@ -1,10 +1,10 @@
 # Artha — Session Progress & Resume Log
 
 **Last updated:** 2026-05-31
-**Branch:** `main` — clean working tree. Last merge: **PR #12** (Sentry DSN activation).
-**Tests:** passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
+**Branch:** `main` — clean working tree. Last merges: **PR #12/#13** (Sentry) + **#14** (onboarding font).
+**Tests:** 86 passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
 **Repo:** https://github.com/artha-apps/artha (**PUBLIC**; migrated from `Noopurtrivedi/artha` to the **`artha-apps`** org)
-**Current version:** `0.1.13` — tagged `v0.1.13`. `main` at `4670efc`.
+**Current version:** `0.1.14` — tagged `v0.1.14` (release building/published). `main` at `9ab5af4`.
 
 > Resume point for the next session. Read this first to know exactly where we left off.
 
@@ -21,6 +21,18 @@
   Check downloads: `gh release view <tag> --repo artha-apps/artha --json assets --jq '[.assets[].downloadCount] | add'`.
 - **Linux:** ready — `.deb` builds on `ubuntu-latest` and publishes; no signing needed.
 - **macOS:** signed + notarized via one Developer ID cert (covers both arm64 + Intel x64).
+
+---
+
+## 2026-05-31 — v0.1.14 release: working crash reporting + readable onboarding
+
+Cut `v0.1.14` (tag → release.yml builds/signs/publishes) to actually ship the session's work — until this release, the active DSN + fixes lived only on `main` and reached no users.
+
+- **PR #13 (merged)** — made the Sentry opt-out real now that the DSN is live: registered the missing `settings:{getSentry,setSentry,ackSentryDisclosure}` IPC handlers (first-run disclosure + Settings toggle were dead), enforced the runtime kill-switch in `beforeSend`, wired the two dead tag-updaters, extracted `scrubEvent`→`sentryScrub.ts` with tests. **Live-verified** end-to-end (disclosure → toggle → event reached the `artha` project).
+- **Init-ordering fix (in #13)** — `@sentry/electron` must init before the `ready` event; moved init to `initTelemetryBeforeReady()` (pre-`whenReady`), made `initDatabase()` idempotent. Without this, Sentry never initialised at all.
+- **PR #14 (merged)** — onboarding/org-setup used hardcoded `text-white` on the light theme → invisible headings + blank model rows. Swapped to `text-artha-text`. Live-verified.
+- **Housekeeping** — closed stale PR #3 (obsolete 0.2.0 bump); deleted the two Sentry test events (`ARTHA-LIVE-VERIFY*`, ingest test) from the prod project.
+- **Sentry project**: org `noopur-trivedi`, project `artha`, US region. DSN committed in `sentry.ts`.
 
 ---
 
