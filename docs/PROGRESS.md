@@ -1,10 +1,10 @@
 # Artha — Session Progress & Resume Log
 
-**Last updated:** 2026-05-30
-**Branch:** `chore/security-bumps` — open **PR #6 → `main`** (security bumps + v0.1.2). `main` is at `bbe4c73`; the 0.1.2 work is on this branch until the PR merges.
-**Tests:** 73 passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
+**Last updated:** 2026-05-31
+**Branch:** `main` — clean working tree. Last merge: **PR #12** (Sentry DSN activation).
+**Tests:** passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
 **Repo:** https://github.com/artha-apps/artha (**PUBLIC**; migrated from `Noopurtrivedi/artha` to the **`artha-apps`** org)
-**Current version:** `0.1.2` — tagged `v0.1.2`; GitHub release published (installers downloadable).
+**Current version:** `0.1.13` — tagged `v0.1.13`. `main` at `4670efc`.
 
 > Resume point for the next session. Read this first to know exactly where we left off.
 
@@ -21,6 +21,18 @@
   Check downloads: `gh release view <tag> --repo artha-apps/artha --json assets --jq '[.assets[].downloadCount] | add'`.
 - **Linux:** ready — `.deb` builds on `ubuntu-latest` and publishes; no signing needed.
 - **macOS:** signed + notarized via one Developer ID cert (covers both arm64 + Intel x64).
+
+---
+
+## 2026-05-31 — Sentry crash reporting activated (PR #12, merged to `main`)
+
+Stood up the live Sentry project and flipped the integration from dormant to active.
+
+- **Sentry org + project created** (via browser): org **Noopur Trivedi** (`noopur-trivedi.sentry.io`, **US** region — both permanent); project **`artha`**, platform **Electron** (matches `@sentry/electron/main`), team `#noopur-trivedi`, default high-priority alerting.
+- **DSN wired** into `packages/app/src/sentry.ts` → `DEFAULT_SENTRY_DSN` now points at the project. Shipped builds report crashes **by default**, still **user opt-out** (one-time disclosure + Settings), still only scrubbed **non-PII** operational data. `ARTHA_SENTRY_DSN` env still overrides; set DSN back to `''` to ship dormant again. The DSN is a public, write-only ingest key — safe to commit.
+- **Verified ingest end-to-end**: posted a test envelope to the project endpoint → **HTTP 200**, event accepted (no full Electron build needed). Real crashes from `main` builds now land in the `artha` project.
+- **Dependabot**: the push-time "2 moderate" warning was **stale** — API shows **0 open** alerts (all 16 ever-raised are `fixed`, resolved 2026-05-30 by a dep update already on `main`). No action needed.
+- PR #12 squash-merged (CI: TypeScript/ESLint/Unit tests/Vercel all green); branch deleted.
 
 ---
 
