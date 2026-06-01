@@ -20,7 +20,7 @@ import { registerIpcHandlers } from './ipc/handlers';
 import { initDatabase, runMigrations, getDb } from './db/schema';
 import { BrowserController } from './browser/controller';
 import { SchedulerService } from './scheduler/scheduler';
-import { initSentry, withTransaction, captureException } from './sentry';
+import { initSentry, withTransaction, captureException, setOllamaConnectedTag } from './sentry';
 import { startHealthCheckpointing, stopHealthCheckpointing } from './db/health';
 
 /** Probe whether the local Ollama runtime is reachable. Best-effort with a
@@ -52,6 +52,38 @@ const isDev = process.env.NODE_ENV === 'development';
 
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * Initialise telemetry BEFORE Electron's `ready` event fires.
+ *
+ * `@sentry/electron/main` throws ("Sentry SDK should be initialized before the
+ * Electron app 'ready' event is fired") if `Sentry.init` runs post-ready, so
+ * this can't live in `createWindow` (which runs after `whenReady`). We open the
+ * DB first — `initDatabase()` has no internal awaits, so better-sqlite3 opens
+ * the connection synchronously by the time it returns — so `initSentry` can
+ * read the opt-out flag in time to honour it.
+ *
+ * The operational tags start conservative: `ollamaConnected:false` is refreshed
+ * by the real probe in `createWindow` (via `setOllamaConnectedTag`); the MCP
+ * count is a synchronous DB read. The DB-failure dialog + migrations remain in
+ * `createWindow` — this only needs the connection + the settings row.
+ */
+function initTelemetryBeforeReady(): void {
+  // Open the DB synchronously. If better-sqlite3 fails to load its native
+  // binding, initDatabase returns a rejected promise (no sync throw) — swallow
+  // it here; createWindow re-runs initDatabase and surfaces the error dialog.
+  // Either way `db` is set-or-null deterministically before initSentry runs.
+  try {
+    void initDatabase().catch(() => { /* reported in createWindow */ });
+  } catch { /* reported in createWindow */ }
+  // countMcpServers + isSentryEnabled (inside initSentry) tolerate a closed DB
+  // (try/catch → 0 / disabled), so a failed DB open just leaves Sentry dormant.
+  try {
+    initSentry({ ollamaConnected: false, mcpServerCount: countMcpServers() });
+  } catch (err) {
+    console.error('[Artha] Sentry init failed:', err);
+  }
+}
+
 async function createWindow(): Promise<void> {
   // Initialise local SQLite database on first launch
   try {
@@ -77,16 +109,16 @@ async function createWindow(): Promise<void> {
   }
 
   // ── Operational resilience ───────────────────────────────────────────────
-  // Base tables exist now (so the settings blob is readable) — initialise
-  // Sentry here, AFTER the DB opens, so it can honour the user's opt-out before
-  // a single event is sent. Then apply additive migrations inside a Sentry
-  // performance transaction (so a slow/failed migration is tracked, not just
-  // thrown), and start the 30-minute DB health heartbeat.
+  // Sentry was already initialised before the 'ready' event (see
+  // initTelemetryBeforeReady — @sentry/electron requires pre-ready init). Now
+  // that we can probe, refresh the ollama-reachability tag (seeded false at
+  // init). Then apply additive migrations inside a Sentry performance
+  // transaction (so a slow/failed migration is tracked, not just thrown), and
+  // start the 30-minute DB health heartbeat.
   try {
-    const ollamaConnected = await probeOllamaReachable();
-    initSentry({ ollamaConnected, mcpServerCount: countMcpServers() });
+    setOllamaConnectedTag(await probeOllamaReachable());
   } catch (err) {
-    console.error('[Artha] Sentry init failed:', err);
+    console.error('[Artha] Ollama probe failed:', err);
   }
   // Migrations MUST run regardless of Sentry state. withTransaction is a no-op
   // span when Sentry is disabled, so this just runs runMigrations() directly.
@@ -217,6 +249,9 @@ if (!gotSingleInstanceLock) {
     }
   });
 
+  // Init Sentry BEFORE 'ready' fires (@sentry/electron requirement); createWindow
+  // runs after whenReady and is too late. See initTelemetryBeforeReady.
+  initTelemetryBeforeReady();
   app.whenReady().then(createWindow);
 
   app.on('window-all-closed', () => {

@@ -27,7 +27,7 @@
 
 | Path | Purpose |
 |------|---------|
-| `src/main.ts` | Entry point — BrowserWindow creation, IPC setup, auto-updater, tray |
+| `src/main.ts` | Entry point — BrowserWindow creation, IPC setup, auto-updater, tray. `initTelemetryBeforeReady()` opens the DB + inits Sentry BEFORE the Electron `ready` event (@sentry/electron requires pre-ready init); `createWindow` (post-ready) refreshes the ollama tag + runs migrations |
 | `src/preload.ts` | Context bridge — exposes `window.artha.*` API to renderer (zero Node access in renderer) |
 | `src/notify.ts` | `sendNotification()` — Electron native notifications with focus-on-click |
 | `src/sentry.ts` | Sentry init (opt-out, PII-scrubbed `beforeSend`/`beforeBreadcrumb`), release/env + `artha.ollama_connected`/`artha.mcp_server_count` tags, `withTransaction` (migration spans), `addBreadcrumb`, `captureException`, cron `startCheckIn`/`finishCheckIn`, runtime kill-switch (`setSentryRuntimeEnabled`, wired via `settings:setSentry` IPC). **ACTIVE**: `DEFAULT_SENTRY_DSN` points at the `artha` Sentry project (org `noopur-trivedi`, US); shipped builds report crashes by default (still user opt-out). `ARTHA_SENTRY_DSN` env overrides; set DSN back to `''` to ship dormant |
