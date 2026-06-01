@@ -105,6 +105,15 @@ export class LLMClient {
     messages: OpenAI.ChatCompletionMessageParam[],
     tools?: OpenAI.ChatCompletionTool[]
   ): Promise<OpenAI.ChatCompletion> {
+    // Local Ollama: use the native endpoint so we send the SAME num_ctx +
+    // keep_alive as the streaming ReAct path. The OpenAI-compat /v1 endpoint
+    // ignores num_ctx (defaults to 2048), so mixing it with the native path
+    // makes Ollama reload/resize the model between phases of one turn — a
+    // multi-second stall per phase on a large model. Keeping both paths on the
+    // same num_ctx lets the model stay resident across plan → answer → refresh.
+    if (this.isOllama) {
+      return this.completeOllamaNative(messages, tools);
+    }
     return this.client.chat.completions.create({
       model: this.config.model,
       messages,
@@ -113,6 +122,87 @@ export class LLMClient {
       max_tokens: this.config.maxTokens ?? 4096,
       temperature: this.config.temperature ?? 0.3,
       stream: false,
+    });
+  }
+
+  /** Non-streaming native Ollama `/api/chat` — same num_ctx/keep_alive as the
+   *  streaming path so the resident model isn't reloaded between phases. */
+  private async completeOllamaNative(
+    messages: OpenAI.ChatCompletionMessageParam[],
+    tools?: OpenAI.ChatCompletionTool[],
+  ): Promise<OpenAI.ChatCompletion> {
+    const body = {
+      model: this.config.model,
+      messages: this.toOllamaMessages(messages),
+      tools: tools && tools.length ? tools : undefined,
+      stream: false,
+      keep_alive: this.config.keepAlive ?? '30m',
+      options: {
+        num_ctx: this.config.contextWindow ?? 8192,
+        num_predict: this.config.maxTokens ?? 4096,
+        temperature: this.config.temperature ?? 0.3,
+      },
+    };
+    const res = await fetch(`${this.ollamaBase}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      throw new Error(`Ollama /api/chat failed: ${res.status} ${res.statusText}`);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: any = await res.json();
+    const msg = data?.message ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tool_calls = Array.isArray(msg.tool_calls) && msg.tool_calls.length
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ? msg.tool_calls.map((tc: any, i: number) => ({
+          id: `call_${i}_${tc.function?.name ?? 'fn'}`,
+          type: 'function' as const,
+          function: {
+            name: tc.function?.name ?? '',
+            arguments: typeof tc.function?.arguments === 'string'
+              ? tc.function.arguments
+              : JSON.stringify(tc.function?.arguments ?? {}),
+          },
+        }))
+      : undefined;
+    return {
+      id: 'ollama-native',
+      object: 'chat.completion',
+      created: 0,
+      model: this.config.model,
+      choices: [{
+        index: 0,
+        finish_reason: 'stop',
+        logprobs: null,
+        message: { role: 'assistant', content: msg.content ?? '', refusal: null, tool_calls },
+      }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any as OpenAI.ChatCompletion;
+  }
+
+  /** Map OpenAI-shaped messages to Ollama native `/api/chat` shape. Shared by
+   *  the streaming + non-streaming native paths. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private toOllamaMessages(messages: OpenAI.ChatCompletionMessageParam[]): any[] {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return messages.map((m): any => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const am = m as any;
+      if (m.role === 'assistant' && am.tool_calls?.length) {
+        return {
+          role: 'assistant',
+          content: am.content ?? '',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          tool_calls: am.tool_calls.map((tc: any) => ({
+            function: { name: tc.function?.name, arguments: safeParseArgs(tc.function?.arguments) },
+          })),
+        };
+      }
+      const content = typeof am.content === 'string' ? am.content : JSON.stringify(am.content ?? '');
+      return { role: m.role, content };
     });
   }
 
@@ -179,23 +269,7 @@ export class LLMClient {
     onToken: (token: string) => void,
     shouldAbort?: () => boolean,
   ): Promise<StreamedMessage> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const oMessages = messages.map((m): any => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const am = m as any;
-      if (m.role === 'assistant' && am.tool_calls?.length) {
-        return {
-          role: 'assistant',
-          content: am.content ?? '',
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          tool_calls: am.tool_calls.map((tc: any) => ({
-            function: { name: tc.function?.name, arguments: safeParseArgs(tc.function?.arguments) },
-          })),
-        };
-      }
-      const content = typeof am.content === 'string' ? am.content : JSON.stringify(am.content ?? '');
-      return { role: m.role, content };
-    });
+    const oMessages = this.toOllamaMessages(messages);
 
     const body = {
       model: this.config.model,
@@ -302,7 +376,30 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
          WHERE task_type=? ORDER BY quality DESC, latency_ms ASC LIMIT 1`
       )
       .get(taskType) as { ollama_name: string } | undefined;
-    return best?.ollama_name;
+    if (best?.ollama_name) return best.ollama_name;
+
+    // No benchmark + no user override. For the latency-sensitive auxiliary
+    // phases, fall back to the SMALLEST installed local model rather than the
+    // active (possibly huge) answer model — planning + tool-arg formatting
+    // don't need a 70B, and running them on one is the main cause of slow
+    // turns. 'synthesis' is quality-sensitive (doc generation, final combine)
+    // so it deliberately falls through to the active model.
+    if (taskType === 'plan' || taskType === 'tool_args') {
+      const rows = db
+        .prepare(`SELECT ollama_name FROM llm_models WHERE provider='ollama'`)
+        .all() as { ollama_name: string }[];
+      // Parse parameter count from the tag (…:7b, :72b, :3b-instruct-q4 → 7/72/3).
+      const params = (n: string): number => {
+        const tag = n.includes(':') ? n.slice(n.lastIndexOf(':') + 1) : n;
+        const m = tag.match(/(\d+(?:\.\d+)?)\s*b\b/i);
+        return m ? parseFloat(m[1]) : Infinity;
+      };
+      const smallest = rows
+        .map(r => ({ name: r.ollama_name, b: params(r.ollama_name) }))
+        .sort((a, b) => a.b - b.b)[0];
+      return smallest?.name;
+    }
+    return undefined;
   } catch {
     return undefined;
   }

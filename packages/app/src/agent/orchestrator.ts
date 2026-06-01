@@ -707,7 +707,14 @@ RULES — follow exactly, no exceptions:
             context_score: gathered.contextScore,
           });
         }
-        const trace = await this.runThinkPhase(args.goal, messages);
+        // Skip the dedicated planning generation for trivial one-line goals
+        // (e.g. "search for X", "what is Y"). It's a full extra model call that
+        // adds little for simple asks — the model still reasons inline while
+        // answering. Longer or multi-step goals keep the explicit plan.
+        const g = args.goal.trim();
+        const trivialGoal = g.length <= 80 && !g.includes('\n') &&
+          !/\b(then|after|first|step|plan|compare|analy|refactor|build|create|generate|summari|multiple|each|all of)\b/i.test(g);
+        const trace = trivialGoal ? '' : await this.runThinkPhase(args.goal, messages);
         if (trace) {
           reasoningSteps.push({ phase: 'think', content: trace, context_score: gathered.contextScore });
           // Feed the plan back as private guidance for tool use — kept out of the
