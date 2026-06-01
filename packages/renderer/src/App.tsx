@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { useChatStore, type Session } from './stores/chat';
 import Onboarding from './components/Onboarding/Onboarding';
 import ModelStatusBanner from './components/ModelStatusBanner';
+import WorkingIndicator from './components/WorkingIndicator';
 import Sidebar from './components/Sidebar/Sidebar';
 import ChatWindow from './components/Chat/ChatWindow';
 import ExecutionLog from './components/ExecutionLog/ExecutionLog';
@@ -229,6 +230,9 @@ export default function App() {
         {/* Local-model startup status — Artha auto-starts Ollama + warms the
             model; this is the quiet, non-blocking notice (bottom-left). */}
         <ModelStatusBanner />
+
+        {/* "Artha is working" — window glow + pill while the agent is acting. */}
+        <WorkingIndicator />
 
         {/* Update-available banner — bottom-right, non-blocking. */}
         {updateVersion && (

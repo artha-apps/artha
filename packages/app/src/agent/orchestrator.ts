@@ -41,6 +41,7 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
+import { noteDesktopControlActive } from '../controlOverlay';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -822,6 +823,10 @@ RULES — follow exactly, no exceptions:
             if (isMemoryTool(toolCall.function.name)) {
               toolResult = invokeMemoryTool(toolCall.function.name, parsedArgs, args.sessionId);
             } else if (isDesktopTool(toolCall.function.name)) {
+              // Artha is about to drive the REAL cursor/keyboard — paint the
+              // full-screen "Artha is in control" overlay so the takeover is
+              // obvious. Auto-hides shortly after the last desktop action.
+              noteDesktopControlActive();
               toolResult = await invokeDesktopTool(toolCall.function.name, parsedArgs);
             } else {
               toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs, fsCtx);

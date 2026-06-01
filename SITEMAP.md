@@ -30,6 +30,7 @@
 | `src/main.ts` | Entry point — BrowserWindow creation, IPC setup, auto-updater, tray. `initTelemetryBeforeReady()` opens the DB + inits Sentry BEFORE the Electron `ready` event (@sentry/electron requires pre-ready init); `createWindow` (post-ready) refreshes the ollama tag + runs migrations |
 | `src/preload.ts` | Context bridge — exposes `window.artha.*` API to renderer (zero Node access in renderer) |
 | `src/notify.ts` | `sendNotification()` — Electron native notifications with focus-on-click |
+| `src/controlOverlay.ts` | "Artha is in control" screen overlay — a frameless, transparent, click-through, always-on-top full-screen window (glowing border + pill) shown while desktop-control tools drive the real cursor/keyboard. `noteDesktopControlActive()` (called from the orchestrator before each desktop tool) shows it + arms a debounced auto-hide; `hideControlOverlay()` |
 | `src/sentry.ts` | Sentry init (opt-out, PII-scrubbed `beforeSend`/`beforeBreadcrumb`), release/env + `artha.ollama_connected`/`artha.mcp_server_count` tags, `withTransaction` (migration spans), `addBreadcrumb`, `captureException`, cron `startCheckIn`/`finishCheckIn`, runtime kill-switch (`setSentryRuntimeEnabled`, wired via `settings:setSentry` IPC). **ACTIVE**: `DEFAULT_SENTRY_DSN` points at the `artha` Sentry project (org `noopur-trivedi`, US); shipped builds report crashes by default (still user opt-out). `ARTHA_SENTRY_DSN` env overrides; set DSN back to `''` to ship dormant |
 | `src/sentryScrub.ts` | The privacy backstop `scrubEvent`, extracted as a pure, electron-free function (so it's unit-testable): strips absolute paths→basenames, drops user/request/server_name/device + frame-local vars, keeps only `artha.*` breadcrumbs. Wired as Sentry's `beforeSend`. Tested by `sentryScrub.test.ts` |
 | `tsconfig.json` | TypeScript config for main process (CommonJS, Node 20 types) |
@@ -104,6 +105,7 @@
 | `src/index.tsx` | React entry point |
 | `src/App.tsx` | Root component — view router, IPC event wiring (clarify, update-available) |
 | `src/components/ModelStatusBanner.tsx` | Quiet bottom-left notice for the local-model startup flow — subscribes to `model:status`; shows "Starting/Warming…" while Artha auto-starts Ollama + warms the model, auto-dismisses on ready, persistent "install Ollama" / error+retry states |
+| `src/components/WorkingIndicator.tsx` | "Artha is working…" cue — window-edge accent glow + a bottom-center pill while the agent is acting (`isStreaming`). Pill is `z-[90]` so it stays visible over modals. The baseline in-app signal; desktop control + browser pane add their own specific cues |
 | `src/components/TabBar/ModelPicker.tsx` | Inline searchable model switcher (the top-bar chip). "Find model…" filter over all installed Ollama models + configured cloud models; click to switch (`llm:setActiveModel` upserts any model) and pre-warm via `ensureModel`. Replaces the old click-to-open-Settings chip |
 | **stores/** | |
 | `src/stores/chat.ts` | Zustand store — `ActiveView` union, messages, pending attachments, clarify state, per-chat `scopes` |
