@@ -1,12 +1,12 @@
 # Artha — Session Progress & Resume Log
 
 **Last updated:** 2026-06-01
-**Branch:** `main` — clean working tree. Last merges: **#15** (perf) + **#16** (auto-start model) + **#18** (model picker).
+**Branch:** `main` — clean working tree. Last merges: **#19** (auto-publish CI) + **#20** ("Artha is in control" indicators).
 **Tests:** 86 passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
 **Repo:** https://github.com/artha-apps/artha (**PUBLIC**; migrated from `Noopurtrivedi/artha` to the **`artha-apps`** org)
-**Current version:** `0.1.15` — tagged `v0.1.15`, release building. `main` at `b32f9fa`.
+**Current version:** `0.1.16` — tagged `v0.1.16`, release building. `main` at `0d34577`.
 
-> ⚠️ **Release publishing is manual.** `release.yml` builds installers and creates a **Draft** GitHub Release — someone must click **Publish** to make it Latest/downloadable. **v0.1.14 was left as a Draft and never published** (so 0.1.13 was still the public "Latest"). Publish **v0.1.15** once its build completes and delete the stale 0.1.14 draft. Check: `gh release list --repo artha-apps/artha`.
+> ✅ **Releases now auto-publish** (PR #19): `release.yml` builds the 3 platforms to a draft, then a `publish-release` job flips it to Latest once all succeed — no manual click. (Pre-#19, drafts had to be published by hand; v0.1.14 got stuck that way. v0.1.15 was published manually + the 0.1.14 draft deleted.)
 
 > Resume point for the next session. Read this first to know exactly where we left off.
 
@@ -23,6 +23,14 @@
   Check downloads: `gh release view <tag> --repo artha-apps/artha --json assets --jq '[.assets[].downloadCount] | add'`.
 - **Linux:** ready — `.deb` builds on `ubuntu-latest` and publishes; no signing needed.
 - **macOS:** signed + notarized via one Developer ID cert (covers both arm64 + Intel x64).
+
+---
+
+## 2026-06-01 — v0.1.16: "Artha is in control" indicators + auto-publish CI
+
+- **#20 control indicators** — `controlOverlay.ts`: full-screen, click-through, always-on-top overlay (glowing border + pill) while desktop control drives the real cursor/keyboard (shown from the orchestrator before each desktop tool, debounced auto-hide). `WorkingIndicator`: window glow + "Artha is working…" pill on `isStreaming` (`z-[90]`, visible over modals). `BrowserPane`: "Artha is browsing this page" ring/label while the agent drives. Verified live (overlay window + in-app pill screenshots).
+- **#19 auto-publish CI** — release workflow now flips the draft → Latest automatically after all 3 platform builds succeed (see banner above). v0.1.16 is the first to use it.
+- Typecheck + 86 tests + build clean.
 
 ---
 
