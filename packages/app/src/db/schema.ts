@@ -28,6 +28,10 @@ export function getDb(): Database.Database {
 /** Opens (or creates) the SQLite file under Electron's userData dir, applies
  *  pragmas, and runs the full schema bootstrap. Idempotent. */
 export async function initDatabase(): Promise<void> {
+  // Idempotent: telemetry bootstrap opens the DB before Electron's 'ready'
+  // event (so Sentry can read the opt-out flag in time), then createWindow
+  // calls this again post-ready. Second call is a no-op — never open twice.
+  if (db) return;
   const userDataPath = app.getPath('userData');
   const dbPath = path.join(userDataPath, 'artha.db');
 

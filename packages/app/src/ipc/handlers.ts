@@ -48,6 +48,7 @@ import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
 import { recomputePrimaryProject } from '../db/scopes';
+import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } from '../sentry';
 import { Entitlements, FREE_ENTITLEMENTS } from '../license/entitlements';
 import { getEntitlements, invalidateEntitlements, parseAndVerify } from '../license/verify';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
@@ -866,8 +867,12 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('llm:checkOllama', async () => {
     try {
       const res = await fetch('http://localhost:11434/api/tags');
+      // Keep the non-PII Sentry tag in sync with live reachability (seeded once
+      // at launch; this refreshes it whenever the renderer re-probes).
+      setOllamaConnectedTag(res.ok);
       return res.ok;
     } catch {
+      setOllamaConnectedTag(false);
       return false;
     }
   });
@@ -1004,6 +1009,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return getDb().prepare(`SELECT * FROM tools ORDER BY name ASC`).all();
   });
 
+  // Recount installed MCP servers and refresh the non-PII Sentry tag so errors
+  // can be correlated with how many servers the user has configured. The tag is
+  // seeded at launch (initSentry); this keeps it current as servers come/go.
+  const refreshMcpServerCountTag = () => {
+    const n = (getDb().prepare(
+      `SELECT COUNT(*) AS n FROM tools WHERE mcp_server_uri IS NOT NULL`
+    ).get() as { n: number } | undefined)?.n ?? 0;
+    setMcpServerCountTag(n);
+  };
+
   ipcMain.handle('mcp:installServer', async (_e, uri: string) => {
     const db = getDb();
     const id = crypto.randomUUID();
@@ -1011,6 +1026,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     db.prepare(`INSERT INTO tools (tool_id, name, mcp_server_uri, description) VALUES (?,?,?,?)`)
       .run(id, name, uri, `MCP server: ${uri}`);
     await MCPRegistry.getInstance().connectServer(id, name, uri);
+    refreshMcpServerCountTag();
     return { id, name };
   });
 
@@ -1021,6 +1037,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('mcp:removeServer', (_e, id: string) => {
     getDb().prepare(`DELETE FROM tools WHERE tool_id=?`).run(id);
+    refreshMcpServerCountTag();
     return true;
   });
 
@@ -1703,6 +1720,31 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('settings:getDesktopControl', () => !!readSettings().desktop_control_enabled);
   ipcMain.handle('settings:setDesktopControl', (_e, enabled: boolean) => {
     writeSetting('desktop_control_enabled', !!enabled);
+    return true;
+  });
+
+  // ── Crash reporting (Sentry) ─────────────────────────────────────────────
+  // Opt-out telemetry. These three channels back the Settings toggle and the
+  // one-time first-run disclosure (renderer: App.tsx + SettingsPanel.tsx).
+  //   - `sentry_enabled`        : the opt-out flag, default ON (absent ⇒ on).
+  //   - `sentry_disclosure_ack` : whether the first-run notice was dismissed.
+  // getSentry reports both. setSentry persists the flag AND flips the runtime
+  // kill-switch so disabling stops transmission immediately — without a
+  // restart (re-enabling resumes only if Sentry was initialised at launch).
+  ipcMain.handle('settings:getSentry', () => {
+    const s = readSettings();
+    return {
+      enabled: s.sentry_enabled !== false,
+      disclosureAck: s.sentry_disclosure_ack === true,
+    };
+  });
+  ipcMain.handle('settings:setSentry', (_e, enabled: boolean) => {
+    writeSetting('sentry_enabled', !!enabled);
+    setSentryRuntimeEnabled(!!enabled);
+    return { enabled: !!enabled };
+  });
+  ipcMain.handle('settings:ackSentryDisclosure', () => {
+    writeSetting('sentry_disclosure_ack', true);
     return true;
   });
 

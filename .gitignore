@@ -58,3 +58,6 @@ npm-debug.log*
 *.gguf
 *.bin
 models/
+
+# Playwright MCP session artifacts
+.playwright-mcp/
