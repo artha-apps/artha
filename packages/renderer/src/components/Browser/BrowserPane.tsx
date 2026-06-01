@@ -10,6 +10,7 @@
  */
 import { useEffect, useRef } from 'react';
 import { useBrowserStore } from '../../stores/browser';
+import { useChatStore } from '../../stores/chat';
 import BrowserToolbar from './BrowserToolbar';
 import HandoffBanner from './HandoffBanner';
 
@@ -25,6 +26,10 @@ export default function BrowserPane({ onClose }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const { state, setState } = useBrowserStore();
   const crashed = state.crashed;
+  // Artha is driving the page when the agent is streaming and hasn't handed the
+  // wheel to the user (handoff has its own banner) or crashed.
+  const isStreaming = useChatStore(s => s.isStreaming);
+  const agentDriving = isStreaming && !state.awaitingHandoff && !crashed;
 
   // Push the viewport rectangle to main on every layout change.
   useEffect(() => {
@@ -71,6 +76,17 @@ export default function BrowserPane({ onClose }: Props) {
           it's obvious when the BrowserView hasn't attached yet (debug aid). */}
       <div ref={viewportRef} className="flex-1 bg-[#0f1117] relative">
         <HandoffBanner />
+        {/* "Artha is driving this page" — distinct from the handoff banner
+            (which is when the wheel is handed to the user). Sits above the
+            native BrowserView so it's visible over the page. */}
+        {agentDriving && (
+          <div className="pointer-events-none absolute inset-0 z-[5] ring-2 ring-inset ring-artha-accent/70">
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-artha-text/92 text-white text-[11px] font-medium shadow-lifted">
+              <span className="w-1.5 h-1.5 rounded-full bg-artha-accent animate-pulse" />
+              🤖 Artha is browsing this page
+            </div>
+          </div>
+        )}
         {/* Recovery overlay — the native BrowserView is blank after a renderer
             crash that survived the auto-reload, so cover the pane and offer a
             deliberate retry. Rendered above the (now-empty) native view. */}
