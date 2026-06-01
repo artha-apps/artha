@@ -1,10 +1,12 @@
 # Artha — Session Progress & Resume Log
 
-**Last updated:** 2026-05-31
-**Branch:** `main` — clean working tree. Last merges: **PR #12/#13** (Sentry) + **#14** (onboarding font).
+**Last updated:** 2026-06-01
+**Branch:** `main` — clean working tree. Last merges: **#15** (perf) + **#16** (auto-start model) + **#18** (model picker).
 **Tests:** 86 passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
 **Repo:** https://github.com/artha-apps/artha (**PUBLIC**; migrated from `Noopurtrivedi/artha` to the **`artha-apps`** org)
-**Current version:** `0.1.14` — tagged `v0.1.14` (release building/published). `main` at `9ab5af4`.
+**Current version:** `0.1.15` — tagged `v0.1.15`, release building. `main` at `b32f9fa`.
+
+> ⚠️ **Release publishing is manual.** `release.yml` builds installers and creates a **Draft** GitHub Release — someone must click **Publish** to make it Latest/downloadable. **v0.1.14 was left as a Draft and never published** (so 0.1.13 was still the public "Latest"). Publish **v0.1.15** once its build completes and delete the stale 0.1.14 draft. Check: `gh release list --repo artha-apps/artha`.
 
 > Resume point for the next session. Read this first to know exactly where we left off.
 
@@ -21,6 +23,18 @@
   Check downloads: `gh release view <tag> --repo artha-apps/artha --json assets --jq '[.assets[].downloadCount] | add'`.
 - **Linux:** ready — `.deb` builds on `ubuntu-latest` and publishes; no signing needed.
 - **macOS:** signed + notarized via one Developer ID cert (covers both arm64 + Intel x64).
+
+---
+
+## 2026-06-01 — v0.1.15: faster local turns + auto-start model + inline model picker
+
+Merged three PRs in order and cut `v0.1.15` (build running).
+
+- **#15 perf** — local turns were 200-400s: aux phases (`plan`/`tool_args`) now route to the smallest installed model; `complete()` uses the native Ollama path so num_ctx matches the ReAct path (no model reload churn between phases); `<think>` skipped for trivial goals. (Companion config applied to the user's profile: active model 72B→7B @ 16K.)
+- **#16 auto-start** — `ollamaRuntime.ts`: on launch, start Ollama if down + pre-warm the active model at matching num_ctx (no cold first-message); `model:status` → `ModelStatusBanner`. Free the model on quit (`keep_alive 0`); "Fully stop Ollama when I quit" setting (off) only stops a server WE started. Onboarding no longer says "run `ollama serve`".
+- **#18 model picker** — the top-bar chip is now an inline searchable dropdown over all installed + configured models; select upserts+activates any model and pre-warms it. (#17 was the stacked PR; superseded by #18 after rebasing onto main.)
+- All verified live (CDP/inspector). 86 tests pass.
+- **Release**: `v0.1.15` tagged; **publish the draft** (see banner above) — and the 0.1.14 draft should be deleted as superseded.
 
 ---
 
