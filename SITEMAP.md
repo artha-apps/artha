@@ -1,6 +1,6 @@
 # Artha — Workspace Sitemap
 
-> Last updated: 2026-05-30 (added extended <think> reasoning, local context-gather, and opt-out Sentry resilience)
+> Last updated: 2026-05-31 (Sentry crash reporting activated — project DSN wired into `DEFAULT_SENTRY_DSN`)
 
 ## Root
 
@@ -30,7 +30,7 @@
 | `src/main.ts` | Entry point — BrowserWindow creation, IPC setup, auto-updater, tray |
 | `src/preload.ts` | Context bridge — exposes `window.artha.*` API to renderer (zero Node access in renderer) |
 | `src/notify.ts` | `sendNotification()` — Electron native notifications with focus-on-click |
-| `src/sentry.ts` | Sentry init (opt-out, PII-scrubbed `beforeSend`/`beforeBreadcrumb`), release/env + `artha.ollama_connected`/`artha.mcp_server_count` tags, `withTransaction` (migration spans), `addBreadcrumb`, `captureException`, cron `startCheckIn`/`finishCheckIn`, runtime kill-switch |
+| `src/sentry.ts` | Sentry init (opt-out, PII-scrubbed `beforeSend`/`beforeBreadcrumb`), release/env + `artha.ollama_connected`/`artha.mcp_server_count` tags, `withTransaction` (migration spans), `addBreadcrumb`, `captureException`, cron `startCheckIn`/`finishCheckIn`, runtime kill-switch. **ACTIVE**: `DEFAULT_SENTRY_DSN` points at the `artha` Sentry project (org `noopur-trivedi`, US); shipped builds report crashes by default (still user opt-out). `ARTHA_SENTRY_DSN` env overrides; set DSN back to `''` to ship dormant |
 | `tsconfig.json` | TypeScript config for main process (CommonJS, Node 20 types) |
 | **db/** | |
 | `src/db/schema.ts` | SQLite schema + `getDb()` singleton — all `CREATE TABLE` + additive `ALTER TABLE` migrations; opens/migrates the DB on first call |
