@@ -12,7 +12,7 @@
  * immediately (not just at next launch).
  */
 import { useEffect, useState } from 'react';
-import { Bell, BellOff, Sparkles, ShieldCheck } from 'lucide-react';
+import { Bell, BellOff, Sparkles, ShieldCheck, Power } from 'lucide-react';
 
 /**
  * Loose shape of the settings blob — the index signature lets the same `toggle`
@@ -21,6 +21,7 @@ import { Bell, BellOff, Sparkles, ShieldCheck } from 'lucide-react';
 interface AppSettings {
   notifications_enabled?: boolean;
   show_reasoning?: boolean;
+  ollama_stop_on_quit?: boolean;
   [key: string]: unknown;
 }
 
@@ -104,6 +105,9 @@ export default function SettingsPanel() {
   // Defaults treat absence of the key as "on" — these are all opt-out.
   const notificationsOn = settings.notifications_enabled !== false;
   const reasoningOn = settings.show_reasoning !== false;
+  // Default OFF: Artha leaves the lightweight Ollama server running for instant
+  // restarts (the resident model is always freed on quit regardless).
+  const stopOllamaOnQuit = settings.ollama_stop_on_quit === true;
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -148,6 +152,18 @@ export default function SettingsPanel() {
               on={sentryEnabled}
               disabled={saving}
               onToggle={() => toggleSentry(!sentryEnabled)}
+            />
+
+            {/* Local model lifecycle. Artha starts Ollama for you and frees the
+                model from memory on quit. The server itself stays running for
+                instant restarts unless you turn this on. */}
+            <ToggleRow
+              icon={<Power size={16} className={stopOllamaOnQuit ? 'text-artha-accent' : 'text-artha-muted'} />}
+              title="Fully stop Ollama when I quit"
+              description="Artha keeps Ollama running in the background for instant startup and frees the model from memory when you quit. Turn this on to also shut down the Ollama server Artha started (next launch will be a little slower)."
+              on={stopOllamaOnQuit}
+              disabled={saving}
+              onToggle={() => toggle('ollama_stop_on_quit', !stopOllamaOnQuit)}
             />
 
           </div>

@@ -52,6 +52,7 @@
 | `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, lan, cloud, …) |
 | **llm/** | |
 | `src/llm/client.ts` | `getActiveLLMClient()` — returns an OpenAI-compat client for the active model; respects context_window |
+| `src/llm/ollamaRuntime.ts` | Ollama lifecycle — `ensureModelReady()` (auto-start the server if down + pre-warm the active model at matching num_ctx on launch, emitting `model:status`), `unloadActiveModel()` (keep_alive 0 on quit), `stopOllamaIfStarted()` (only a server WE spawned). Never instructs the user to run terminal commands; only stops what it started |
 | `src/llm/streamMerge.ts` | Merges streamed tool-call deltas (id+name on first chunk, args appended after) into complete tool calls |
 | **mcp/** | |
 | `src/mcp/registry.ts` | `MCPRegistry` — manages MCP server processes, tool schemas, invocations |
@@ -102,6 +103,7 @@
 |------|---------|
 | `src/index.tsx` | React entry point |
 | `src/App.tsx` | Root component — view router, IPC event wiring (clarify, update-available) |
+| `src/components/ModelStatusBanner.tsx` | Quiet bottom-left notice for the local-model startup flow — subscribes to `model:status`; shows "Starting/Warming…" while Artha auto-starts Ollama + warms the model, auto-dismisses on ready, persistent "install Ollama" / error+retry states |
 | **stores/** | |
 | `src/stores/chat.ts` | Zustand store — `ActiveView` union, messages, pending attachments, clarify state, per-chat `scopes` |
 | `src/stores/browser.ts` | Zustand store for the embedded browser pane — URL, driving mode (agent/user), handoff state |

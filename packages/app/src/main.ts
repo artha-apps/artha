@@ -22,6 +22,7 @@ import { BrowserController } from './browser/controller';
 import { SchedulerService } from './scheduler/scheduler';
 import { initSentry, withTransaction, captureException, setOllamaConnectedTag } from './sentry';
 import { startHealthCheckpointing, stopHealthCheckpointing } from './db/health';
+import { ensureModelReady, unloadActiveModel, stopOllamaIfStarted } from './llm/ollamaRuntime';
 
 /** Probe whether the local Ollama runtime is reachable. Best-effort with a
  *  short timeout so a missing Ollama can't stall startup. Drives the
@@ -177,6 +178,16 @@ async function createWindow(): Promise<void> {
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
 
+  // Turn the local model "on" ourselves: start Ollama if it isn't running and
+  // pre-warm the active model so the user's first message is fast (no cold
+  // load). Non-blocking — the window is already up; progress streams to the
+  // renderer's startup banner via `model:status`.
+  ensureModelReady((status) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('model:status', status);
+    if (status.phase === 'ready') setOllamaConnectedTag(true);
+  }).catch(err => console.error('[Artha] ensureModelReady failed:', err));
+
   // Recover from renderer process crashes (e.g. memory pressure from a large
   // local model mid-task) — without this the window just goes black with no
   // recourse. Auto-reload a few times, then stop to avoid a crash loop.
@@ -262,5 +273,31 @@ if (!gotSingleInstanceLock) {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+
+  // On quit: free the resident model (the real RAM cost) so nothing heavy
+  // lingers after Artha closes. The Ollama *server* stays up for instant
+  // restarts UNLESS the user enabled "fully stop on quit" (and only if WE
+  // started it — we never stop a server the user was already running).
+  // preventDefault + app.exit lets the best-effort unload finish first.
+  let quitting = false;
+  app.on('before-quit', (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    quitting = true;
+    void (async () => {
+      try {
+        await unloadActiveModel();
+        let stopOnQuit = false;
+        try {
+          const row = getDb()
+            .prepare(`SELECT settings_json FROM users WHERE user_id='default'`)
+            .get() as { settings_json: string } | undefined;
+          stopOnQuit = JSON.parse(row?.settings_json ?? '{}').ollama_stop_on_quit === true;
+        } catch { /* default off */ }
+        if (stopOnQuit) await stopOllamaIfStarted();
+      } catch { /* best-effort */ }
+      app.exit(0);
+    })();
   });
 }
