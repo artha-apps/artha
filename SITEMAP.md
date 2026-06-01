@@ -104,6 +104,7 @@
 | `src/index.tsx` | React entry point |
 | `src/App.tsx` | Root component — view router, IPC event wiring (clarify, update-available) |
 | `src/components/ModelStatusBanner.tsx` | Quiet bottom-left notice for the local-model startup flow — subscribes to `model:status`; shows "Starting/Warming…" while Artha auto-starts Ollama + warms the model, auto-dismisses on ready, persistent "install Ollama" / error+retry states |
+| `src/components/TabBar/ModelPicker.tsx` | Inline searchable model switcher (the top-bar chip). "Find model…" filter over all installed Ollama models + configured cloud models; click to switch (`llm:setActiveModel` upserts any model) and pre-warm via `ensureModel`. Replaces the old click-to-open-Settings chip |
 | **stores/** | |
 | `src/stores/chat.ts` | Zustand store — `ActiveView` union, messages, pending attachments, clarify state, per-chat `scopes` |
 | `src/stores/browser.ts` | Zustand store for the embedded browser pane — URL, driving mode (agent/user), handoff state |
