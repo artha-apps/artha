@@ -21,10 +21,27 @@ import * as Sentry from '@sentry/electron/main';
 import { app } from 'electron';
 import { getDb } from './db/schema';
 
-/** The DSN is a public, write-only ingest key — safe to ship in the client.
- *  Read from env so CI/forks can override or leave it empty (empty ⇒ Sentry
- *  initialises in a no-op mode and nothing is transmitted). */
-const SENTRY_DSN = process.env.ARTHA_SENTRY_DSN ?? '';
+/** Default DSN baked into shipped builds.
+ *
+ *  This points at the Artha project (org `noopur-trivedi`, US region). A Sentry
+ *  DSN is a PUBLIC, write-only ingest key — it can only submit events, never
+ *  read them or touch the account — so it is safe to commit / ship in the
+ *  client. Shape: https://<publicKey>@o<org>.ingest.sentry.io/<projectId>
+ *
+ *  With a DSN present, Artha ships with crash reporting ACTIVE but still fully
+ *  user opt-out (see `isSentryEnabled` + the one-time disclosure) and only ever
+ *  transmits scrubbed, non-PII operational data (see scrubEvent + the module
+ *  header). To ship a DORMANT build instead (nothing ever transmitted), set
+ *  this back to '' — `initSentry()` then becomes a no-op.
+ *
+ *  An explicit `ARTHA_SENTRY_DSN` env var still overrides this at build/runtime
+ *  for dev / CI / self-hosted / fork builds. */
+const DEFAULT_SENTRY_DSN = 'https://07535d0b32acc4920d76e140da1ed94c@o4511487247581184.ingest.us.sentry.io/4511487249547264';
+
+/** Effective DSN: an explicit env override wins (dev / CI / self-hosted), else
+ *  the committed default (empty by default → Sentry stays no-op and transmits
+ *  nothing). */
+const SENTRY_DSN = process.env.ARTHA_SENTRY_DSN ?? DEFAULT_SENTRY_DSN;
 
 let initialised = false;
 /** Runtime kill-switch. Mirrors the `sentry_enabled` setting so toggling it OFF
