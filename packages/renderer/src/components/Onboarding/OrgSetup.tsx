@@ -123,7 +123,7 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
   return (
     <div className="w-full max-w-2xl bg-artha-s2 border border-artha-border rounded-2xl shadow-2xl p-8">
       <div className="flex items-center justify-between mb-6">
-        <button onClick={onBack} className="text-xs text-artha-muted hover:text-white transition-colors">← Back</button>
+        <button onClick={onBack} className="text-xs text-artha-muted hover:text-artha-text transition-colors">← Back</button>
         <span className="text-[11px] uppercase tracking-wide text-artha-muted">Organization setup</span>
       </div>
 
@@ -131,7 +131,7 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
         <div className="w-14 h-14 rounded-2xl bg-artha-accent/20 border border-artha-accent/20 flex items-center justify-center mb-4">
           <Building2 size={26} className="text-artha-accent" />
         </div>
-        <h1 className="text-xl font-semibold text-white mb-1">Set up Artha for your team</h1>
+        <h1 className="text-xl font-semibold text-artha-text mb-1">Set up Artha for your team</h1>
         <p className="text-sm text-artha-muted">Three steps. Everything stays on your network — no cloud account.</p>
       </div>
 
@@ -186,7 +186,7 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
         {hubReady && (
           <div className="flex items-center gap-2 text-xs text-artha-muted">
             <code className="bg-artha-surface border border-artha-border rounded px-2 py-1 text-artha-text">{hubUrl}</code>
-            <button onClick={() => copy(hubUrl!)} className="inline-flex items-center gap-1 text-artha-muted hover:text-white transition-colors">
+            <button onClick={() => copy(hubUrl!)} className="inline-flex items-center gap-1 text-artha-muted hover:text-artha-text transition-colors">
               <ClipboardCopy size={11} /> copy
             </button>
           </div>
@@ -286,7 +286,7 @@ function Section({
           {done ? <Check size={13} /> : n}
         </div>
         <div className="flex-1">
-          <p className="text-sm font-medium text-white">{title}</p>
+          <p className="text-sm font-medium text-artha-text">{title}</p>
           <p className="text-xs text-artha-muted">{subtitle}</p>
         </div>
         {done && <ShieldCheck size={14} className="text-artha-accent" />}
@@ -318,7 +318,7 @@ Quick test (any machine on your network):
           <span className="text-xs text-artha-muted ml-2">· {seat.role}</span>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={() => onCopy(card)} className="inline-flex items-center gap-1 text-xs text-artha-muted hover:text-white transition-colors">
+          <button onClick={() => onCopy(card)} className="inline-flex items-center gap-1 text-xs text-artha-muted hover:text-artha-text transition-colors">
             <ClipboardCopy size={11} /> copy card
           </button>
           <button onClick={onRemove} className="text-xs text-artha-muted hover:text-red-400 transition-colors ml-2">
