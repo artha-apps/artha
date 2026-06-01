@@ -11,6 +11,13 @@ import { contextBridge, ipcRenderer } from 'electron';
  */
 export type ArthaAPI = typeof api;
 
+/** Phase of the local-model startup flow (auto-start Ollama + pre-warm). */
+export interface ModelStatus {
+  phase: 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'error';
+  model?: string;
+  detail?: string;
+}
+
 /** A folder or file attached to a single chat (see `session_scopes`). */
 export interface SessionScope {
   scope_id: string;
@@ -175,6 +182,15 @@ const api = {
     onPullProgress: (cb: (p: { name: string; status: string; completed?: number; total?: number; percent?: number; error?: string }) => void) => {
       ipcRenderer.on('llm:pullProgress', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('llm:pullProgress');
+    },
+    // Model-startup status: Artha auto-starts Ollama + pre-warms the active
+    // model on launch. `getModelStatus` reads the current phase; `onModelStatus`
+    // streams live updates; `ensureModel` re-triggers the flow (onboarding retry).
+    getModelStatus: () => ipcRenderer.invoke('model:getStatus') as Promise<ModelStatus>,
+    ensureModel: () => ipcRenderer.invoke('model:ensure') as Promise<ModelStatus>,
+    onModelStatus: (cb: (s: ModelStatus) => void) => {
+      ipcRenderer.on('model:status', (_e, s) => cb(s));
+      return () => ipcRenderer.removeAllListeners('model:status');
     },
     setActiveModel: (modelName: string) =>
       ipcRenderer.invoke('llm:setActiveModel', modelName),

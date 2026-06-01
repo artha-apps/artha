@@ -49,6 +49,7 @@ import { runBenchmark, listProfiles, setOverride, listOverrides } from '../route
 import { getDb } from '../db/schema';
 import { recomputePrimaryProject } from '../db/scopes';
 import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } from '../sentry';
+import { ensureModelReady, getModelStatus } from '../llm/ollamaRuntime';
 import { Entitlements, FREE_ENTITLEMENTS } from '../license/entitlements';
 import { getEntitlements, invalidateEntitlements, parseAndVerify } from '../license/verify';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
@@ -875,6 +876,17 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       setOllamaConnectedTag(false);
       return false;
     }
+  });
+
+  // Model-startup status (server start + warm). The renderer's startup banner
+  // reads this on mount, then live-updates via the `model:status` event the
+  // launch path emits.
+  ipcMain.handle('model:getStatus', () => getModelStatus());
+  // Re-trigger ensure (onboarding "retry" / first run). Streams progress via
+  // the same `model:status` event used at launch.
+  ipcMain.handle('model:ensure', async () => {
+    await ensureModelReady((s) => safeSend('model:status', s));
+    return getModelStatus();
   });
 
   ipcMain.handle('llm:pullModel', async (_e, name: string) => {
