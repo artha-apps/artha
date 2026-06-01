@@ -20,6 +20,7 @@
 import * as Sentry from '@sentry/electron/main';
 import { app } from 'electron';
 import { getDb } from './db/schema';
+import { scrubEvent } from './sentryScrub';
 
 /** Default DSN baked into shipped builds.
  *
@@ -75,49 +76,10 @@ export function isSentryEnabled(): boolean {
   }
 }
 
-/**
- * Strip anything that could leak local data from an outbound event. This is the
- * privacy backstop: even if some other code attaches data, `beforeSend` runs
- * last and removes it.
- *
- *  - drops request/user/server_name/breadcrumb-from-console payloads
- *  - replaces absolute file paths in stack frames + messages with basenames
- *  - removes any `extra`/`contexts` we didn't explicitly whitelist
- */
-function scrubEvent<T extends Sentry.Event>(event: T): T | null {
-  // Replace absolute paths (……/Users/foo/bar/baz.ts → baz.ts) anywhere they
-  // appear in human-readable text. Keeps the filename so stacks stay useful.
-  const stripPaths = (text: string): string =>
-    text.replace(/(?:\/[^\s/:]+)+\/([^\s/:]+)/g, '<path>/$1');
-
-  // Exception values/messages may contain interpolated paths or content.
-  if (event.exception?.values) {
-    for (const ex of event.exception.values) {
-      if (ex.value) ex.value = stripPaths(ex.value);
-      for (const frame of ex.stacktrace?.frames ?? []) {
-        // Keep only the basename of the source file — never the full path.
-        if (frame.filename) frame.filename = frame.filename.replace(/^.*[\\/]/, '');
-        if (frame.abs_path) delete frame.abs_path;
-        // Local variables can hold file contents / prompts — drop them.
-        if (frame.vars) delete frame.vars;
-      }
-    }
-  }
-  if (typeof event.message === 'string') event.message = stripPaths(event.message);
-
-  // Hard-remove identifying / free-text surfaces regardless of who set them.
-  delete event.user;
-  delete event.request;
-  delete event.server_name;
-  delete event.contexts?.device;
-  // Console breadcrumbs can capture logged prompts/content — drop them; keep
-  // only the breadcrumbs we add ourselves (category 'artha.*').
-  if (event.breadcrumbs) {
-    event.breadcrumbs = event.breadcrumbs.filter(b => (b.category ?? '').startsWith('artha.'));
-  }
-
-  return event;
-}
+/** The privacy backstop (`scrubEvent`) lives in `./sentryScrub` as a pure,
+ *  electron-free function so it can be unit-tested in isolation. It runs last,
+ *  as Sentry's `beforeSend`, stripping paths / user / request / device / frame
+ *  vars and keeping only our own 'artha.*' breadcrumbs. */
 
 /**
  * Initialise Sentry for the main process. No-op when disabled by the user, when
@@ -144,7 +106,12 @@ export function initSentry(opts: { ollamaConnected: boolean; mcpServerCount: num
     // Belt-and-braces: never auto-collect PII even before beforeSend runs.
     sendDefaultPii: false,
     // The privacy backstop — strips paths/content from every outbound event.
-    beforeSend: (event) => scrubEvent(event),
+    // Also the enforcement point for the runtime kill-switch: when the user
+    // toggles Sentry OFF mid-session, dropping the event here stops EVERY event
+    // immediately — including Sentry's own auto-captured crashes (uncaught
+    // exceptions, native minidumps) that never pass through our helpers. Our
+    // helpers' `active()` check alone wouldn't catch those.
+    beforeSend: (event) => (runtimeEnabled ? scrubEvent(event) : null),
     // Drop noisy console breadcrumbs that could capture prompts/content. We add
     // our own 'artha.*' breadcrumbs explicitly where they're safe.
     beforeBreadcrumb: (crumb) =>
