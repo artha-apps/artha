@@ -137,7 +137,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             <div className="w-14 h-14 rounded-2xl bg-artha-accent/20 border border-artha-accent/20 flex items-center justify-center mb-4">
               <Bot size={26} className="text-artha-accent" />
             </div>
-            <h1 className="text-xl font-semibold text-white mb-1">Welcome to Artha</h1>
+            <h1 className="text-xl font-semibold text-artha-text mb-1">Welcome to Artha</h1>
             <p className="text-sm text-artha-muted">How are you using Artha?</p>
           </div>
 
@@ -146,7 +146,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               className="w-full flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent/40 hover:bg-artha-accent/5 transition-all text-left">
               <User size={18} className="text-artha-accent shrink-0 mt-0.5" />
               <span className="flex-1">
-                <span className="block text-sm font-medium text-white">Just me</span>
+                <span className="block text-sm font-medium text-artha-text">Just me</span>
                 <span className="block text-xs text-artha-muted">Local-first solo setup. Pick a model and go. Optional Pro license unlocks team features later.</span>
               </span>
               <ArrowRight size={14} className="text-artha-muted shrink-0 mt-1" />
@@ -156,7 +156,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               className="w-full flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent/40 hover:bg-artha-accent/5 transition-all text-left">
               <Building2 size={18} className="text-artha-accent shrink-0 mt-0.5" />
               <span className="flex-1">
-                <span className="block text-sm font-medium text-white">Setting up for my organization</span>
+                <span className="block text-sm font-medium text-artha-text">Setting up for my organization</span>
                 <span className="block text-xs text-artha-muted">Enterprise hub on this machine. Apply org license, start the hub, provision seats for teammates.</span>
               </span>
               <ArrowRight size={14} className="text-artha-muted shrink-0 mt-1" />
@@ -164,7 +164,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
           </div>
 
           <div className="mt-6 pt-4 border-t border-artha-border text-center">
-            <button onClick={skip} className="text-[11px] text-artha-muted hover:text-white transition-colors">
+            <button onClick={skip} className="text-[11px] text-artha-muted hover:text-artha-text transition-colors">
               Skip setup — I'll configure later
             </button>
           </div>
@@ -180,7 +180,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       {persona === 'individual' && (
         <div className="w-full max-w-lg bg-artha-s2 border border-artha-border rounded-2xl shadow-2xl p-8">
           <div className="flex items-center justify-between mb-6">
-            <button onClick={() => setPersona(null)} className="text-xs text-artha-muted hover:text-white transition-colors">← Back</button>
+            <button onClick={() => setPersona(null)} className="text-xs text-artha-muted hover:text-artha-text transition-colors">← Back</button>
             <span className="text-[11px] uppercase tracking-wide text-artha-muted">Solo setup</span>
           </div>
 
@@ -188,13 +188,13 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             <div className="w-14 h-14 rounded-2xl bg-artha-accent/20 border border-artha-accent/20 flex items-center justify-center mb-4">
               <Bot size={26} className="text-artha-accent" />
             </div>
-            <h1 className="text-xl font-semibold text-white mb-1">Let's get you running</h1>
+            <h1 className="text-xl font-semibold text-artha-text mb-1">Let's get you running</h1>
             <p className="text-sm text-artha-muted">Pick a local model. This stays 100% on your machine.</p>
           </div>
 
           {/* Optional Pro license (collapsible — quiet by default) */}
           <details className="mb-4 rounded-xl bg-artha-surface border border-artha-border">
-            <summary className="cursor-pointer px-4 py-2 text-xs text-artha-muted hover:text-white flex items-center gap-1.5">
+            <summary className="cursor-pointer px-4 py-2 text-xs text-artha-muted hover:text-artha-text flex items-center gap-1.5">
               <KeyRound size={12} /> Have a license key? (optional)
             </summary>
             <div className="px-4 pb-3 space-y-2">
@@ -217,9 +217,9 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
           {ollamaOnline === false && (
             <div className="space-y-4">
               <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
-                <p className="text-sm text-white font-medium mb-1">Ollama isn't running</p>
+                <p className="text-sm text-artha-text font-medium mb-1">Ollama isn't running</p>
                 <p className="text-xs text-artha-muted leading-relaxed mb-3">
-                  Artha uses <span className="text-white">Ollama</span> to run models locally. Install it, then start it
+                  Artha uses <span className="text-artha-text">Ollama</span> to run models locally. Install it, then start it
                   with <code className="bg-black/30 px-1.5 py-0.5 rounded font-mono">ollama serve</code>.
                 </p>
                 <a href="https://ollama.com/download" target="_blank" rel="noreferrer"
@@ -232,7 +232,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                   className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium transition-colors disabled:opacity-40">
                   <RefreshCw size={13} className={checking ? 'animate-spin' : ''} /> Recheck
                 </button>
-                <button onClick={skip} className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-white hover:bg-white/5 transition-colors">
+                <button onClick={skip} className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-artha-text hover:bg-white/5 transition-colors">
                   Skip for now
                 </button>
               </div>
@@ -256,7 +256,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                 <div className="bg-artha-surface border border-artha-border rounded-xl p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <Download size={14} className="text-artha-accent" />
-                    <span className="text-sm text-white">Downloading {hardware.recommendedModel}…</span>
+                    <span className="text-sm text-artha-text">Downloading {hardware.recommendedModel}…</span>
                   </div>
                   <div className="h-2 bg-black/30 rounded-full overflow-hidden">
                     <div className="h-full bg-artha-accent transition-all"
@@ -276,7 +276,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                         <button key={m.name} onClick={() => finishWith(m.name)}
                           className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent/40 hover:bg-artha-accent/5 transition-all text-left">
                           <CheckCircle2 size={15} className="text-green-400 shrink-0" />
-                          <span className="text-sm text-white flex-1 truncate">{m.name}</span>
+                          <span className="text-sm text-artha-text flex-1 truncate">{m.name}</span>
                           <ArrowRight size={14} className="text-artha-muted shrink-0" />
                         </button>
                       ))}
@@ -292,7 +292,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                       className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-accent/15 border border-artha-accent/30 hover:bg-artha-accent/25 transition-all text-left">
                       <Download size={16} className="text-artha-accent shrink-0" />
                       <span className="flex-1 min-w-0">
-                        <span className="block text-sm font-medium text-white truncate">{hardware.recommendedModel}</span>
+                        <span className="block text-sm font-medium text-artha-text truncate">{hardware.recommendedModel}</span>
                         <span className="block text-xs text-artha-muted">Best fit for your hardware · downloads once</span>
                       </span>
                     </button>
@@ -300,7 +300,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
 
                   {error && <p className="text-xs text-red-400">{error}</p>}
 
-                  <button onClick={skip} className="w-full text-center text-xs text-artha-muted hover:text-white transition-colors pt-1">
+                  <button onClick={skip} className="w-full text-center text-xs text-artha-muted hover:text-artha-text transition-colors pt-1">
                     Skip — I'll set this up later
                   </button>
                 </>
