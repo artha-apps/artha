@@ -7,10 +7,10 @@
  * Also renders the persistent scope-lock badge on the right (the local-first
  * story is a feature — it should always be visible).
  */
-import { useEffect, useState } from 'react';
-import { MessageSquare, Workflow, Code2, Lock, Cpu, HelpCircle } from 'lucide-react';
+import { MessageSquare, Workflow, Code2, Lock, HelpCircle } from 'lucide-react';
 import { useChatStore, type ActiveTab, type Project } from '../../stores/chat';
 import { Tooltip } from '../ui/Tooltip';
+import ModelPicker from './ModelPicker';
 
 interface TabDef {
   id: ActiveTab;
@@ -28,17 +28,8 @@ const TABS: TabDef[] = [
 
 /** Single row of tabs + the always-visible scope badge. */
 export default function TabBar() {
-  const { activeTab, setActiveTab, projects, activeProjectId, openWorkspaceSettings, workspaceSettingsOpen, openGuide } = useChatStore();
+  const { activeTab, setActiveTab, projects, activeProjectId, workspaceSettingsOpen, openGuide } = useChatStore();
   const activeProject = projects.find((p: Project) => p.project_id === activeProjectId) ?? null;
-
-  // Active model chip — so the user can always see which model is selected,
-  // not just buried in Settings. Re-fetch when the settings modal closes
-  // (where the model gets switched).
-  const [activeModel, setActiveModel] = useState<string | null>(null);
-  useEffect(() => {
-    if (workspaceSettingsOpen) return; // refresh on close, not while open
-    window.artha.llm.getActiveModel().then(setActiveModel).catch(() => setActiveModel(null));
-  }, [workspaceSettingsOpen]);
 
   return (
     <div className="flex items-center justify-between px-3 py-1.5 border-b border-artha-border bg-artha-surface2/40">
@@ -76,21 +67,9 @@ export default function TabBar() {
           </button>
         </Tooltip>
 
-        {/* Active model chip — click to change in Settings → Models. Lets the
-            user confirm which model is actually selected without digging. */}
-        <Tooltip
-          content={activeModel ? `Active model: ${activeModel} · click to change` : 'No model selected — click to choose'}
-          side="bottom"
-          sideOffset={6}
-        >
-          <button
-            onClick={() => openWorkspaceSettings('models')}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-artha-border text-[11px] text-artha-muted hover:text-artha-text hover:border-artha-accent transition-colors"
-          >
-            <Cpu size={10} className="text-artha-accent shrink-0" />
-            <span className="truncate max-w-[160px]">{activeModel ?? 'No model'}</span>
-          </button>
-        </Tooltip>
+        {/* Active model — inline searchable picker (switch without leaving the
+            chat). Refreshes when the Settings modal closes. */}
+        <ModelPicker refreshKey={workspaceSettingsOpen} />
 
         {/* Scope badge — always visible; Artha's privacy promise made tangible. */}
         <Tooltip
