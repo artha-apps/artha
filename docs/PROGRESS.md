@@ -4,7 +4,7 @@
 **Branch:** `main` — clean working tree. Last merges: **#19** (auto-publish CI) + **#20** ("Artha is in control" indicators).
 **Tests:** 86 passing (`npm test`) · **Typecheck:** clean (`npm run typecheck`)
 **Repo:** https://github.com/artha-apps/artha (**PUBLIC**; migrated from `Noopurtrivedi/artha` to the **`artha-apps`** org)
-**Current version:** `0.1.16` — tagged `v0.1.16`, release building. `main` at `0d34577`.
+**Current version:** `0.1.17` — crash hotfix (Sentry asar bundle); release building.
 
 > ✅ **Releases now auto-publish** (PR #19): `release.yml` builds the 3 platforms to a draft, then a `publish-release` job flips it to Latest once all succeed — no manual click. (Pre-#19, drafts had to be published by hand; v0.1.14 got stuck that way. v0.1.15 was published manually + the 0.1.14 draft deleted.)
 
@@ -23,6 +23,14 @@
   Check downloads: `gh release view <tag> --repo artha-apps/artha --json assets --jq '[.assets[].downloadCount] | add'`.
 - **Linux:** ready — `.deb` builds on `ubuntu-latest` and publishes; no signing needed.
 - **macOS:** signed + notarized via one Developer ID cert (covers both arm64 + Intel x64).
+
+---
+
+## 2026-06-01 — v0.1.17: crash hotfix — bundle `@sentry/electron` into the asar
+
+- **Launch-crash hotfix.** Released builds since the Sentry work (#11–#13) threw `Error: Cannot find module '@sentry/electron/main'` on startup in the packaged app. Cause: electron-builder collects production deps from the **root** `package.json` (where the `build` config lives), and `@sentry/electron` was declared **only** in `packages/app/package.json` — so it was installed for dev (hoisted) but never copied into `app.asar/node_modules`. The top-level `import ... from '@sentry/electron/main'` in `sentry.ts` then failed at runtime once the live DSN made init actually run.
+- **Fix:** added `@sentry/electron` (`^5.11.0`) to root `dependencies` + synced the lockfile. Audited all `packages/app` deps vs root — Sentry was the only missing runtime dep.
+- **Impact:** affected users are stuck on a launch crash, so electron-updater can't self-heal — they must manually download the v0.1.17 DMG.
 
 ---
 
