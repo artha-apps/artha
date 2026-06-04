@@ -24,11 +24,23 @@ function detectPlatform(): Platform {
 type AssetMeta = { name: string; size: number };
 type ReleaseInfo = {
   tag_name: string;
+  published_at?: string;
   assets: Partial<Record<Exclude<Platform, 'unknown'>, AssetMeta>>;
 } | null;
 
 function bytesToMB(n: number) {
   return `${Math.round(n / 1024 / 1024)} MB`;
+}
+
+/** Format the release timestamp as e.g. "Jun 4, 2026, 2:30 PM UTC". */
+function formatReleaseDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'UTC',
+  }).format(d);
 }
 
 /** Brand mark — Devanagari अ inside a sacred-geometry mandala.
@@ -237,6 +249,10 @@ export default function Page() {
               {release ? (
                 <>
                   Latest release <strong>{release.tag_name}</strong>
+                  {release.published_at &&
+                    formatReleaseDate(release.published_at) && (
+                      <> · {formatReleaseDate(release.published_at)}</>
+                    )}
                   {otherLinks.length > 0 && (
                     <>
                       {' · Also for '}
