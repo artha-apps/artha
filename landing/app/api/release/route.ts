@@ -12,7 +12,7 @@ export const runtime = 'edge';
 const REPO = 'artha-apps/artha';
 
 type GHAsset = { name: string; size: number };
-type GHRelease = { tag_name: string; assets: GHAsset[] };
+type GHRelease = { tag_name: string; published_at: string; assets: GHAsset[] };
 
 type Platform = 'mac-arm64' | 'mac-intel' | 'windows' | 'linux';
 
@@ -69,7 +69,11 @@ export async function GET(_req: NextRequest) {
   }
 
   return Response.json(
-    { tag_name: release.tag_name, assets: assetsByPlatform },
+    {
+      tag_name: release.tag_name,
+      published_at: release.published_at,
+      assets: assetsByPlatform,
+    },
     {
       headers: {
         'cache-control': 'public, max-age=0, s-maxage=60',
