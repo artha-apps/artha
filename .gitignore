@@ -27,6 +27,21 @@ release/
 # Comp/beta license records — hold live license keys + customer emails. NEVER commit.
 demo_beta_test.md
 
+# Internal strategy / spec docs — kept private (moved to ../artha-internal-docs).
+# Public-facing legal/marketing copy (docs/gtm/{privacy_policy,terms_of_service,
+# pricing_page_copy}.md) stays tracked on purpose.
+Artha_PRD_*.docx
+Artha_Competitive_Analysis.docx
+Artha_Features_vs_Cowork.docx
+Artha_Functional_Reference.docx
+REQUIREMENTS.md
+docs/Artha_PRD_*.md
+docs/Artha_PRD_*.html
+docs/gtm/onboarding/
+docs/gtm/soc2_readiness_checklist.md
+docs/idea-inbox-mvp-roadmap.md
+docs/roadmap/
+
 # Artha runtime data (never commit user data)
 artha-data/
 *.artha.db
