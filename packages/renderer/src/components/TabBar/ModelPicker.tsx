@@ -85,7 +85,7 @@ export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
         <>
           {/* Click-away backdrop */}
           <div className="fixed inset-0 z-[70]" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1.5 z-[71] w-64 rounded-xl bg-artha-surface border border-artha-border shadow-lifted overflow-hidden">
+          <div className="absolute right-0 top-full mt-1.5 z-[71] w-64 rounded-xl bg-artha-surface-raised border border-artha-border shadow-modal overflow-hidden origin-top-right animate-scale-in">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-artha-border">
               <Search size={13} className="text-artha-subtle shrink-0" />
               <input

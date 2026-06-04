@@ -57,6 +57,10 @@ import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web'
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
 import { createRateLimiter } from '../net/rateLimiter';
+import {
+  parseMemoryExport, refineMemoryExport, importMemories, exportMemories,
+  type ParsedEntry,
+} from '../tools/memoryImport';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
@@ -1646,7 +1650,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('memory:list', () => {
     const db = getDb();
     return db.prepare(
-      `SELECT entity_id, name, entity_type, content, tags_json, created_at, updated_at
+      `SELECT entity_id, name, entity_type, content, tags_json, origin, created_at, updated_at
        FROM memory_entities ORDER BY updated_at DESC`
     ).all();
   });
@@ -1662,6 +1666,28 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     db.prepare(`DELETE FROM memory_entities`).run();
     return true;
   });
+
+  // ── Bring-Your-Own-Memory (BYOM) ────────────────────────────────────────────
+  // Parse a memory export pasted from another AI, review it, then commit. Parse
+  // is split from commit so the renderer can show an editable review step first.
+  // `provenanceTag` (e.g. 'source:chatgpt') is folded into each entry's tags.
+  ipcMain.handle('memory:importPreview', (_e, raw: string, provenanceTag?: string) => {
+    return parseMemoryExport(String(raw ?? ''), provenanceTag);
+  });
+
+  // AI-assisted parse — uses the active local model, falls back to the heuristic
+  // on any failure. Slower; the UI offers it as an opt-in "Refine with AI".
+  ipcMain.handle('memory:importRefine', async (_e, raw: string, provenanceTag?: string) => {
+    return refineMemoryExport(String(raw ?? ''), provenanceTag);
+  });
+
+  // Commit reviewed entries. Returns { created, skipped } (skipped = duplicates).
+  ipcMain.handle('memory:import', (_e, entries: ParsedEntry[], origin?: string) => {
+    return importMemories(Array.isArray(entries) ? entries : [], origin ?? 'import');
+  });
+
+  // Round-trip — emit global memory in the canonical v1 import format.
+  ipcMain.handle('memory:export', () => exportMemories());
 
   // ── Cloud OAuth (Google Workspace) ─────────────────────────────────────────
   // Google client id is stored on the user settings blob (same place as every

@@ -110,7 +110,7 @@ export default function ModelStatusBanner() {
  *  ambient notices). */
 function Card({ icon, children }: { icon: React.ReactNode; tone: 'info' | 'ok' | 'warn'; children: React.ReactNode }) {
   return (
-    <div className="fixed bottom-4 left-4 z-[55] max-w-xs flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border shadow-lifted">
+    <div className="fixed bottom-4 left-4 z-[55] max-w-xs flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface-raised border border-artha-border shadow-modal animate-fade-up">
       <span className="mt-0.5 shrink-0">{icon}</span>
       <div className="flex-1 min-w-0">{children}</div>
     </div>

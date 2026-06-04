@@ -64,8 +64,8 @@ export default function ClarificationModal() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-artha-text/30 backdrop-blur-sm">
-      <div className="w-full max-w-lg mx-4 rounded-2xl border border-artha-border bg-artha-surface shadow-modal overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-artha-bg/60 backdrop-blur-md animate-fade-in">
+      <div className="w-full max-w-lg mx-4 rounded-2xl border border-artha-border bg-artha-surface-raised shadow-modal overflow-hidden animate-scale-in">
 
         {/* Header */}
         <div className="flex items-start gap-3 px-5 pt-5 pb-4 border-b border-artha-border">
@@ -120,7 +120,7 @@ export default function ClarificationModal() {
           </button>
           <button
             onClick={submit}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-sm font-medium transition-colors"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-white text-sm font-medium transition-all duration-200 active:scale-95"
           >
             Continue
             <ArrowRight size={14} />

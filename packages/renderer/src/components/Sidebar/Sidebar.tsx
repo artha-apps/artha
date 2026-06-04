@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { MessageSquare, Plus, Settings as SettingsIcon, ChevronDown, ChevronRight, Folder, Trash2 } from 'lucide-react';
 import { useChatStore, type Session } from '../../stores/chat';
 import { Tooltip } from '../ui/Tooltip';
+import ThemeToggle from '../ui/ThemeToggle';
 import ProjectSwitcher from './ProjectSwitcher';
 
 /** Sidebar — left-rail navigation. */
@@ -264,16 +265,17 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {/* ── Workspace Settings ───────────────────────────────────────── */}
-      <nav className="border-t border-artha-border p-3">
+      {/* ── Workspace Settings + theme toggle ────────────────────────── */}
+      <nav className="border-t border-artha-border p-3 flex items-center gap-2">
         <Tooltip content="Workspace Settings · ⌘," side="right" sideOffset={10}>
           <button
             onClick={() => openWorkspaceSettings(null)}
-            className="no-drag flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-artha-muted hover:bg-artha-surface hover:text-artha-text transition-colors"
+            className="no-drag flex items-center gap-2 flex-1 px-3 py-2 rounded-lg text-sm text-artha-muted hover:bg-artha-surface hover:text-artha-text transition-colors"
           >
             <SettingsIcon size={14} /> Workspace Settings
           </button>
         </Tooltip>
+        <ThemeToggle />
       </nav>
     </aside>
   );

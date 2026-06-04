@@ -19,8 +19,8 @@ export default function PlanApproval() {
   };
 
   return (
-    <div className="fixed inset-0 bg-artha-text/30 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-artha-surface border border-artha-border rounded-2xl w-full max-w-lg shadow-modal">
+    <div className="fixed inset-0 bg-artha-bg/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fade-in">
+      <div className="bg-artha-surface-raised border border-artha-border rounded-2xl w-full max-w-lg shadow-modal animate-scale-in">
         <div className="flex items-center gap-3 px-6 py-4 border-b border-artha-border">
           <ListChecks size={18} className="text-artha-accent" />
           <div>
@@ -59,7 +59,7 @@ export default function PlanApproval() {
             <XCircle size={15} className="text-artha-danger" /> Cancel
           </button>
           <button onClick={() => approve(true)}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-sm font-medium transition-colors">
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-white text-sm font-medium transition-all duration-200 active:scale-95">
             <CheckCircle size={15} /> Approve & Execute
           </button>
         </div>

@@ -271,7 +271,7 @@ function SharedMemoryTab() {
   const load = async () => {
     // Load ALL memories so the user can toggle sharing on any of them — including
     // ones that are not yet shared. The `is_shared` field may be absent on older rows.
-    const all = await window.artha.memory.list() as (MemoryEntity & { is_shared?: number })[];
+    const all = await window.artha.memory.list() as unknown as (MemoryEntity & { is_shared?: number })[];
     setMemories(all.map(m => ({ ...m, is_shared: m.is_shared ?? 0 })));
   };
 

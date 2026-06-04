@@ -108,7 +108,7 @@ export default function ProjectSwitcher() {
 
       {/* ── Dropdown ─────────────────────────────────────────────────── */}
       {open && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-lg border border-artha-border bg-artha-surface shadow-modal overflow-hidden">
+        <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-lg border border-artha-border bg-artha-surface-raised shadow-modal overflow-hidden origin-top animate-scale-in">
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-artha-subtle font-semibold">
             Switch project
           </div>

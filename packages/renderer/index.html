@@ -5,7 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src http://localhost:*">
     <title>Artha</title>
-    <meta name="theme-color" content="#F7F8FA" />
+    <!-- Apply the persisted theme before first paint to avoid a light-flash on
+         cold start. Mirrors stores/theme.ts (default: dark). -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('artha.theme');
+          if (t !== 'light') document.documentElement.classList.add('dark');
+        } catch (e) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

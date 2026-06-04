@@ -5,9 +5,10 @@
  * each entry (name, type, content), delete individual rows, or wipe all.
  */
 import { useEffect, useState } from 'react';
-import { Brain, Trash2, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Brain, Trash2, RefreshCw, AlertTriangle, Download, Upload, Check } from 'lucide-react';
 import { FeatureGuide } from '../ui/FeatureGuide';
 import { GUIDES } from './guides';
+import MemoryImport from '../MemoryImport/MemoryImport';
 
 interface MemoryEntity {
   entity_id: string;
@@ -15,6 +16,7 @@ interface MemoryEntity {
   entity_type: string;
   content: string;
   tags_json: string;
+  origin?: string;
   created_at: number;
   updated_at: number;
 }
@@ -45,6 +47,10 @@ export default function MemoryPanel() {
   const [loading, setLoading]   = useState(true);
   // Two-step clear: first click sets confirmClear=true, second click calls handleClear().
   const [confirmClear, setConfirmClear] = useState(false);
+  // When true, swap the list for the Bring-Your-Own-Memory importer.
+  const [importing, setImporting] = useState(false);
+  // Brief "Copied" confirmation after an export.
+  const [exported, setExported] = useState(false);
 
   // ── Effects ────────────────────────────────────────────────────────────────
   async function load() {
@@ -74,6 +80,33 @@ export default function MemoryPanel() {
     setConfirmClear(false);
   }
 
+  /** Export all global memory in the portable v1 format → clipboard. */
+  async function handleExport() {
+    const text = await window.artha.memory.export();
+    try {
+      await navigator.clipboard.writeText(text);
+      setExported(true);
+      setTimeout(() => setExported(false), 1800);
+    } catch { /* clipboard blocked — silent */ }
+  }
+
+  // ── Import view (Bring Your Own Memory) ─────────────────────────────────────
+  if (importing) {
+    return (
+      <div className="flex flex-col h-full p-6 overflow-y-auto">
+        <div className="flex items-center gap-3 mb-6">
+          <Brain size={22} className="text-purple-400" />
+          <h2 className="text-lg font-semibold text-artha-text">Import memories</h2>
+        </div>
+        <MemoryImport
+          variant="settings"
+          onSkip={() => setImporting(false)}
+          onDone={() => { setImporting(false); load(); }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full p-6 overflow-y-auto">
       <FeatureGuide {...GUIDES.memory} />
@@ -89,6 +122,22 @@ export default function MemoryPanel() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setImporting(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-artha-text bg-artha-accent hover:bg-artha-accent/80 transition-colors"
+            title="Import memories from another AI"
+          >
+            <Upload size={14} /> Import
+          </button>
+          {entities.length > 0 && (
+            <button
+              onClick={handleExport}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-artha-text border border-artha-border hover:bg-artha-text/8 transition-colors"
+              title="Copy all memories in portable format"
+            >
+              {exported ? <><Check size={14} className="text-green-400" /> Copied</> : <><Download size={14} /> Export</>}
+            </button>
+          )}
           <button
             onClick={load}
             className="p-2 rounded-lg hover:bg-artha-text/8 text-gray-400 hover:text-artha-text transition-colors"
@@ -159,10 +208,17 @@ export default function MemoryPanel() {
                 key={entity.entity_id}
                 className="group flex items-start gap-3 p-4 rounded-xl bg-artha-text/5 hover:bg-white/8 border border-white/5 transition-colors"
               >
-                {/* Type badge */}
-                <span className={`flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${colour}`}>
-                  {entity.entity_type}
-                </span>
+                {/* Type + provenance badges */}
+                <div className="flex-shrink-0 flex flex-col items-start gap-1">
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colour}`}>
+                    {entity.entity_type}
+                  </span>
+                  {entity.origin === 'import' && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-artha-accent/15 text-artha-accent">
+                      imported
+                    </span>
+                  )}
+                </div>
 
                 {/* Content */}
                 <div className="flex-1 min-w-0">
