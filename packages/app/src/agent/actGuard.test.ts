@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { detectsWebAction, shouldNudgeToAct, type ActGuardState } from './actGuard';
+import {
+  detectsWebAction,
+  shouldNudgeToAct,
+  compactStaleDomDumps,
+  type ActGuardState,
+  type CompactableMessage,
+} from './actGuard';
 
 /** Base state: a web-action goal where the model returned prose and never
  *  touched the browser — the exact "gives reasoning instead of sending" bug. */
@@ -69,5 +75,59 @@ describe('shouldNudgeToAct — the narrate-instead-of-act backstop', () => {
   it('is bounded — stops nudging once the cap is reached so the loop can never hang', () => {
     expect(shouldNudgeToAct(narratedEmail({ nudges: 2, maxNudges: 2 }))).toBe(false);
     expect(shouldNudgeToAct(narratedEmail({ nudges: 1, maxNudges: 2 }))).toBe(true);
+  });
+});
+
+describe('compactStaleDomDumps', () => {
+  const bigDom = (url: string) =>
+    JSON.stringify({ url, title: 'Inbox', text: 'x'.repeat(12_000), truncated: true });
+
+  /** A realistic transcript: two read_dom calls interleaved with other tool
+   *  results, plus a non-read_dom browser call that must be left alone. */
+  function transcript(): CompactableMessage[] {
+    return [
+      { role: 'system', content: 'prompt' },
+      { role: 'user', content: 'send an email' },
+      { role: 'tool', tool_call_id: 'nav-1', content: '{"navigated":true}' },
+      { role: 'tool', tool_call_id: 'dom-1', content: bigDom('https://mail/inbox') },
+      { role: 'tool', tool_call_id: 'type-1', content: '{"typed_into":"#to"}' },
+      { role: 'tool', tool_call_id: 'dom-2', content: bigDom('https://mail/compose') },
+    ];
+  }
+
+  it('stubs every read_dom result except the most recent', () => {
+    const msgs = transcript();
+    const compacted = compactStaleDomDumps(msgs, new Set(['dom-1', 'dom-2']));
+
+    expect(compacted).toBe(1);
+    // dom-1 is now a tiny stub that still carries url/title for orientation…
+    const stub = JSON.parse(msgs[3].content as string);
+    expect(stub.url).toBe('https://mail/inbox');
+    expect(stub.title).toBe('Inbox');
+    expect(stub.note).toMatch(/omitted/i);
+    expect((msgs[3].content as string).length).toBeLessThan(400);
+    // …while the latest DOM (dom-2) is left fully intact.
+    expect((msgs[5].content as string).length).toBeGreaterThan(12_000);
+  });
+
+  it('leaves non-read_dom tool results untouched', () => {
+    const msgs = transcript();
+    compactStaleDomDumps(msgs, new Set(['dom-1', 'dom-2']));
+    expect(msgs[2].content).toBe('{"navigated":true}');
+    expect(msgs[4].content).toBe('{"typed_into":"#to"}');
+  });
+
+  it('is idempotent — a second pass compacts nothing new', () => {
+    const msgs = transcript();
+    compactStaleDomDumps(msgs, new Set(['dom-1', 'dom-2']));
+    expect(compactStaleDomDumps(msgs, new Set(['dom-1', 'dom-2']))).toBe(0);
+  });
+
+  it('does nothing with a single read_dom (nothing is stale yet)', () => {
+    const msgs: CompactableMessage[] = [
+      { role: 'tool', tool_call_id: 'dom-1', content: bigDom('https://mail/inbox') },
+    ];
+    expect(compactStaleDomDumps(msgs, new Set(['dom-1']))).toBe(0);
+    expect((msgs[0].content as string).length).toBeGreaterThan(12_000);
   });
 });

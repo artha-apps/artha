@@ -41,7 +41,7 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
-import { shouldNudgeToAct } from './actGuard';
+import { shouldNudgeToAct, compactStaleDomDumps } from './actGuard';
 import { noteDesktopControlActive } from '../controlOverlay';
 
 const MAX_RETRIES = 3; // kept for future retry logic
@@ -772,6 +772,10 @@ RULES — follow exactly, no exceptions:
     let actNudges = 0;
     const MAX_ACT_NUDGES = 2;
 
+    // tool_call ids of every browser_read_dom call, so we can keep only the
+    // latest DOM dump in context and stub the rest (see compactStaleDomDumps).
+    const readDomCallIds = new Set<string>();
+
     while (iterations < MAX_ITERATIONS) {
       iterations++;
 
@@ -782,6 +786,11 @@ RULES — follow exactly, no exceptions:
         db.prepare(`UPDATE agent_runs SET status='cancelled' WHERE run_id=?`).run(args.runId);
         break;
       }
+
+      // Keep only the most recent browser_read_dom payload in context; stub the
+      // rest. Stale ~12k-char DOM dumps otherwise re-send on every turn and are
+      // the main driver of slow/expensive browser-action runs.
+      compactStaleDomDumps(messages, readDomCallIds);
 
       // Stream the turn. Text deltas are emitted live; if the turn turns out to
       // be a tool step (or its text gets replaced by a verified summary), we
@@ -821,6 +830,7 @@ RULES — follow exactly, no exceptions:
         if (streamedLive) emit('agent:streamReset');
         for (const toolCall of msg.tool_calls) {
           if (toolCall.function.name.startsWith('browser_')) browserToolCalls++;
+          if (toolCall.function.name === 'browser_read_dom') readDomCallIds.add(toolCall.id);
           emit('agent:toolCall', {
             type: 'tool_invoke',
             name: toolCall.function.name,

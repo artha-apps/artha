@@ -61,3 +61,59 @@ export function shouldNudgeToAct(s: ActGuardState): boolean {
     detectsWebAction(s.goal)
   );
 }
+
+/** Minimal structural shape of a chat message the DOM-compactor touches.
+ *  Declared locally so this module stays dependency-free (no OpenAI import). */
+export interface CompactableMessage {
+  role: string;
+  tool_call_id?: string;
+  content?: unknown;
+}
+
+/**
+ * In place: collapse every `browser_read_dom` tool result EXCEPT the most
+ * recent one down to a tiny stub (keeping url/title).
+ *
+ * Each readDom payload is up to ~12k chars of page text, and the ReAct loop
+ * otherwise re-sends every one of them on EVERY subsequent turn. A 6-step email
+ * flow then drags 4-5 stale DOM dumps through context on each call — the main
+ * driver of slow (and, on a paid API, expensive) browser-action runs. The model
+ * only ever needs the latest snapshot to choose its next selector; older ones
+ * are stale the moment the page changes. Returns how many it compacted.
+ */
+export function compactStaleDomDumps(
+  messages: CompactableMessage[],
+  readDomCallIds: Set<string>,
+): number {
+  const domIdxs: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === 'tool' && typeof m.tool_call_id === 'string' && readDomCallIds.has(m.tool_call_id)) {
+      domIdxs.push(i);
+    }
+  }
+  let compacted = 0;
+  // Keep the last index untouched; stub everything before it.
+  for (let k = 0; k < domIdxs.length - 1; k++) {
+    const m = messages[domIdxs[k]];
+    // Skip ones already stubbed (idempotent — the stub is well under 400 chars).
+    if (typeof m.content === 'string' && m.content.length > 400) {
+      let url: unknown;
+      let title: unknown;
+      try {
+        const p = JSON.parse(m.content);
+        url = p.url;
+        title = p.title;
+      } catch {
+        /* non-JSON payload — keep url/title undefined */
+      }
+      m.content = JSON.stringify({
+        url,
+        title,
+        note: 'Earlier page DOM omitted to save context — call browser_read_dom again if you need the current page.',
+      });
+      compacted++;
+    }
+  }
+  return compacted;
+}
