@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw } from 'lucide-react';
+import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw, Bot } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore, type ReasoningStep } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -564,23 +564,18 @@ export default function ChatWindow() {
   // ── No session selected ─────────────────────────────────────────────────
   if (!activeSessionId) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-8 px-6">
+      <div className="flex-1 flex flex-col items-center justify-center gap-8 px-6 animate-fade-up">
         <div className="text-center">
-          <img
-            src="/logo-mark.png"
-            alt="Artha"
-            width={56}
-            height={56}
-            draggable={false}
-            className="rounded-2xl shadow-lifted ring-1 ring-artha-border-strong/50 mx-auto mb-4 select-none"
-          />
-          <h1 className="text-2xl font-semibold text-artha-text mb-1">Artha</h1>
+          <div className="w-12 h-12 rounded-2xl bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center mx-auto mb-4 shadow-glow animate-glow-pulse">
+            <Bot size={22} className="text-artha-accent" />
+          </div>
+          <h1 className="text-3xl font-bold text-gradient-emerald mb-1 tracking-tight">Artha</h1>
           <p className="text-artha-muted text-sm">Your local AI agent. Fully private, runs on your Mac.</p>
         </div>
         <div className="grid grid-cols-2 gap-2 w-full max-w-md">
           {displayedPrompts.map(({ icon, text }) => (
             <button key={text} onClick={() => send(text)}
-              className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent hover:bg-artha-surface2 transition-all text-sm text-left text-artha-muted hover:text-artha-text shadow-soft">
+              className="card-artha-interactive flex items-start gap-3 px-4 py-3 text-sm text-left text-artha-muted hover:text-artha-text">
               <span className="text-base leading-none mt-0.5 shrink-0">{icon}</span>
               <span className="leading-snug">{text}</span>
             </button>
@@ -645,7 +640,7 @@ export default function ChatWindow() {
               <div className="grid grid-cols-2 gap-2 w-full max-w-md">
                 {displayedPrompts.slice(0, 4).map(({ icon, text }) => (
                   <button key={text} onClick={() => send(text)}
-                    className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent hover:bg-artha-surface2 transition-all text-sm text-left text-artha-muted hover:text-artha-text shadow-soft">
+                    className="card-artha-interactive flex items-start gap-3 px-4 py-3 text-sm text-left text-artha-muted hover:text-artha-text">
                     <span className="text-base leading-none mt-0.5 shrink-0">{icon}</span>
                     <span className="leading-snug">{text}</span>
                   </button>
@@ -879,7 +874,7 @@ export default function ChatWindow() {
             </div>
           )}
 
-          <div className="flex items-end gap-3 bg-artha-surface border border-artha-border-strong rounded-2xl px-4 py-3 focus-within:border-artha-accent transition-colors shadow-soft">
+          <div className="flex items-end gap-3 bg-artha-surface border border-artha-border-strong rounded-2xl px-4 py-3 focus-within:border-artha-accent focus-within:shadow-glow-sm transition-all duration-200 shadow-soft">
             <textarea
               ref={textareaRef}
               value={input}
@@ -946,7 +941,7 @@ export default function ChatWindow() {
             ) : (
               <Tooltip content="Send message (⌘↩)">
                 <button onClick={() => send()} disabled={!input.trim()}
-                  className="p-2 rounded-xl bg-artha-accent hover:bg-artha-accent-hover text-white disabled:opacity-25 disabled:cursor-not-allowed transition-colors shrink-0">
+                  className="p-2 rounded-xl bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-white disabled:opacity-25 disabled:cursor-not-allowed transition-all duration-200 active:scale-95 shrink-0">
                   <Send size={14} />
                 </button>
               </Tooltip>

@@ -105,7 +105,7 @@ export default function BrowserPane({ onClose }: Props) {
       {/* The viewport area — the native BrowserView is positioned to overlay
           this rect from the main process. Background is a subtle pattern so
           it's obvious when the BrowserView hasn't attached yet (debug aid). */}
-      <div ref={viewportRef} className="flex-1 bg-[#0f1117] relative">
+      <div ref={viewportRef} className="flex-1 bg-artha-bg relative">
         <HandoffBanner />
         {/* "Artha is driving this page" — distinct from the handoff banner
             (which is when the wheel is handed to the user). Sits above the
@@ -122,7 +122,7 @@ export default function BrowserPane({ onClose }: Props) {
             crash that survived the auto-reload, so cover the pane and offer a
             deliberate retry. Rendered above the (now-empty) native view. */}
         {crashed && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0f1117] text-center px-8">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-artha-bg text-center px-8">
             <div className="max-w-sm">
               <div className="text-4xl mb-3">💥</div>
               <h2 className="text-[15px] font-semibold text-artha-text mb-1.5">

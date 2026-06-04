@@ -2,42 +2,74 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Artha — cool & crisp light palette. Clean slate/white surfaces, deep-navy
-   text, vivid indigo accent. Variable names are kept stable so component
-   utility classes don't churn; only the values changed from the old warm set. */
+/* Artha theme tokens.
+   Values are *space-separated RGB channels* so Tailwind can apply opacity
+   modifiers (`bg-artha-accent/20`) — see tailwind.config.js. The `:root` set is
+   the original light institutional palette; `.dark` swaps in the emerald +
+   mint-glow palette. A single class on <html> flips the whole app. */
 :root {
-  --artha-bg:            #F7F8FA;  /* page background (cool off-white) */
-  --artha-surface:       #FFFFFF;  /* cards, elevated panels */
-  --artha-surface2:      #EEF1F5;  /* secondary surface (cool light gray) */
-  --artha-border:        #E6E9EF;  /* hairline borders */
-  --artha-border-strong: #D4D9E2;  /* hover / emphasized borders */
-  --artha-text:          #0B1220;  /* near-black navy primary text */
-  --artha-muted:         #5A6473;  /* secondary text */
-  --artha-subtle:        #818B9C;  /* tertiary text / labels */
-  --artha-accent:        #4F46E5;  /* indigo — primary action / focus */
-  --artha-accent-hover:  #4338CA;
-  --artha-danger:        #DC2626;
-  --artha-success:       #059669;
-  --artha-warn:          #D97706;
-  /* Per-tab accents (also in tailwind.config.js + src/lib/tabTheme.ts). */
-  --artha-tab-artha:     #4F46E5;  /* indigo  — Artha */
-  --artha-tab-flows:     #7C3AED;  /* violet  — Workflows */
-  --artha-tab-code:      #059669;  /* emerald — Code */
-  /* Compatibility — old variables that may still be referenced. */
-  --artha-blue:          #0B1220;
+  --artha-bg:             250 250 247;  /* warm off-white */
+  --artha-surface:        255 255 255;  /* cards, panels */
+  --artha-surface2:       244 241 234;  /* secondary surface */
+  --artha-surface-raised: 255 255 255;  /* elevated (same as surface in light) */
+  --artha-border:         232 228 218;  /* hairline */
+  --artha-border-strong:  209 204 192;  /* hover / emphasis */
+  --artha-text:           10 22 40;     /* deep navy */
+  --artha-muted:          91 101 119;   /* secondary text */
+  --artha-subtle:         138 147 163;  /* tertiary text */
+  --artha-accent:         0 53 237;     /* ripple blue */
+  --artha-accent-hover:   0 40 184;
+  --artha-mint:           0 53 237;     /* light theme: mint == accent */
+  --artha-danger:         180 35 24;
+  --artha-success:        21 128 61;
+  --artha-warn:           180 83 9;
+  /* Glow is near-invisible in light so existing restraint is preserved. */
+  --artha-glow:           rgba(0, 53, 237, 0.10);
+  /* Gradient stops for accent text/fills. */
+  --artha-grad-from:      0 53 237;
+  --artha-grad-to:        21 128 61;
+  /* Per-tab accents (from main's brand pass) — hex for direct var() use; the
+     Tailwind tab-* tokens mirror these in tailwind.config.js. Brand-static, so
+     they are not re-themed in .dark. */
+  --artha-tab-artha:      #4F46E5;  /* indigo  — Artha */
+  --artha-tab-flows:      #7C3AED;  /* violet  — Workflows */
+  --artha-tab-code:       #059669;  /* emerald — Code */
+}
+
+.dark {
+  --artha-bg:             10 19 15;     /* #0A130F near-black, green tint */
+  --artha-surface:        15 28 22;     /* #0F1C16 */
+  --artha-surface2:       21 38 29;     /* #15261D */
+  --artha-surface-raised: 26 46 35;     /* #1A2E23 elevated cards/menus */
+  --artha-border:         30 51 41;     /* #1E3329 */
+  --artha-border-strong:  42 70 54;     /* #2A4636 */
+  --artha-text:           234 244 239;  /* #EAF4EF soft mint-white */
+  --artha-muted:          157 181 170;  /* #9DB5AA */
+  --artha-subtle:         110 133 121;  /* #6E8579 */
+  --artha-accent:         16 185 129;   /* #10B981 emerald */
+  --artha-accent-hover:   52 211 153;   /* #34D399 emerald-400 */
+  --artha-mint:           110 231 183;  /* #6EE7B7 neon mint */
+  --artha-danger:         248 113 113;  /* #F87171 light-on-dark */
+  --artha-success:        52 211 153;   /* #34D399 */
+  --artha-warn:           251 191 36;   /* #FBBF24 */
+  --artha-glow:           rgba(52, 211, 153, 0.35);  /* mint halo */
+  --artha-grad-from:      16 185 129;
+  --artha-grad-to:        110 231 183;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; overflow: hidden; }
 
 body {
-  background: var(--artha-bg);
-  color: var(--artha-text);
+  background: rgb(var(--artha-bg));
+  color: rgb(var(--artha-text));
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-feature-settings: 'ss01', 'cv11';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  /* Theme switches feel intentional, not jarring. */
+  transition: background-color 240ms ease, color 240ms ease;
 }
 
 code, pre, .font-mono {
@@ -47,19 +79,107 @@ code, pre, .font-mono {
 /* Subtle scrollbar in the brand palette. */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--artha-border-strong); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--artha-muted); }
+::-webkit-scrollbar-thumb { background: rgb(var(--artha-border-strong)); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--artha-muted)); }
 
 /* Drag region for macOS title bar */
 .drag-region { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
 
-/* Selection — indigo accent tint. */
-::selection { background: rgba(79, 70, 229, 0.18); color: var(--artha-text); }
+/* Selection — accent tint. */
+::selection { background: rgb(var(--artha-accent) / 0.18); color: rgb(var(--artha-text)); }
 
-/* Focus ring — consistent with the landing site. */
+/* Focus ring — emerald in dark, blue in light. */
 :focus-visible {
-  outline: 2px solid var(--artha-accent);
+  outline: 2px solid rgb(var(--artha-accent));
   outline-offset: 2px;
   border-radius: 2px;
+}
+
+/* ───────────────────────── Reusable component utilities ─────────────────────
+   Small, opt-in classes so the "beautiful" polish is consistent across the app
+   instead of re-derived per component. Everything resolves through tokens, so
+   each one re-themes automatically. */
+@layer components {
+  /* Emerald → mint gradient text for titles, key numbers, hero labels. */
+  .text-gradient-emerald {
+    background-image: linear-gradient(
+      120deg,
+      rgb(var(--artha-grad-from)),
+      rgb(var(--artha-grad-to))
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+
+  /* Card — layered surface, hairline border, hover lift + mint glow. */
+  .card-artha {
+    @apply rounded-xl border border-artha-border bg-artha-surface shadow-soft
+           transition-all duration-200;
+  }
+  .card-artha-interactive {
+    @apply card-artha hover:border-artha-accent/40 hover:-translate-y-0.5 hover:shadow-glow;
+  }
+
+  /* Buttons. Primary glows on hover; press gives a tactile micro-scale. */
+  .btn-artha {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2
+           text-sm font-medium transition-all duration-150
+           active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none
+           focus-visible:outline-none;
+  }
+  .btn-primary {
+    @apply btn-artha bg-artha-accent text-white
+           hover:bg-artha-accent-hover hover:shadow-glow-sm;
+  }
+  .btn-secondary {
+    @apply btn-artha border border-artha-border bg-artha-surface text-artha-text
+           hover:border-artha-accent/50 hover:bg-artha-surface2;
+  }
+  .btn-ghost {
+    @apply btn-artha text-artha-muted hover:bg-artha-surface2 hover:text-artha-text;
+  }
+  .btn-danger {
+    @apply btn-artha bg-artha-danger text-white hover:opacity-90;
+  }
+
+  /* Inputs — focus lifts an emerald glow ring. */
+  .input-artha {
+    @apply w-full rounded-lg border border-artha-border bg-artha-surface
+           px-3 py-2 text-sm text-artha-text placeholder:text-artha-subtle
+           transition-all duration-150
+           focus:border-artha-accent focus:outline-none focus:shadow-glow-sm;
+  }
+
+  /* Surfaces that float over the canvas (menus, modals, popovers). */
+  .surface-raised {
+    @apply rounded-xl border border-artha-border bg-artha-surface-raised shadow-modal;
+  }
+
+  /* Shimmer skeleton for loading states. */
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-artha-surface2;
+  }
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0 -translate-x-full;
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--artha-text) / 0.06),
+      transparent
+    );
+    animation: shimmer 1.5s infinite;
+  }
+}
+
+/* Respect reduced-motion globally: kill non-essential animation/transition. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

@@ -599,5 +599,19 @@ export function runMigrations(): void {
     console.warn('[Artha] chat_sessions origin migration skipped:', err);
   }
 
+  // Migration v10→v11: origin on memory_entities — distinguishes how a memory got
+  // here. 'agent' = written by the ReAct loop (the historical default); 'import'
+  // = bulk-loaded by the user via Bring-Your-Own-Memory (paste from another AI).
+  // Lets the UI badge/filter imported rows and undo a whole import. Defaults to
+  // 'agent' so every pre-existing row keeps its original meaning.
+  try {
+    const memCols3 = db.prepare(`PRAGMA table_info(memory_entities)`).all() as { name: string }[];
+    if (memCols3.length && !memCols3.some(c => c.name === 'origin')) {
+      db.exec(`ALTER TABLE memory_entities ADD COLUMN origin TEXT NOT NULL DEFAULT 'agent'`);
+    }
+  } catch (err) {
+    console.warn('[Artha] memory origin migration skipped:', err);
+  }
+
   console.log('[Artha] Database migrations applied.');
 }

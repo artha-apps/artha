@@ -18,6 +18,16 @@ export interface ModelStatus {
   detail?: string;
 }
 
+/** A parsed Bring-Your-Own-Memory entry, exchanged with the BYOM importer.
+ *  Mirrors `ParsedEntry` in `tools/memoryImport.ts`. */
+export interface MemoryImportEntry {
+  name: string;
+  content: string;
+  entity_type: string;
+  tags: string[];
+  date?: string | null;
+}
+
 /** A folder or file attached to a single chat (see `session_scopes`). */
 export interface SessionScope {
   scope_id: string;
@@ -406,10 +416,20 @@ const api = {
   memory: {
     list: () => ipcRenderer.invoke('memory:list') as Promise<{
       entity_id: string; name: string; entity_type: string;
-      content: string; tags_json: string; created_at: number; updated_at: number;
+      content: string; tags_json: string; origin: string;
+      created_at: number; updated_at: number;
     }[]>,
     delete: (entityId: string) => ipcRenderer.invoke('memory:delete', entityId) as Promise<boolean>,
     clear: () => ipcRenderer.invoke('memory:clear') as Promise<boolean>,
+    // Bring-Your-Own-Memory: parse a paste from another AI (preview = no write),
+    // optionally refine with the local model, then commit the reviewed entries.
+    importPreview: (raw: string, provenanceTag?: string) =>
+      ipcRenderer.invoke('memory:importPreview', raw, provenanceTag) as Promise<MemoryImportEntry[]>,
+    importRefine: (raw: string, provenanceTag?: string) =>
+      ipcRenderer.invoke('memory:importRefine', raw, provenanceTag) as Promise<MemoryImportEntry[]>,
+    import: (entries: MemoryImportEntry[], origin?: string) =>
+      ipcRenderer.invoke('memory:import', entries, origin) as Promise<{ created: number; skipped: number }>,
+    export: () => ipcRenderer.invoke('memory:export') as Promise<string>,
   },
 
   // ── IDE Integration ───────────────────────────────────────────────────────

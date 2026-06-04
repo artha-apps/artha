@@ -68,15 +68,15 @@ export default function ProjectHome() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-8 py-10">
+      <div className="max-w-4xl mx-auto px-8 py-10 animate-fade-up">
 
         {/* ── Header ───────────────────────────────────────────────────── */}
         <div className="flex items-start gap-4 mb-8">
-          <div className="w-12 h-12 rounded-xl bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center shrink-0">
+          <div className="w-12 h-12 rounded-xl bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center shrink-0 shadow-glow-sm">
             <Folder size={20} className="text-artha-accent" />
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-xl font-semibold text-artha-text mb-1 truncate">{project.name}</h1>
+            <h1 className="text-xl font-semibold text-gradient-emerald mb-1 truncate">{project.name}</h1>
             <button
               onClick={() => window.artha.system.revealInFolder(project.root_path)}
               className="group inline-flex items-center gap-1.5 text-xs text-artha-muted hover:text-artha-accent transition-colors font-mono truncate max-w-full"
@@ -86,10 +86,7 @@ export default function ProjectHome() {
               <span className="truncate">{project.root_path}</span>
             </button>
           </div>
-          <button
-            onClick={newChatHere}
-            className="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-xs font-medium transition-colors shadow-soft"
-          >
+          <button onClick={newChatHere} className="btn-primary shrink-0 px-3 py-2 text-xs">
             <Plus size={13} /> New chat
           </button>
         </div>
@@ -101,14 +98,14 @@ export default function ProjectHome() {
           <div className="md:col-span-2 space-y-6">
 
             {/* RAG status card */}
-            <div className="rounded-xl border border-artha-border bg-artha-surface p-4">
+            <div className="card-artha-interactive p-4">
               <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2">
                   <Database size={14} className="text-artha-accent" />
                   <h2 className="text-sm font-semibold text-artha-text">Knowledge index</h2>
                 </div>
                 {chunkCount !== null && chunkCount > 0 && (
-                  <span className="text-[10px] text-artha-subtle">{chunkCount.toLocaleString()} chunks</span>
+                  <span className="text-[10px] font-semibold text-gradient-emerald">{chunkCount.toLocaleString()} chunks</span>
                 )}
               </div>
               <p className="text-xs text-artha-muted leading-relaxed">
@@ -121,7 +118,7 @@ export default function ProjectHome() {
             </div>
 
             {/* Recent chats card */}
-            <div className="rounded-xl border border-artha-border bg-artha-surface overflow-hidden">
+            <div className="card-artha overflow-hidden">
               <div className="px-4 pt-4 pb-2 flex items-center gap-2 border-b border-artha-border">
                 <MessageSquare size={14} className="text-artha-accent" />
                 <h2 className="text-sm font-semibold text-artha-text flex-1">Recent chats</h2>
@@ -160,7 +157,7 @@ export default function ProjectHome() {
 
           {/* Right col — rolling memory (1/3 width) ------------------------- */}
           <div className="md:col-span-1">
-            <div className="rounded-xl border border-artha-border bg-artha-surface2/50 p-4 h-full">
+            <div className="card-artha bg-artha-surface2/50 p-4 h-full">
               <div className="flex items-center gap-2 mb-2">
                 <Brain size={14} className="text-artha-accent" />
                 <h2 className="text-sm font-semibold text-artha-text">Project memory</h2>

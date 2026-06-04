@@ -1,41 +1,48 @@
 /** @type {import('tailwindcss').Config} */
+
+// All artha color tokens resolve to CSS variables holding *space-separated RGB
+// channels* (e.g. `--artha-accent: 16 185 129`). Wrapping them in
+// `rgb(... / <alpha-value>)` lets Tailwind opacity modifiers keep working
+// (`bg-artha-accent/20`) while the actual values swap between the `:root`
+// (light) and `.dark` (emerald) palettes defined in index.css. One token edit,
+// every component re-themes — no per-file color churn.
+const token = (v) => `rgb(var(${v}) / <alpha-value>)`;
+
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
-  // 'class' placeholder so a future dark-mode toggle is a config change,
-  // not a refactor. No dark UI ships in this work.
   darkMode: 'class',
   theme: {
     extend: {
       colors: {
         artha: {
-          // Cool & crisp light palette — clean slate/white surfaces, deep-navy
-          // text, and a vivid indigo accent. Replaces the older warm-beige set;
-          // every component reads these tokens, so the whole app re-themes here.
-          bg:            '#F7F8FA',  // page background (cool off-white)
-          surface:       '#FFFFFF',  // cards, elevated panels
-          surface2:      '#EEF1F5',  // secondary surface (cool light gray)
-          border:        '#E6E9EF',  // hairline borders
-          'border-strong': '#D4D9E2',// hover / emphasized borders
-          text:          '#0B1220',  // near-black navy primary text
-          muted:         '#5A6473',  // secondary text
-          subtle:        '#818B9C',  // tertiary text / labels
-          accent:        '#4F46E5',  // indigo — primary action / focus
-          'accent-hover':'#4338CA',
-          danger:        '#DC2626',
-          success:       '#059669',
-          warn:          '#D97706',
+          bg:              token('--artha-bg'),
+          surface:         token('--artha-surface'),
+          surface2:        token('--artha-surface2'),
+          'surface-raised': token('--artha-surface-raised'),
+          border:          token('--artha-border'),
+          'border-strong': token('--artha-border-strong'),
+          text:            token('--artha-text'),
+          muted:           token('--artha-muted'),
+          subtle:          token('--artha-subtle'),
+          accent:          token('--artha-accent'),
+          'accent-hover':  token('--artha-accent-hover'),
+          mint:            token('--artha-mint'),
+          danger:          token('--artha-danger'),
+          success:         token('--artha-success'),
+          warn:            token('--artha-warn'),
 
           // Per-tab accent colors — the three working surfaces are colour-coded
-          // so they read as distinct rooms. Mirrored in src/lib/tabTheme.ts for
-          // dynamic (inline-style) use where Tailwind can't generate classes.
+          // so they read as distinct rooms (from main's brand pass; mirrored in
+          // src/lib/tabTheme.ts for inline-style use). Kept as literals so the
+          // tab-coded components introduced on main keep resolving.
           'tab-artha':   '#4F46E5',  // indigo  — Artha (conversational)
           'tab-flows':   '#7C3AED',  // violet  — Workflows
           'tab-code':    '#059669',  // emerald — Code
 
           // Compatibility aliases — kept so existing utility classes keep
           // resolving without a token rename in every component file:
-          blue:    '#0B1220',  // legacy: deep navy, now primary text color
-          s2:      '#EEF1F5',  // legacy: secondary surface
+          blue:    token('--artha-text'),       // legacy: primary text color
+          s2:      token('--artha-surface2'),    // legacy: secondary surface
         },
       },
       fontFamily: {
@@ -43,11 +50,31 @@ export default {
         mono: ['ui-monospace', 'SFMono-Regular', 'JetBrains Mono', 'Menlo', 'monospace'],
       },
       boxShadow: {
-        // Cool-tinted hairline shadows — slightly deeper than before so cards
-        // lift cleanly off the cooler background without feeling heavy.
-        'soft':    '0 1px 2px rgba(11, 18, 32, 0.05)',
-        'lifted':  '0 4px 14px rgba(11, 18, 32, 0.08)',
-        'modal':   '0 16px 40px rgba(11, 18, 32, 0.14)',
+        // Light theme keeps restrained hairline shadows; dark theme layers a
+        // mint glow on top via the `glow` utilities below.
+        'soft':    '0 1px 2px rgba(10, 22, 40, 0.04)',
+        'lifted':  '0 4px 12px rgba(10, 22, 40, 0.06)',
+        'modal':   '0 12px 32px rgba(10, 22, 40, 0.10)',
+        // Emerald/mint glows — driven by --artha-glow so they soften in light.
+        'glow':       '0 0 0 1px rgb(var(--artha-accent) / 0.30), 0 4px 20px var(--artha-glow)',
+        'glow-sm':    '0 0 12px var(--artha-glow)',
+        'glow-strong':'0 0 0 1px rgb(var(--artha-accent) / 0.45), 0 6px 28px var(--artha-glow)',
+      },
+      keyframes: {
+        'fade-in':   { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
+        'fade-up':   { '0%': { opacity: '0', transform: 'translateY(6px)' }, '100%': { opacity: '1', transform: 'translateY(0)' } },
+        'scale-in':  { '0%': { opacity: '0', transform: 'scale(0.96)' }, '100%': { opacity: '1', transform: 'scale(1)' } },
+        'glow-pulse':{ '0%,100%': { boxShadow: '0 0 0 0 var(--artha-glow)' }, '50%': { boxShadow: '0 0 18px 2px var(--artha-glow)' } },
+        'shimmer':   { '100%': { transform: 'translateX(100%)' } },
+        'spin-slow': { '100%': { transform: 'rotate(360deg)' } },
+      },
+      animation: {
+        'fade-in':  'fade-in 160ms ease-out',
+        'fade-up':  'fade-up 220ms cubic-bezier(0.16,1,0.3,1)',
+        'scale-in': 'scale-in 160ms cubic-bezier(0.16,1,0.3,1)',
+        'glow-pulse':'glow-pulse 2.4s ease-in-out infinite',
+        'shimmer':  'shimmer 1.5s infinite',
+        'spin-slow':'spin-slow 1s linear infinite',
       },
     },
   },
