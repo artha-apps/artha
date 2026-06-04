@@ -3,6 +3,7 @@
  * execution log, and planning mode approval.
  */
 import { create } from 'zustand';
+import { useBrowserStore } from './browser';
 
 /** A web page surfaced by `web_search` / `web_fetch`. Rendered as a citation
  *  chip under the assistant bubble that produced it. */
@@ -290,12 +291,18 @@ export const useChatStore = create<ChatState>((set) => ({
   // Switching sessions clears ALL in-flight state, including isStreaming — so a
   // stuck stream from a failed send never bleeds into the new session. Scopes
   // are cleared too and reloaded for the new session by ChatWindow.
-  setActiveSession: (id) => set({
-    activeSessionId: id, messages: [], streamingContent: '',
-    isStreaming: false, executionLog: [], pendingToolEvents: [],
-    pendingCitations: [], activeWorkflowId: null, activeSkill: null,
-    scopes: [], liveReasoning: null,
-  }),
+  setActiveSession: (id) => {
+    // The inbuilt browser pane belongs to the previous session — hide it so it
+    // doesn't bleed into the new/other chat. Closing it unmounts BrowserPane,
+    // whose cleanup detaches the native BrowserView in the main process.
+    useBrowserStore.getState().setOpen(false);
+    set({
+      activeSessionId: id, messages: [], streamingContent: '',
+      isStreaming: false, executionLog: [], pendingToolEvents: [],
+      pendingCitations: [], activeWorkflowId: null, activeSkill: null,
+      scopes: [], liveReasoning: null,
+    });
+  },
   setMessages: (messages) => set({ messages }),
 
   addUserMessage: (sessionId, content, attachments) =>
