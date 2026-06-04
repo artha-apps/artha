@@ -42,6 +42,14 @@
 | `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory + live-environment context injection (date/time/timezone/OS/user), tool dispatch |
 | `src/agent/folderTree.ts` | `buildShallowTree()` — renders a shallow, noise-filtered directory tree for the working-scope context block |
 | `src/agent/contextGather.ts` | `gatherContext()` — pre-`<think>` local context assembly: top-5 memories by semantic similarity (local Ollama embeddings, keyword fallback) + last-3-turn recap + active scopes → `<context>` block + `contextScore` |
+| **bodhi/** (intelligence layer — internal, never surfaced to users) | |
+| `src/bodhi/index.ts` | Bodhi namespace barrel — the single import surface unifying orchestration, context, memory, router, planning, capabilities, and tasks. Re-exports existing modules (staged refactor: physical relocation is a later mechanical step) |
+| `src/bodhi/capabilities.ts` | Universal `invoke(capability, input, context)` contract + `Capability` type + `CapabilityRegistry` (wraps `SkillRegistry`, so Skills = capabilities today and Agents implement the same interface later). Pure projections (`skillToCapability`) are unit-tested |
+| `src/bodhi/tasks.ts` | `Task` = the existing `agent_runs` row, given a first-class read/write API (`getTask`/`listTasks`/`getTaskSteps`/`setTaskStatus`). Makes durable, async/resumable runs the core unit of work |
+| `src/bodhi/executor.ts` | `OrchestratorCapabilityExecutor` — the concrete `invoke(capability, input, ctx)` impl; runs a capability through `AgentOrchestrator.runCapability()` (silent, tracked as a Task) so every surface executes via the same engine as Chat |
+| `src/bodhi/operator.ts` | Delegation Operator playbook — the Cowork-style system instructions injected into every Delegate run (act don't advise; hand off for login via `browser_request_user` then continue; verify before claiming done) with full tool access. `buildOperatorSkill()` folds in a matched capability's playbook |
+| `src/bodhi/capabilities.test.ts` | Vitest — skill→capability projection, registry list/get/select via a fake `SkillSource`, executor-contract shape check |
+| `src/bodhi/tasks.test.ts` | Vitest — `rowToTask` projection (incl. forked-lineage) |
 | **skills/** | |
 | `src/skills/registry.ts` | `SkillRegistry` singleton — loads/creates/toggles YAML skill files, resolves `/slug` + auto-match, filters tool schemas per skill |
 | `src/skills/util.ts` | Pure skill helpers — slug normalisation, `/slug` parsing, import parsing, tool-allowlist filtering (unit-tested) |
@@ -76,6 +84,9 @@
 | `src/browser/controller.ts` | `BrowserController` singleton — owns the embedded WebContentsView; attach/detach/bounds + agent⇄user driving handoff |
 | `src/browser/actions.ts` | Low-level browser action primitives (navigate/click/type/readDom/screenshot/back/forward/reload/getUrl/waitForSelector) |
 | `src/browser/recovery.ts` | Crash/hang recovery policy — decides auto-reload vs crash-loop overlay |
+| **net/** | |
+| `src/net/ssrfGuard.ts` | `assertPublicURL()` — SSRF guard for agent-driven fetch/navigate; http(s)-only + rejects private/loopback/link-local/metadata IPs (resolves DNS, catches rebinding), with a user allowlist for local dev hosts |
+| `src/net/rateLimiter.ts` | `createRateLimiter()` — tiny in-memory token-bucket limiter (lazy refill), used to throttle the LAN `/chat` route per client IP |
 | **rag/** | |
 | `src/rag/indexer.ts` | `RagIndexer` — walks a folder, extracts + chunks + embeds files, persists the index |
 | `src/rag/extract.ts` | Text extraction from files (txt, pdf via pdf-parse, docx via mammoth) for indexing |
@@ -108,10 +119,14 @@
 | `src/components/WorkingIndicator.tsx` | "Artha is working…" cue — window-edge accent glow + a bottom-center pill while the agent is acting (`isStreaming`). Pill is `z-[90]` so it stays visible over modals. The baseline in-app signal; desktop control + browser pane add their own specific cues |
 | `src/components/TabBar/ModelPicker.tsx` | Inline searchable model switcher (the top-bar chip). "Find model…" filter over all installed Ollama models + configured cloud models; click to switch (`llm:setActiveModel` upserts any model) and pre-warm via `ensureModel`. Replaces the old click-to-open-Settings chip |
 | **stores/** | |
-| `src/stores/chat.ts` | Zustand store — `ActiveView` union, messages, pending attachments, clarify state, per-chat `scopes` |
+| `src/stores/chat.ts` | Zustand store — `ActiveView` + `ActiveTab` unions, messages, pending attachments, clarify state, per-chat `scopes` |
 | `src/stores/browser.ts` | Zustand store for the embedded browser pane — URL, driving mode (agent/user), handoff state |
+| `src/stores/delegate.ts` | Zustand store for the Delegate room — single-task lifecycle (status/goal/plan/result), drives plan→approve→execute, persists the current task to localStorage |
+| **services/** | |
+| `src/services/delegateService.ts` | Delegate types + pluggable `DelegateEngine`. `ipcDelegateEngine` (Electron) plans heuristically for the approval UX, then EXECUTES non-blocking via `delegate.start` + polls `delegate.status` (Bodhi → orchestrator) so long runs stay observable; `mockDelegateEngine` is the non-Electron/test fallback. `delegateEngine` auto-selects |
 | **lib/** | |
 | `src/lib/qrcode.ts` | Dependency-free QR encoder (byte mode + Reed-Solomon, v1–10) — `generateQrMatrix` / `qrToSvg` |
+| `src/lib/tabTheme.ts` | Per-tab accent colours (Artha/Workflows/Code/Delegate) as raw values for dynamic inline styles; mirrors the `artha-tab-*` Tailwind/CSS tokens |
 | **components/Chat/** | |
 | `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file); message bubble list |
 | `ClarificationModal.tsx` | Pre-flight Q&A modal (pauses the agent until user answers or skips) |
@@ -119,9 +134,16 @@
 | `ToolCallInline.tsx` | Inline, collapsible tool-call + result display within the chat stream |
 | `Citations.tsx` | Source citations rendered under an agent message |
 | **components/Browser/** | |
-| `BrowserPane.tsx` | Host for the embedded browser viewport + close control |
+| `BrowserPane.tsx` | Host for the embedded browser viewport + close control; width driven by the store, syncs native BrowserView bounds |
+| `BrowserResizer.tsx` | Draggable divider that resizes the chat\|browser split (detaches the native view mid-drag) |
 | `BrowserToolbar.tsx` | URL bar + nav controls + agent/user driving toggle |
 | `HandoffBanner.tsx` | Banner shown when the agent hands the browser to the user (resume / cancel) |
+| **components/Delegate/** | |
+| `DelegateTab.tsx` | Canvas for the Delegate room — switches between the goal-entry hero (idle) and the working view (timeline + plan + result) |
+| `DelegateTaskInput.tsx` | Goal entry hero — textarea ("What would you like Artha to take care of?") + "Delegate" CTA + clickable example goals |
+| `DelegatePlanView.tsx` | Renders the generated plan — summary, ordered steps (tools/agent/status), expected output, and the approval gate when paused |
+| `DelegateProgressTimeline.tsx` | Vertical stage tracker (understand → context → plan → run → review → complete) derived from the task status |
+| `DelegateResultView.tsx` | Final output — prose summary, generated files, suggested next actions |
 | **components/ExecutionLog/** | |
 | `ExecutionLog.tsx` | Live step-by-step view of the ReAct loop's actions |
 | `Settings/GuidePanel.tsx` | "How to use Artha" — Workspace Settings ▸ User Guide. Feature list; selecting one floats that feature's card (steps + example prompt). Opened by the TabBar `?` button and once after onboarding |
@@ -132,7 +154,7 @@
 | **components/Sidebar/** | |
 | `Sidebar.tsx` | Flat chat-session list + New Chat; nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Team, Settings (folders are attached per chat in the composer) |
 | **components/Settings/** | |
-| `ModelsPanel.tsx` | Configure LLM models — API key, base URL, context window slider |
+| `ModelsPanel.tsx` | Configure LLM models — browse/install + uninstall Ollama models, cloud BYOK keys, context window slider |
 | `MCPToolsPanel.tsx` | MCP servers + tool schemas + tool-audit-log tabs; add / remove servers |
 | `SkillsPanel.tsx` | Create / edit / delete agent skill files |
 | `WebPanel.tsx` | Web search config — Brave key, SearXNG instances, provider status |

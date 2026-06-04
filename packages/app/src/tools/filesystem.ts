@@ -23,6 +23,24 @@ function isWithin(child: string, parent: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+/** Canonicalise `resolved` by following symlinks. The target may not exist yet
+ *  (writes/creates), so we realpath the deepest EXISTING ancestor and re-append
+ *  the non-existent tail. Without this a symlink inside an allowed folder could
+ *  point at a system file and slip past the prefix/scope checks below. */
+function realResolve(resolved: string): string {
+  let existing = resolved;
+  const tail: string[] = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break; // reached filesystem root
+    tail.unshift(path.basename(existing));
+    existing = parent;
+  }
+  let real: string;
+  try { real = fs.realpathSync(existing); } catch { real = existing; }
+  return tail.length ? path.join(real, ...tail) : real;
+}
+
 /** Resolve a user-supplied path and reject (1) anything under a known OS-system
  *  directory and (2) — when the chat has attached scopes — anything outside
  *  them. The agent runs with the user's full uid, so this is the last line of
@@ -36,16 +54,23 @@ function safePath(p: string, allowedRoots?: ScopeRoot[] | null): string {
     throw new Error(`Invalid path argument: received ${JSON.stringify(p)}`);
   }
   const resolved = path.resolve(p);
+  // Validate the symlink-resolved path too, so a symlink can't escape the
+  // sandbox or reach a system dir through an allowed folder.
+  const real = realResolve(resolved);
   const blocked = ['/System', '/Library/System', '/usr', '/etc', '/bin', '/sbin', '/private/etc'];
-  if (blocked.some(b => resolved.startsWith(b))) {
+  if (blocked.some(b => resolved.startsWith(b) || real.startsWith(b))) {
     throw new Error(`Access denied: cannot access system directory "${resolved}"`);
   }
   if (allowedRoots && allowedRoots.length) {
     const ok = allowedRoots.some(r => {
       const root = path.resolve(r.path);
+      const realRoot = realResolve(root);
       // A file scope grants access to that exact file only; a folder scope
-      // grants its whole subtree.
-      return r.kind === 'file' ? resolved === root : isWithin(resolved, root);
+      // grants its whole subtree. Both the literal and symlink-resolved paths
+      // must satisfy the scope.
+      return r.kind === 'file'
+        ? resolved === root && real === realRoot
+        : isWithin(resolved, root) && isWithin(real, realRoot);
     });
     if (!ok) {
       const roots = allowedRoots.map(r => r.path).join(', ');

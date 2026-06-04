@@ -17,7 +17,8 @@ import {
   back, click, forward, getUrl, navigate, readDom,
   reload, screenshot, typeInto, waitForSelector,
 } from '../browser/actions';
-import { recordCitation } from './web';
+import { recordCitation, allowedLocalHosts } from './web';
+import { assertPublicURL } from '../net/ssrfGuard';
 
 // ── Tool schemas (OpenAI function format) ────────────────────────────────────
 
@@ -209,6 +210,11 @@ export async function invokeBrowserTool(name: string, args: Record<string, unkno
   switch (name) {
     case 'browser_navigate': {
       const url = String(args.url ?? '');
+      // SSRF guard (agent-driven nav only — the user's toolbar bypasses this):
+      // normalise the scheme the same way navigate() does, then refuse
+      // internal/private targets unless the host is allowlisted.
+      const normalized = /^[a-z]+:\/\//i.test(url) ? url : `https://${url}`;
+      await assertPublicURL(normalized, allowedLocalHosts());
       // Make sure the pane is visible to the user before we drive it.
       emitter.emit?.('browser:autoOpen', null);
       const result = await navigate(wc, url);

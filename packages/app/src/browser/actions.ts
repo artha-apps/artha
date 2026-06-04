@@ -86,13 +86,33 @@ export async function navigate(wc: WebContents, url: string, timeoutMs = 30_000)
   if (!/^https?:\/\//i.test(url) && !url.startsWith('about:')) {
     url = `https://${url}`;
   }
+  // Cancel any in-flight load first. On a freshly-created view the controller
+  // is loading its placeholder page (`data:…Artha Browser`) asynchronously;
+  // without this, that load races ours and its `did-finish-load` can resolve us
+  // prematurely — returning "ok" while the target page never actually loaded.
+  try { wc.stop(); } catch { /* nothing in flight */ }
+
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error(`navigate timed out after ${timeoutMs}ms: ${url}`));
     }, timeoutMs);
-    const onDidFinish = () => { cleanup(); resolve(); };
-    const onDidFail = (_e: unknown, _code: number, desc: string) => {
+    // Resolve only when a REAL page has finished — ignore the placeholder /
+    // about:blank settling so a stale load event can't satisfy us. Uses `on`
+    // (not `once`) so we can skip those and keep waiting for the target.
+    const onDidFinish = () => {
+      const cur = wc.getURL();
+      if (!cur || cur === 'about:blank' || cur.startsWith('data:')) return; // keep waiting
+      cleanup();
+      resolve();
+    };
+    const onDidFail = (
+      _e: unknown, code: number, desc: string, _failedUrl: string, isMainFrame: boolean,
+    ) => {
+      // Ignore sub-frame failures and superseded loads (ERR_ABORTED = -3, which
+      // is exactly what `wc.stop()` / a redirect produces) — they're not real
+      // navigation failures of our target.
+      if (isMainFrame === false || code === -3) return;
       cleanup();
       reject(new Error(`navigate failed: ${desc}`));
     };
@@ -101,8 +121,8 @@ export async function navigate(wc: WebContents, url: string, timeoutMs = 30_000)
       wc.removeListener('did-finish-load', onDidFinish);
       wc.removeListener('did-fail-load', onDidFail);
     };
-    wc.once('did-finish-load', onDidFinish);
-    wc.once('did-fail-load', onDidFail);
+    wc.on('did-finish-load', onDidFinish);
+    wc.on('did-fail-load', onDidFail);
     void wc.loadURL(url);
   });
   return { url: wc.getURL(), title: wc.getTitle() };

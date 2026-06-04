@@ -12,8 +12,8 @@
  * you switch tabs.
  */
 import { useEffect, useState } from 'react';
-import { MessageSquare, Plus, Settings as SettingsIcon, ChevronDown, ChevronRight, Folder } from 'lucide-react';
-import { useChatStore } from '../../stores/chat';
+import { MessageSquare, Plus, Settings as SettingsIcon, ChevronDown, ChevronRight, Folder, Trash2 } from 'lucide-react';
+import { useChatStore, type Session } from '../../stores/chat';
 import { Tooltip } from '../ui/Tooltip';
 import ProjectSwitcher from './ProjectSwitcher';
 
@@ -69,11 +69,72 @@ export default function Sidebar() {
     setMessages(msgs);
   };
 
+  /** Permanently delete a chat after a confirm. The IPC cascades to the
+   *  session's messages, scopes, and agent state. When the deleted chat is the
+   *  active one, fall back to the most recent remaining chat in this project,
+   *  or a fresh empty chat if none are left — never leave the UI pointed at a
+   *  session that no longer exists. */
+  const deleteChat = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation(); // don't also open the chat we're deleting
+    if (!confirm('Delete this chat? This permanently removes the conversation and all of its messages. This cannot be undone.')) return;
+    await window.artha.sessions.delete(id);
+    const updated: Session[] = await window.artha.sessions.list();
+    setSessions(updated);
+    if (id !== activeSessionId) return; // deleted a background chat — nothing else to do
+    const siblings = activeProjectId === null
+      ? updated.filter(s => !s.project_id)
+      : updated.filter(s => s.project_id === activeProjectId);
+    if (siblings.length > 0) await openSession(siblings[0].session_id);
+    else await newChat();
+  };
+
+  /** Delete a project after a confirm. Its chats are NOT destroyed — the
+   *  backend reassigns them to "General" (no project) — so this only removes
+   *  the grouping. Refresh both lists (chats may have moved buckets), and if
+   *  the deleted project was the active one, drop the user into General so
+   *  they're never stranded on a project that no longer exists. */
+  const deleteProject = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation(); // don't also select the project we're deleting
+    if (!confirm('Delete this project? Its chats are kept and moved to "General" — only the project grouping is removed. This cannot be undone.')) return;
+    await window.artha.projects.delete(id);
+    // Chats may have moved to General, so refresh sessions alongside projects.
+    const [freshProjects, freshSessions] = await Promise.all([
+      window.artha.projects.list(),
+      window.artha.sessions.list() as Promise<Session[]>,
+    ]);
+    setProjects(freshProjects);
+    setSessions(freshSessions);
+    if (id !== activeProjectId) return; // deleted a non-active project — view unchanged
+    const nextSessionId = selectProject(null); // land in General
+    if (nextSessionId) setMessages(await window.artha.sessions.getMessages(nextSessionId));
+  };
+
   return (
-    <aside className="flex flex-col w-60 bg-artha-surface2 border-r border-artha-border pt-10 shrink-0">
+    <aside className="flex flex-col w-60 bg-artha-surface2 border-r border-artha-border shrink-0">
+
+      {/* ── Brand header ─────────────────────────────────────────────── */}
+      {/* Mandala mark + wordmark. Lives in the macOS title-bar drag zone
+          (top padding clears the traffic lights) so it doubles as a drag
+          handle and gives the window a clear identity. */}
+      <div className="drag-region flex items-center gap-2.5 px-4 pt-9 pb-3">
+        <img
+          src="/logo-mark.png"
+          alt="Artha"
+          width={30}
+          height={30}
+          draggable={false}
+          className="rounded-lg shadow-soft ring-1 ring-artha-border-strong/50 select-none"
+        />
+        <div className="leading-none">
+          <div className="text-[15px] font-semibold tracking-tight text-artha-text">Artha</div>
+          <div className="mt-1 text-[9.5px] font-medium uppercase tracking-[0.16em] text-artha-subtle">
+            Local AI Agent
+          </div>
+        </div>
+      </div>
 
       {/* ── Project switcher ─────────────────────────────────────────── */}
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-3 pt-1">
         <ProjectSwitcher />
       </div>
 
@@ -115,18 +176,32 @@ export default function Sidebar() {
                   }
                 };
                 return (
-                  <button
+                  // Flex container (not a button) so the delete control can sit
+                  // beside the switch-project button without nesting buttons.
+                  <div
                     key={p.project_id}
-                    onClick={pickFromList}
-                    className={`no-drag flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-xs text-left transition-colors truncate
+                    className={`group no-drag flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-xs transition-colors
                       ${isActive
                         ? 'bg-artha-surface text-artha-text border border-artha-border-strong'
                         : 'text-artha-muted hover:bg-artha-surface hover:text-artha-text border border-transparent'}`}
                     title={p.root_path}
                   >
-                    <Folder size={11} className="shrink-0 text-artha-accent" />
-                    <span className="truncate">{p.name}</span>
-                  </button>
+                    <button
+                      onClick={pickFromList}
+                      className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                    >
+                      <Folder size={11} className="shrink-0 text-artha-accent" />
+                      <span className="truncate">{p.name}</span>
+                    </button>
+                    <button
+                      onClick={(e) => deleteProject(e, p.project_id)}
+                      aria-label="Delete project"
+                      title="Delete project (chats are kept, moved to General)"
+                      className="shrink-0 p-1 -mr-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-red-400 hover:bg-red-500/20 transition-all"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
                 );
               })}
               {projects.length === 0 && (
@@ -157,18 +232,32 @@ export default function Sidebar() {
               )}
               {visibleSessions.map(s => (
                 // Active highlight only when on the Chat tab — a session row
-                // stays unhighlighted while Workflows/Code is showing.
-                <button
+                // stays unhighlighted while Workflows/Code is showing. The row
+                // is a flex container (not a button) so the delete control can
+                // sit beside the open-chat button without nesting buttons.
+                <div
                   key={s.session_id}
-                  onClick={() => openSession(s.session_id)}
-                  className={`no-drag flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-xs text-left transition-colors truncate
+                  className={`group no-drag flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-xs transition-colors
                     ${s.session_id === activeSessionId && activeView === 'chat'
                       ? 'bg-artha-surface text-artha-text border border-artha-border-strong shadow-soft'
                       : 'text-artha-muted hover:bg-artha-surface hover:text-artha-text border border-transparent'}`}
                 >
-                  <MessageSquare size={11} className="shrink-0" />
-                  <span className="truncate">{s.title}</span>
-                </button>
+                  <button
+                    onClick={() => openSession(s.session_id)}
+                    className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                  >
+                    <MessageSquare size={11} className="shrink-0" />
+                    <span className="truncate">{s.title}</span>
+                  </button>
+                  <button
+                    onClick={(e) => deleteChat(e, s.session_id)}
+                    aria-label="Delete chat"
+                    title="Delete chat"
+                    className="shrink-0 p-1 -mr-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-red-400 hover:bg-red-500/20 transition-all"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
               ))}
             </div>
           )}

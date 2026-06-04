@@ -9,13 +9,13 @@
  * `projects.create()` returns).
  */
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Plus, Folder, Check, Star } from 'lucide-react';
+import { ChevronDown, Plus, Folder, Check, Star, Trash2 } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
 /** Compact project chip + dropdown. Closes on outside click and Esc. */
 export default function ProjectSwitcher() {
   const {
-    projects, activeProjectId, selectProject, setProjects, setMessages,
+    projects, activeProjectId, selectProject, setProjects, setMessages, setSessions,
   } = useChatStore();
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -48,6 +48,27 @@ export default function ProjectSwitcher() {
       const msgs = await window.artha.sessions.getMessages(nextSessionId);
       setMessages(msgs);
     }
+  };
+
+  // Delete a project from the dropdown. Chats aren't destroyed — the backend
+  // moves them to "General" — so this just removes the grouping. Refresh both
+  // lists (chats may have changed bucket) and, if the active project was the
+  // one removed, fall back to General so the canvas isn't left orphaned.
+  const removeProject = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation(); // don't let the row's `pick` fire, and don't close yet
+    if (!confirm('Delete this project? Its chats are kept and moved to "General" — only the project grouping is removed. This cannot be undone.')) return;
+    await window.artha.projects.delete(id);
+    const [freshProjects, freshSessions] = await Promise.all([
+      window.artha.projects.list(),
+      window.artha.sessions.list(),
+    ]);
+    setProjects(freshProjects);
+    setSessions(freshSessions);
+    if (id === activeProjectId) {
+      const nextSessionId = selectProject(null);
+      if (nextSessionId) setMessages(await window.artha.sessions.getMessages(nextSessionId));
+    }
+    setOpen(false);
   };
 
   // "+ New project" → main shows a folder picker; we refresh the list and
@@ -106,18 +127,32 @@ export default function ProjectSwitcher() {
             </button>
 
             {projects.map(p => (
-              <button
+              // Flex row (not a button) so the delete control nests beside the
+              // switch-project button rather than inside it.
+              <div
                 key={p.project_id}
-                onClick={() => pick(p.project_id)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-artha-surface2 text-artha-muted hover:text-artha-text transition-colors"
+                className="group w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-artha-surface2 transition-colors"
                 title={p.root_path}
               >
-                <span className="w-3 inline-block">
-                  {activeProjectId === p.project_id && <Check size={12} className="text-artha-accent" />}
-                </span>
-                <Folder size={11} className="text-artha-subtle shrink-0" />
-                <span className="truncate flex-1">{p.name}</span>
-              </button>
+                <button
+                  onClick={() => pick(p.project_id)}
+                  className="flex items-center gap-2 flex-1 min-w-0 text-left text-artha-muted hover:text-artha-text"
+                >
+                  <span className="w-3 inline-block">
+                    {activeProjectId === p.project_id && <Check size={12} className="text-artha-accent" />}
+                  </span>
+                  <Folder size={11} className="text-artha-subtle shrink-0" />
+                  <span className="truncate flex-1">{p.name}</span>
+                </button>
+                <button
+                  onClick={(e) => removeProject(e, p.project_id)}
+                  aria-label="Delete project"
+                  title="Delete project (chats are kept, moved to General)"
+                  className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-red-400 hover:bg-red-500/20 transition-all"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
             ))}
             {projects.length === 0 && (
               <p className="px-3 py-3 text-[11px] text-artha-subtle">

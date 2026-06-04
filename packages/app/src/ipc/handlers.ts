@@ -40,6 +40,7 @@ import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
+import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { parseSkillImport } from '../skills/util';
 import { getDefaultRagIndexer } from '../rag/indexer';
 import { buildShallowTree } from '../agent/folderTree';
@@ -55,6 +56,7 @@ import { getEntitlements, invalidateEntitlements, parseAndVerify } from '../lice
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
+import { createRateLimiter } from '../net/rateLimiter';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
@@ -175,10 +177,11 @@ function authoriseLanRequest(req: http.IncomingMessage): LanIdentity | null {
     const keys = db.prepare(
       `SELECT key_hash, member_id, role FROM api_keys WHERE is_enabled=1`,
     ).all() as { key_hash: string; member_id: string | null; role: string | null }[];
-    // No keys registered → open access (owner hasn't locked down yet). Phase 2
-    // SSO will tighten this; for now it preserves the existing dev-friendly
-    // behaviour where you can curl /chat immediately after starting the server.
-    if (keys.length === 0) return { memberId: null, memberName: null, role: 'admin' };
+    // Fail CLOSED: with no keys registered there is no way to authenticate, so
+    // deny every request rather than granting open admin access. startLanServer
+    // refuses to bind until at least one key exists, so this branch is the
+    // belt-and-braces case (e.g. all keys revoked while the server is running).
+    if (keys.length === 0) return null;
     const auth = (req.headers['authorization'] ?? '') as string;
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
     if (!token) return null;
@@ -207,6 +210,10 @@ function authoriseLanRequest(req: http.IncomingMessage): LanIdentity | null {
 const LAN_PORT = 7842;
 let lanServer: http.Server | null = null;
 let lanLocalIp: string | null = null;
+
+// Per-client throttle on the expensive /chat route (each call runs a full agent
+// turn). Burst of 5, then ~1 request every 12s sustained, keyed by client IP.
+const lanChatLimiter = createRateLimiter(5, 1 / 12);
 
 /**
  * Return the first non-internal IPv4 address (the machine's LAN IP).
@@ -256,6 +263,18 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
       error: 'The LAN/team server requires a Pro or Enterprise license. Apply a license in Settings → License.',
     };
   }
+  // Fail CLOSED: the server binds 0.0.0.0 (reachable by every device on the
+  // network), so it must require authentication. Refuse to start until the user
+  // has created at least one API key, rather than exposing an open agent.
+  const enabledKeys = (getDb().prepare(`SELECT COUNT(*) AS n FROM api_keys WHERE is_enabled=1`).get() as { n: number }).n;
+  if (enabledKeys === 0) {
+    return {
+      running: false,
+      url: null,
+      localIp: null,
+      error: 'The LAN server needs an API key for authentication. Create one in Settings → API Keys, then start the server. (Anyone on your network can reach it, so it must be locked down.)',
+    };
+  }
   lanLocalIp = detectLocalIp();
 
   const server = http.createServer((req, res) => {
@@ -295,6 +314,13 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
     }
 
     if (req.method === 'POST' && url.pathname === '/chat') {
+      // Rate-limit per client IP — one /chat = one full agent run, so an
+      // unthrottled caller could exhaust CPU or run up cloud-model spend.
+      const clientIp = req.socket.remoteAddress ?? 'unknown';
+      if (!lanChatLimiter.take(clientIp)) {
+        json(429, { error: 'Too many requests. Slow down and retry shortly.' });
+        return;
+      }
       let body = '';
       req.on('data', (chunk) => { body += chunk; });
       req.on('end', async () => {
@@ -540,6 +566,100 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     orchestrator.clarifyRespond(workflowId, answers);
   });
 
+  // ── Delegate ─────────────────────────────────────────────────────────────
+  // Goal-driven execution. Creates an isolated Task session, routes the goal to
+  // the best-fit capability (Skill) via Bodhi, and runs it to completion through
+  // the SAME orchestrator as Chat (silent — Delegate owns its own UI). Returns
+  // the final output + any artifacts the run produced. The plan/approval UX
+  // lives on the Delegate surface; this endpoint only executes.
+  ipcMain.handle('delegate:run', async (_e, goal: string) => {
+    const db = getDb();
+    const sessionId = crypto.randomUUID();
+    const title = `Delegate: ${goal.slice(0, 38)}${goal.length > 38 ? '…' : ''}`;
+    // origin='delegate' keeps this task's backing session out of the Chat sidebar.
+    db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'delegate')`).run(sessionId, title);
+    db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, goal);
+
+    // Route to a capability; fall back to a skill-less "direct" run when none fits.
+    const registry = new CapabilityRegistry(SkillRegistry.getInstance());
+    const capability = (await registry.select(goal)) ?? {
+      id: 'direct', name: 'Artha', description: '', icon: '✨', kind: 'skill' as const, tools: [],
+    };
+    const executor = new OrchestratorCapabilityExecutor(orchestrator);
+    const result = await executor.invoke(capability, goal, { sessionId });
+
+    const files = db.prepare(
+      `SELECT name, file_type FROM artifacts WHERE session_id = ? ORDER BY created_at ASC`
+    ).all(sessionId) as { name: string; file_type: string }[];
+
+    return {
+      runId: result.runId ?? null,
+      sessionId,
+      status: result.status,
+      output: result.output,
+      error: result.error ?? null,
+      capability: capability.id,
+      files: files.map(f => ({ name: f.name, kind: f.file_type })),
+    };
+  });
+
+  // The step trace for a Task — lets the Delegate timeline reflect real progress
+  // (and supports resuming/observing a run after a reload).
+  ipcMain.handle('delegate:steps', (_e, runId: string) => getTaskSteps(runId));
+
+  // Non-blocking start: create the Task session, route to a capability, kick the
+  // run off in the background, and return the run id immediately. The renderer
+  // polls `delegate:status` instead of blocking on the whole run — so long tasks
+  // are observable (and don't hang the UI at "reviewing").
+  ipcMain.handle('delegate:start', async (_e, goal: string) => {
+    const db = getDb();
+    const sessionId = crypto.randomUUID();
+    const title = `Delegate: ${goal.slice(0, 38)}${goal.length > 38 ? '…' : ''}`;
+    // origin='delegate' keeps this task's backing session out of the Chat sidebar.
+    db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'delegate')`).run(sessionId, title);
+    db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, goal);
+
+    // Delegate runs in Operator (Cowork-style) mode: it ACTS — drives the
+    // browser, hands off for login, and finishes the task. We always inject the
+    // operator playbook (with full tool access) and fold in any matched
+    // capability's task-specific playbook underneath it.
+    const registry = new CapabilityRegistry(SkillRegistry.getInstance());
+    const capability = await registry.select(goal);
+    let taskPlaybook: { name: string; instructions: string } | null = null;
+    if (capability?.skillSlug) {
+      const resolved = (await SkillRegistry.getInstance().resolve(`/${capability.skillSlug}`)).skill;
+      if (resolved) taskPlaybook = { name: resolved.name, instructions: resolved.instructions };
+    }
+    const skill = buildOperatorSkill(taskPlaybook);
+
+    const runId = orchestrator.startCapability({ sessionId, goal, skill });
+    return { runId, sessionId, capability: capability?.id ?? 'delegate-operator' };
+  });
+
+  // Poll a running Task: maps the Task status to a Delegate-facing state, and
+  // once terminal returns the final agent message + any artifacts produced.
+  ipcMain.handle('delegate:status', (_e, runId: string, sessionId: string) => {
+    const task = getTask(runId);
+    const raw = task?.status ?? 'running';
+    const status: 'running' | 'completed' | 'failed' =
+      raw === 'completed' ? 'completed' : (raw === 'failed' || raw === 'cancelled') ? 'failed' : 'running';
+    const stepCount = getTaskSteps(runId).length;
+
+    let output = '';
+    let files: { name: string; kind: string }[] = [];
+    if (status !== 'running') {
+      const row = getDb()
+        .prepare(`SELECT content FROM messages WHERE session_id = ? AND sender_type = 'agent' ORDER BY rowid DESC LIMIT 1`)
+        .get(sessionId) as { content: string } | undefined;
+      output = row?.content ?? '';
+      files = (getDb()
+        .prepare(`SELECT name, file_type FROM artifacts WHERE session_id = ? ORDER BY created_at ASC`)
+        .all(sessionId) as { name: string; file_type: string }[])
+        .map((f) => ({ name: f.name, kind: f.file_type }));
+    }
+    return { status, output, files, stepCount };
+  });
+
   // ── Projects ───────────────────────────────────────────────────────────
   // Projects are user-visible containers around a folder: a root path + an
   // auto-built RAG index + a rolling cross-session memory summary. The data
@@ -593,9 +713,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('sessions:listByProject', (_e, projectId: string | null) => {
     const db = getDb();
     if (projectId === null || projectId === undefined) {
-      return db.prepare(`SELECT * FROM chat_sessions WHERE project_id IS NULL ORDER BY last_activity DESC`).all();
+      return db.prepare(`SELECT * FROM chat_sessions WHERE project_id IS NULL AND COALESCE(origin,'chat')='chat' ORDER BY last_activity DESC`).all();
     }
-    return db.prepare(`SELECT * FROM chat_sessions WHERE project_id=? ORDER BY last_activity DESC`).all(projectId);
+    return db.prepare(`SELECT * FROM chat_sessions WHERE project_id=? AND COALESCE(origin,'chat')='chat' ORDER BY last_activity DESC`).all(projectId);
   });
 
   /** Create a project from a folder pick. Delegates to the same
@@ -617,9 +737,32 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     ).get(projectId) ?? null;
   });
 
+  // Delete a project WITHOUT destroying the user's conversations. Neither
+  // chat_sessions.project_id nor memory_entities.project_id has a foreign key
+  // to projects, so a bare DELETE would leave them dangling (invisible but
+  // still on disk). Instead we detach them — reassigning project_id to NULL
+  // moves the chats and scoped memories into the "General" (no-project) bucket
+  // so removing a project never loses work. The auto-built RAG index is derived
+  // data (rebuildable from the folder) and left as-is. Wrapped in a transaction
+  // so a project is never half-deleted. Returns the count of chats that were
+  // moved to General, so the renderer can tell the user where they went.
+  ipcMain.handle('projects:delete', (_e, projectId: string) => {
+    const db = getDb();
+    const detachAndDelete = db.transaction((pid: string) => {
+      const moved = db.prepare(
+        `UPDATE chat_sessions SET project_id=NULL WHERE project_id=?`
+      ).run(pid).changes;
+      db.prepare(`UPDATE memory_entities SET project_id=NULL WHERE project_id=?`).run(pid);
+      db.prepare(`DELETE FROM projects WHERE project_id=?`).run(pid);
+      return moved;
+    });
+    return { movedChats: detachAndDelete(projectId) };
+  });
+
   // ── Sessions ───────────────────────────────────────────────────────────
   ipcMain.handle('sessions:list', () => {
-    return getDb().prepare(`SELECT * FROM chat_sessions ORDER BY last_activity DESC`).all();
+    // Exclude Delegate task sessions — they're an execution backing store, not chats.
+    return getDb().prepare(`SELECT * FROM chat_sessions WHERE COALESCE(origin,'chat')='chat' ORDER BY last_activity DESC`).all();
   });
 
   ipcMain.handle('sessions:create', (_e, projectId?: string | null) => {
@@ -629,6 +772,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return { session_id: id, title: 'New Chat', project_id: projectId ?? null };
   });
 
+  // Permanently delete a chat. Deleting the chat_sessions row cascades (via the
+  // schema's ON DELETE CASCADE foreign keys, with PRAGMA foreign_keys=ON) to its
+  // messages, session_scopes, and agent_states — so the conversation and all of
+  // its history are fully removed from disk. Artifacts are preserved (their
+  // session_id is set to NULL). Irreversible: there is no soft-delete/undo.
   ipcMain.handle('sessions:delete', (_e, id: string) => {
     getDb().prepare(`DELETE FROM chat_sessions WHERE session_id=?`).run(id);
   });
@@ -933,6 +1081,28 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     } catch (err) {
       emit({ name, status: 'error', error: err instanceof Error ? err.message : String(err) });
       return false;
+    }
+  });
+
+  // Uninstall a local Ollama model — frees the on-disk blobs via Ollama's
+  // DELETE /api/delete, then drops any matching llm_models row so a model the
+  // user pulled from the catalog can be fully removed from inside the app.
+  // (Counterpart to llm:pullModelStream; llm:removeModel only touches the DB.)
+  ipcMain.handle('llm:deleteModel', async (_e, name: string) => {
+    try {
+      const res = await fetch('http://localhost:11434/api/delete', {
+        method: 'DELETE',
+        body: JSON.stringify({ name }),
+      });
+      // 404 means Ollama no longer has it — treat as already-gone, not a failure.
+      if (!res.ok && res.status !== 404) {
+        return { ok: false, error: `Ollama responded ${res.status}` };
+      }
+      // Clean up the DB row (active flag included) so the model fully disappears.
+      getDb().prepare(`DELETE FROM llm_models WHERE ollama_name=?`).run(name);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 

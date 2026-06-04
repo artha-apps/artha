@@ -113,6 +113,40 @@ const api = {
     },
   },
 
+  // ── Delegate ───────────────────────────────────────────────────────────────
+  // Goal-driven execution surface. `run` hands a goal to Bodhi, which routes it
+  // to a capability and executes it through the orchestrator, returning the
+  // final output + artifacts. `steps` reads a Task's step trace for progress.
+  delegate: {
+    /** Non-blocking: kick off a goal, get back the Task id to poll. */
+    start: (goal: string) => ipcRenderer.invoke('delegate:start', goal) as Promise<{
+      runId: string;
+      sessionId: string;
+      capability: string;
+    }>,
+    /** Poll a running Task; terminal responses carry the output + artifacts. */
+    status: (runId: string, sessionId: string) =>
+      ipcRenderer.invoke('delegate:status', runId, sessionId) as Promise<{
+        status: 'running' | 'completed' | 'failed';
+        output: string;
+        files: { name: string; kind: string }[];
+        stepCount: number;
+      }>,
+    /** Synchronous "invoke and wait" capability API (used programmatically). */
+    run: (goal: string) => ipcRenderer.invoke('delegate:run', goal) as Promise<{
+      runId: string | null;
+      sessionId: string;
+      status: 'completed' | 'failed';
+      output: string;
+      error: string | null;
+      capability: string;
+      files: { name: string; kind: string }[];
+    }>,
+    steps: (runId: string) => ipcRenderer.invoke('delegate:steps', runId) as Promise<
+      { idx: number; kind: string; payload: string; ts: number }[]
+    >,
+  },
+
   // ── Projects ─────────────────────────────────────────────────────────────
   // Project = a folder + auto-built RAG index + rolling cross-session memory.
   // The renderer uses these to drive the switcher, the sidebar list, and
@@ -128,6 +162,11 @@ const api = {
     }>>,
     get: (projectId: string) => ipcRenderer.invoke('projects:get', projectId),
     create: () => ipcRenderer.invoke('projects:create'),
+    /** Delete a project; its chats + scoped memories are preserved by being
+     *  moved to "General" (project_id NULL). Resolves to the number of chats
+     *  relocated so the caller can surface where the history went. */
+    delete: (projectId: string) =>
+      ipcRenderer.invoke('projects:delete', projectId) as Promise<{ movedChats: number }>,
   },
 
   // ── Filesystem reads (renderer-safe, read-only) ──────────────────────────
@@ -142,6 +181,7 @@ const api = {
   sessions: {
     list: () => ipcRenderer.invoke('sessions:list'),
     create: (projectId?: string | null) => ipcRenderer.invoke('sessions:create', projectId),
+    /** Permanently delete a chat; cascades to its messages/scopes/agent state. No undo. */
     delete: (id: string) => ipcRenderer.invoke('sessions:delete', id),
     /** Sessions filtered to one project (or `null` for no-project). */
     listByProject: (projectId: string | null) =>
@@ -179,6 +219,9 @@ const api = {
     checkOllama: () => ipcRenderer.invoke('llm:checkOllama') as Promise<boolean>,
     pullModel: (name: string) => ipcRenderer.invoke('llm:pullModel', name),
     pullModelStream: (name: string) => ipcRenderer.invoke('llm:pullModelStream', name) as Promise<boolean>,
+    // Uninstall a local Ollama model — frees its on-disk blobs and drops its DB row.
+    deleteModel: (name: string) =>
+      ipcRenderer.invoke('llm:deleteModel', name) as Promise<{ ok: boolean; error?: string }>,
     onPullProgress: (cb: (p: { name: string; status: string; completed?: number; total?: number; percent?: number; error?: string }) => void) => {
       ipcRenderer.on('llm:pullProgress', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('llm:pullProgress');
