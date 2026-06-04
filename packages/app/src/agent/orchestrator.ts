@@ -17,7 +17,7 @@
 import { BrowserWindow } from 'electron';
 import * as os from 'os';
 import { sendNotification } from '../notify';
-import { getActiveLLMClient, type StreamedMessage } from '../llm/client';
+import { getActiveLLMClient, type StreamedMessage, type TaskType } from '../llm/client';
 import { MCPRegistry, type ToolContext } from '../mcp/registry';
 import { SkillRegistry, type ActiveSkill } from '../skills/registry';
 import { getDb } from '../db/schema';
@@ -557,22 +557,29 @@ Rules:
 
   /** Resolve the active model, persist a new `agent_runs` row, build the
    *  ReAct system prompt (filesystem/web/browser rules + destination hint),
-   *  then hand off to `runReactLoop()`. */
-  private async executePlan(plan: AgentPlan): Promise<void> {
+   *  then hand off to `runReactLoop()`. Returns the `runId` of the Task it
+   *  created so callers (e.g. the capability executor) can track it. `silent`
+   *  suppresses renderer-facing events while still persisting to SQLite —
+   *  used when a capability is run outside the Chat surface. */
+  private async executePlan(plan: AgentPlan, opts: { silent?: boolean; runId?: string; taskType?: TaskType } = {}): Promise<string> {
     const db = getDb();
     const homeDir = os.homedir();
-    const runId = crypto.randomUUID();
+    // Caller may pre-create the run id (non-blocking starts insert the row up
+    // front so it can be polled immediately); otherwise mint one here.
+    const runId = opts.runId ?? crypto.randomUUID();
     const model = this.activeModelName();
     const planStartMs = Date.now();
 
     db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`)
       .run(plan.workflowId);
+    // OR IGNORE: a non-blocking start has already inserted this row.
     db.prepare(`
-      INSERT INTO agent_runs (run_id, session_id, workflow_id, goal, model, status)
+      INSERT OR IGNORE INTO agent_runs (run_id, session_id, workflow_id, goal, model, status)
       VALUES (?, ?, ?, ?, ?, 'running')
     `).run(runId, plan.sessionId, plan.workflowId, plan.goal, model);
 
-    this.emit('agent:workflowStart', plan.workflowId);
+    // Silent runs (e.g. Delegate) must not drive the Chat surface's working UI.
+    if (!opts.silent) this.emit('agent:workflowStart', plan.workflowId);
 
     const history = this.getSessionHistory(plan.sessionId);
     const destHint = this.extractDestination(plan.goal, homeDir);
@@ -639,12 +646,82 @@ RULES — follow exactly, no exceptions:
       messages,
       skill,
       startMs: planStartMs,
+      silent: opts.silent,
+      taskType: opts.taskType,
     });
 
     // Phase 3: refresh the project's rolling cross-session memory in the
     // background so a future chat in this project starts already aware of what
     // happened here. Best-effort; never blocks or fails the run.
     if (projectId) void this.updateProjectSummary(projectId, plan.sessionId);
+
+    return runId;
+  }
+
+  /** Invoke one capability (a Skill playbook) against a goal and run it to
+   *  completion as a tracked Task, returning the Task's run id. This is the
+   *  orchestrator side of Bodhi's universal `invoke(capability, …)` contract.
+   *
+   *  It runs SILENT — its tokens/tool events are not emitted to the Chat
+   *  surface — because callers like Delegate own their own UI and observe the
+   *  result via the Task (`agent_runs`) and its persisted final message. It
+   *  also skips clarification + skill auto-match: the capability is already
+   *  chosen, so we go straight to execution with that skill active. */
+  async runCapability(args: { sessionId: string; goal: string; skill?: ActiveSkill | null }): Promise<string> {
+    const workflowId = crypto.randomUUID();
+    getDb().prepare(`
+      INSERT INTO agent_states (workflow_id, session_id, status, context_json)
+      VALUES (?, ?, 'running', ?)
+    `).run(workflowId, args.sessionId, JSON.stringify({ goal: args.goal, skill: args.skill?.slug ?? null }));
+
+    const plan: AgentPlan = {
+      workflowId,
+      sessionId: args.sessionId,
+      goal: args.goal,
+      steps: [{ index: 0, description: args.goal, status: 'pending' }],
+      requiresApproval: false,
+      skill: args.skill ?? null,
+    };
+    return this.executePlan(plan, { silent: true });
+  }
+
+  /** Non-blocking variant of {@link runCapability}: synchronously create the
+   *  Task (so it can be polled immediately), kick the run off in the background,
+   *  and return the run id right away. This is how goal-driven surfaces like
+   *  Delegate execute — the UI polls the Task's status/steps instead of blocking
+   *  on the whole run, which is what makes long tasks observable and resumable. */
+  startCapability(args: { sessionId: string; goal: string; skill?: ActiveSkill | null }): string {
+    const db = getDb();
+    const workflowId = crypto.randomUUID();
+    const runId = crypto.randomUUID();
+
+    db.prepare(`
+      INSERT INTO agent_states (workflow_id, session_id, status, context_json)
+      VALUES (?, ?, 'running', ?)
+    `).run(workflowId, args.sessionId, JSON.stringify({ goal: args.goal, skill: args.skill?.slug ?? null }));
+    db.prepare(`
+      INSERT INTO agent_runs (run_id, session_id, workflow_id, goal, model, status)
+      VALUES (?, ?, ?, ?, ?, 'running')
+    `).run(runId, args.sessionId, workflowId, args.goal, this.activeModelName());
+
+    const plan: AgentPlan = {
+      workflowId,
+      sessionId: args.sessionId,
+      goal: args.goal,
+      steps: [{ index: 0, description: args.goal, status: 'pending' }],
+      requiresApproval: false,
+      skill: args.skill ?? null,
+    };
+    // Fire-and-forget; on hard failure mark the Task failed so pollers see it.
+    // 'tool_args' routes the loop to the router's fast model (smallest installed
+    // when un-benchmarked) so Delegate's many turns aren't all on the heavy
+    // active model — the #1 cause of slow delegated runs on local hardware.
+    void this.executePlan(plan, { silent: true, runId, taskType: 'tool_args' }).catch((err) => {
+      console.error('[Artha] delegate capability run failed:', err);
+      try { getDb().prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(runId); } catch { /* ignore */ }
+    });
+
+    return runId;
   }
 
   /** The core ReAct loop. Repeatedly: call the LLM with the current message
@@ -669,9 +746,14 @@ RULES — follow exactly, no exceptions:
      *  but keep DB persistence. Used for parallel child loops so their output
      *  doesn't interleave in the chat — runParallel owns the visible lifecycle. */
     silent?: boolean;
+    /** Route the loop's model via the router for this task type instead of the
+     *  active model. Delegate passes 'tool_args' so its many mechanical turns run
+     *  on a fast small model (the router's pick / smallest installed) rather than
+     *  the heavy active model — keeping Chat on the active model untouched. */
+    taskType?: TaskType;
   }): Promise<void> {
     const db = getDb();
-    const llm = getActiveLLMClient(args.modelOverride);
+    const llm = getActiveLLMClient(args.modelOverride, args.taskType);
     // Renderer-facing emit gate. Silent child loops still persist to SQLite.
     const emit = (channel: string, data?: unknown): void => {
       if (!args.silent) this.emit(channel, data);

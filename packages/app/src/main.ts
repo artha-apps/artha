@@ -137,7 +137,9 @@ async function createWindow(): Promise<void> {
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#0f1117',
+    // Match the light UI background (artha-bg) so launch doesn't flash a dark
+    // panel before React paints. Was leftover from the old dark theme.
+    backgroundColor: '#F7F8FA',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

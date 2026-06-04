@@ -16,6 +16,7 @@ import { extractReadable } from './readability';
 import { search as searxngSearch, SearchResult } from './searxng';
 import { braveSearch } from './brave';
 import { duckduckgoSearch } from './duckduckgo';
+import { assertPublicURL } from '../net/ssrfGuard';
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,9 @@ export interface WebConfig {
   respect_robots: boolean;
   /** Hostnames allowed to bypass the robots check (e.g. a private intranet). */
   robots_override_hosts: string[];
+  /** Hostnames the agent is explicitly allowed to fetch even though they are
+   *  private/loopback (SSRF allowlist — e.g. "localhost" for a dev server). */
+  allow_local_hosts?: string[];
   timeout_ms: number;
   max_bytes: number;
   /** Optional Brave Search API key. When set, Brave is tried before SearXNG.
@@ -57,10 +61,18 @@ export const DEFAULT_WEB_CONFIG: WebConfig = {
   cache_ttl_seconds: DEFAULT_CACHE_TTL_SECONDS,
   respect_robots: true,
   robots_override_hosts: [],
+  allow_local_hosts: [],
   timeout_ms: DEFAULT_TIMEOUT_MS,
   max_bytes: DEFAULT_MAX_BYTES,
   brave_api_key: '',
 };
+
+/** The SSRF allowlist (private/loopback hosts the agent is explicitly allowed
+ *  to reach), shared by web_fetch and other tools with the same policy such as
+ *  browser_navigate. */
+export function allowedLocalHosts(): string[] {
+  return loadConfig().allow_local_hosts ?? [];
+}
 
 // Loaded lazily so the tool module doesn't require the DB at import time.
 function loadConfig(): WebConfig {
@@ -264,6 +276,9 @@ async function webFetchImpl(args: { url: string; mode?: string; max_chars?: numb
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`web_fetch: only http(s) URLs are supported (got ${parsed.protocol})`);
   }
+  // SSRF guard: refuse internal/private/loopback/metadata targets unless the
+  // user explicitly allowlisted the host. Resolves DNS to catch rebinding.
+  await assertPublicURL(url, config.allow_local_hosts ?? []);
 
   // Cache check
   const db = getDb();

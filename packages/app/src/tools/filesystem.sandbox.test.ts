@@ -97,4 +97,22 @@ describe('filesystem hard sandbox', () => {
     await expect(invokeFilesystemTool('fs_read_file', { path: path.join(lookalike, 'a.txt') }, roots))
       .rejects.toThrow(/outside this chat's selected folders/i);
   });
+
+  // ── Symlink escape ─────────────────────────────────────────────────────────
+  it('blocks a symlink inside the scope that points OUTSIDE it', async () => {
+    const roots: ScopeRoot[] = [{ path: root, kind: 'folder' }];
+    // A link living inside the allowed folder but resolving to a sibling file.
+    const link = path.join(root, 'escape-link.txt');
+    try { fs.symlinkSync(scopedFile, link); } catch { return; /* FS without symlink support — skip */ }
+    await expect(invokeFilesystemTool('fs_read_file', { path: link }, roots))
+      .rejects.toThrow(/outside this chat's selected folders/i);
+  });
+
+  it('blocks a symlink that points at a system directory', async () => {
+    const roots: ScopeRoot[] = [{ path: root, kind: 'folder' }];
+    const link = path.join(root, 'etc-link');
+    try { fs.symlinkSync('/etc', link); } catch { return; /* skip if unsupported */ }
+    await expect(invokeFilesystemTool('fs_list_directory', { path: link }, roots))
+      .rejects.toThrow(/system directory|outside this chat/i);
+  });
 });
