@@ -222,6 +222,11 @@ export default function ModelsPanel() {
   const [loading, setLoading] = useState(true);
   // `switching` holds the name being activated so we can show a spinner on that row only.
   const [switching, setSwitching] = useState<string | null>(null);
+  // Uninstall flow: `confirmDelete` is the row awaiting confirmation, `deleting`
+  // the row whose blobs are being removed (spinner), `deleteError` any failure.
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [ollamaOnline, setOllamaOnline] = useState(true);
 
   // Pull progress — keyed by model tag so multiple concurrent pulls can coexist.
@@ -394,6 +399,25 @@ export default function ModelsPanel() {
     await load();
   };
 
+  /** Uninstall a local Ollama model — frees disk space and removes it from the app. */
+  const deleteModel = async (name: string) => {
+    setDeleting(name);
+    setDeleteError(null);
+    try {
+      const res = await window.artha.llm.deleteModel(name);
+      if (!res.ok) {
+        setDeleteError(res.error ?? 'Could not delete this model.');
+        return;
+      }
+      setConfirmDelete(null);
+      // If we just removed the active model, clear it so load() re-picks a default.
+      if (name === activeModel) setActiveModelState(null);
+      await load();
+    } finally {
+      setDeleting(null);
+    }
+  };
+
   const switchModel = async (name: string) => {
     if (switching) return;
     setSwitching(name);
@@ -552,40 +576,90 @@ export default function ModelsPanel() {
               const family = modelFamily(model.name);
               const isActive = model.name === activeModel;
               const isLoading = switching === model.name;
+              const isConfirming = confirmDelete === model.name;
+              const isDeleting = deleting === model.name;
               return (
-                <button
+                <div
                   key={model.name}
-                  onClick={() => switchModel(model.name)}
-                  disabled={isActive || !!switching}
-                  className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border text-left transition-all
+                  className={`rounded-xl border transition-all
                     ${isActive
-                      ? 'bg-artha-accent/10 border-artha-accent/40 cursor-default'
-                      : 'bg-artha-s2 border-artha-border hover:border-artha-accent/30 hover:bg-artha-accent/5 disabled:opacity-50 disabled:cursor-wait'
+                      ? 'bg-artha-accent/10 border-artha-accent/40'
+                      : 'bg-artha-s2 border-artha-border hover:border-artha-accent/30'
                     }`}
                 >
-                  <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-md ${familyColor(family)}`}>
-                    {family}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-artha-text truncate">{model.name}</p>
-                    {model.details?.parameter_size && (
-                      <p className="text-xs text-artha-muted mt-0.5">
-                        {model.details.parameter_size}
-                        {model.details.quantization_level && ` · ${model.details.quantization_level}`}
+                  <div className="flex items-center gap-3 px-4 py-3.5">
+                    <button
+                      onClick={() => switchModel(model.name)}
+                      disabled={isActive || !!switching || isDeleting}
+                      className="flex-1 flex items-center gap-4 text-left min-w-0 disabled:cursor-default enabled:hover:opacity-90 transition-opacity disabled:opacity-100"
+                    >
+                      <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-md ${familyColor(family)}`}>
+                        {family}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-artha-text truncate">{model.name}</p>
+                        {model.details?.parameter_size && (
+                          <p className="text-xs text-artha-muted mt-0.5">
+                            {model.details.parameter_size}
+                            {model.details.quantization_level && ` · ${model.details.quantization_level}`}
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-xs text-artha-muted shrink-0">{formatSize(model.size)}</span>
+                      <div className="shrink-0 w-5 flex items-center justify-center">
+                        {isActive ? (
+                          <CheckCircle2 size={16} className="text-artha-accent" />
+                        ) : isLoading ? (
+                          <RefreshCw size={14} className="text-artha-muted animate-spin" />
+                        ) : (
+                          <ChevronRight size={14} className="text-artha-muted" />
+                        )}
+                      </div>
+                    </button>
+                    {/* Uninstall — separate from the row's switch action. */}
+                    <button
+                      onClick={() => { setDeleteError(null); setConfirmDelete(model.name); }}
+                      disabled={isDeleting || !!switching}
+                      title="Uninstall model"
+                      className="shrink-0 p-1.5 rounded-lg text-artha-muted hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+                    >
+                      {isDeleting
+                        ? <RefreshCw size={13} className="animate-spin" />
+                        : <Trash2 size={13} />}
+                    </button>
+                  </div>
+
+                  {/* Inline confirm — deleting frees disk space and can't be undone. */}
+                  {isConfirming && (
+                    <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-artha-border bg-red-500/5 rounded-b-xl">
+                      <p className="text-xs text-artha-muted">
+                        Uninstall <span className="text-artha-text font-medium">{model.name}</span> and free {formatSize(model.size)}? You can re-pull it any time.
                       </p>
-                    )}
-                  </div>
-                  <span className="text-xs text-artha-muted shrink-0">{formatSize(model.size)}</span>
-                  <div className="shrink-0 w-5 flex items-center justify-center">
-                    {isActive ? (
-                      <CheckCircle2 size={16} className="text-artha-accent" />
-                    ) : isLoading ? (
-                      <RefreshCw size={14} className="text-artha-muted animate-spin" />
-                    ) : (
-                      <ChevronRight size={14} className="text-artha-muted" />
-                    )}
-                  </div>
-                </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => setConfirmDelete(null)}
+                          disabled={isDeleting}
+                          className="px-2.5 py-1 rounded-lg text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors disabled:opacity-40"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => deleteModel(model.name)}
+                          disabled={isDeleting}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium transition-colors disabled:opacity-40"
+                        >
+                          {isDeleting && <RefreshCw size={11} className="animate-spin" />}
+                          Uninstall
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Delete failure — shown beneath the row that failed. */}
+                  {deleteError && confirmDelete === model.name && (
+                    <p className="px-4 pb-2.5 text-xs text-red-400">{deleteError}</p>
+                  )}
+                </div>
               );
             })}
           </div>

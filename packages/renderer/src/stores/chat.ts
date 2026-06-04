@@ -101,9 +101,11 @@ export interface SessionScope {
  *  without changing their signature. */
 export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license' | 'guide' | 'about';
 
-/** Three top-level rooms inside the Chat view. Tab selection persists in
- *  localStorage so reloads land where you left off. */
-export type ActiveTab = 'chat' | 'workflows' | 'code';
+/** Top-level rooms inside the Chat view. Tab selection persists in
+ *  localStorage so reloads land where you left off.
+ *  `delegate` is the goal-driven execution workspace — hand a goal over and
+ *  Artha plans, coordinates, and runs it. */
+export type ActiveTab = 'chat' | 'workflows' | 'code' | 'delegate';
 
 /** A project as exposed by the `projects:*` IPC. Mirrors the `projects`
  *  table on disk (created by migrations v3→v6). */
@@ -235,7 +237,7 @@ function loadActiveTab(): ActiveTab {
   if (typeof window === 'undefined') return 'chat';
   try {
     const raw = window.localStorage.getItem(ACTIVE_TAB_KEY);
-    if (raw === 'chat' || raw === 'workflows' || raw === 'code') return raw;
+    if (raw === 'chat' || raw === 'workflows' || raw === 'code' || raw === 'delegate') return raw;
   } catch { /* fall through */ }
   return 'chat';
 }

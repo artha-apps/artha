@@ -8,8 +8,8 @@
  * resizes (window resize, layout shifts) using a ResizeObserver. When the
  * pane unmounts or closes, we detach so the BrowserView vanishes.
  */
-import { useEffect, useRef } from 'react';
-import { useBrowserStore } from '../../stores/browser';
+import { useCallback, useEffect, useRef } from 'react';
+import { useBrowserStore, MIN_BROWSER_W, MIN_CHAT_W } from '../../stores/browser';
 import { useChatStore } from '../../stores/chat';
 import BrowserToolbar from './BrowserToolbar';
 import HandoffBanner from './HandoffBanner';
@@ -25,40 +25,68 @@ interface Props {
 export default function BrowserPane({ onClose }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const { state, setState } = useBrowserStore();
+  // Width of this pane in the chat|browser split — driven by the draggable
+  // BrowserResizer to its left. The chat pane flexes to fill the remainder.
+  const browserWidth = useBrowserStore(s => s.browserWidth);
+  const isResizing = useBrowserStore(s => s.isResizing);
+  const setBrowserWidth = useBrowserStore(s => s.setBrowserWidth);
   const crashed = state.crashed;
   // Artha is driving the page when the agent is streaming and hasn't handed the
   // wheel to the user (handoff has its own banner) or crashed.
   const isStreaming = useChatStore(s => s.isStreaming);
   const agentDriving = isStreaming && !state.awaitingHandoff && !crashed;
 
-  // Push the viewport rectangle to main on every layout change.
+  // Measure the viewport rect and forward it so the native BrowserView overlays
+  // exactly this region. Stable identity so the effects below don't re-run.
+  const pushBounds = useCallback(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    void window.artha.browser.attach({
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      width: Math.max(0, Math.round(r.width)),
+      height: Math.max(0, Math.round(r.height)),
+    });
+  }, []);
+
+  // Push the viewport rectangle to main on every layout change — EXCEPT while
+  // the divider is being dragged (the native view is detached then; re-pushing
+  // would re-attach it and let it swallow the mouse-move stream).
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
-
-    const push = () => {
-      const r = el.getBoundingClientRect();
-      const bounds = {
-        x: Math.round(r.left),
-        y: Math.round(r.top),
-        width: Math.max(0, Math.round(r.width)),
-        height: Math.max(0, Math.round(r.height)),
-      };
-      void window.artha.browser.attach(bounds);
-    };
-
-    push();
-
-    const ro = new ResizeObserver(push);
+    const onLayout = () => { if (!useBrowserStore.getState().isResizing) pushBounds(); };
+    onLayout();
+    const ro = new ResizeObserver(onLayout);
     ro.observe(el);
-    window.addEventListener('resize', push);
-
+    window.addEventListener('resize', onLayout);
     return () => {
       ro.disconnect();
-      window.removeEventListener('resize', push);
+      window.removeEventListener('resize', onLayout);
       void window.artha.browser.detach();
     };
-  }, []);
+  }, [pushBounds]);
+
+  // While dragging the divider, detach the native view so the renderer keeps
+  // receiving mouse-move events; re-attach it at the final width on release.
+  useEffect(() => {
+    if (isResizing) void window.artha.browser.detach();
+    else pushBounds();
+  }, [isResizing, pushBounds]);
+
+  // Keep the persisted width usable if the window gets smaller than the saved
+  // split (e.g. reopened on a smaller display) — never let the browser pane
+  // crowd the chat below its floor.
+  useEffect(() => {
+    const clamp = () => {
+      const max = Math.max(MIN_BROWSER_W, window.innerWidth - MIN_CHAT_W);
+      if (useBrowserStore.getState().browserWidth > max) setBrowserWidth(max);
+    };
+    clamp();
+    window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
+  }, [setBrowserWidth]);
 
   // Subscribe to state pushes from main so the toolbar reflects what the
   // agent is doing in real time.
@@ -69,7 +97,10 @@ export default function BrowserPane({ onClose }: Props) {
   }, [setState]);
 
   return (
-    <aside className="flex flex-col w-[44%] min-w-[480px] max-w-[820px] border-l border-artha-border bg-artha-surface relative">
+    <aside
+      className="flex flex-col shrink-0 bg-artha-surface relative"
+      style={{ width: browserWidth }}
+    >
       <BrowserToolbar onClose={onClose} />
       {/* The viewport area — the native BrowserView is positioned to overlay
           this rect from the main process. Background is a subtle pattern so

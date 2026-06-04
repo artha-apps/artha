@@ -13,6 +13,8 @@
  */
 import { BrowserView, BrowserWindow } from 'electron';
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as path from 'path';
 import { decideCrashAction, recoveryTarget } from './recovery';
 
 /** Pixel rect (in renderer-window coordinates) where the BrowserView should
@@ -50,19 +52,37 @@ export interface BrowserState {
  *  the surface is meant to be driven. Served from a data: URL so there's no
  *  network dependency on first open. */
 const ABOUT_BLANK = 'about:blank';
+
+/** The Artha brand mark (mandala अ), inlined as a base64 data URI so the home
+ *  page stays self-contained — a `data:` URL has no base, so it can't reference
+ *  the renderer's `/logo-mark.png`. Read once at module load from the bundled
+ *  renderer asset (same dir main.ts loads `index.html` from). If the file can't
+ *  be read, we fall back to the Devanagari अ glyph so the page never breaks. */
+const BRAND_MARK = (() => {
+  try {
+    const png = fs.readFileSync(path.join(__dirname, '../../../renderer/dist/logo-mark.png'));
+    const uri = `data:image/png;base64,${png.toString('base64')}`;
+    return `<img class="mark" src="${uri}" alt="Artha" width="56" height="56" />`;
+  } catch {
+    // Brand fallback — the अ glyph, not the old diya placeholder.
+    return `<div class="glyph">अ</div>`;
+  }
+})();
+
 const HOME_HTML = `
   <!doctype html><html><head><meta charset="utf-8"><title>Artha Browser</title>
   <style>
     html,body{margin:0;padding:0;height:100%;font-family:-apple-system,system-ui,sans-serif;
       background:#0f1117;color:#9ba1ad;display:flex;align-items:center;justify-content:center}
     .card{text-align:center;max-width:420px;padding:32px}
-    .glyph{font-size:42px;margin-bottom:8px}
+    .mark{margin-bottom:14px;border-radius:12px}
+    .glyph{font-size:48px;line-height:1;color:#e6e8ec;margin-bottom:14px;font-weight:600}
     h1{font-size:15px;color:#e6e8ec;font-weight:600;margin:0 0 6px}
     p{font-size:13px;line-height:1.55;margin:0}
     code{background:#1a1d24;color:#7fb4ff;padding:2px 6px;border-radius:4px;font-size:12px}
   </style></head>
   <body><div class="card">
-    <div class="glyph">🪔</div>
+    ${BRAND_MARK}
     <h1>Artha Browser</h1>
     <p>Ready. Ask the agent to look something up, or paste a URL above.<br/>
     Run <code>web_search</code> + <code>browser_navigate</code> to start.</p>

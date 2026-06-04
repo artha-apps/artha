@@ -584,5 +584,20 @@ export function runMigrations(): void {
     console.warn('[Artha] reasoning_steps migration skipped:', err);
   }
 
+  // Migration v9→v10: origin on chat_sessions — distinguishes user chats from
+  // sessions created as the backing store for a Delegate task. Delegate sessions
+  // must NOT appear in the Chat sidebar / session lists. Existing rows default
+  // to 'chat'; previously-created Delegate task sessions are back-filled by their
+  // title prefix so the sidebar is clean on upgrade.
+  try {
+    const sessCols = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
+    if (sessCols.length && !sessCols.some(c => c.name === 'origin')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'chat'`);
+      db.exec(`UPDATE chat_sessions SET origin='delegate' WHERE title LIKE 'Delegate: %'`);
+    }
+  } catch (err) {
+    console.warn('[Artha] chat_sessions origin migration skipped:', err);
+  }
+
   console.log('[Artha] Database migrations applied.');
 }

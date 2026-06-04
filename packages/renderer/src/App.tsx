@@ -6,6 +6,7 @@
  *                          ↳ Chat  → ChatWindow + (BrowserPane | ExecutionLog)
  *                          ↳ Workflows → WorkflowsTab
  *                          ↳ Code → CodeTab (file tree + ChatWindow)
+ *                          ↳ Delegate → DelegateTab (goal-driven execution)
  *
  * The 17 settings panels live inside the WorkspaceSettings modal (⌘,). Legacy
  * `activeView` values other than 'chat' deep-link into that modal scrolled to
@@ -22,13 +23,16 @@ import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
 import ClarificationModal from './components/Chat/ClarificationModal';
 import BrowserPane from './components/Browser/BrowserPane';
+import BrowserResizer from './components/Browser/BrowserResizer';
 import { useBrowserStore } from './stores/browser';
 import TabBar from './components/TabBar/TabBar';
 import WorkflowsTab from './components/Workflows/WorkflowsTab';
 import CodeTab from './components/Code/CodeTab';
+import DelegateTab from './components/Delegate/DelegateTab';
 import ProjectHome from './components/ProjectHome/ProjectHome';
 import WorkspaceSettings from './components/WorkspaceSettings/WorkspaceSettings';
 import { TooltipProvider } from './components/ui/Tooltip';
+import { tabTheme } from './lib/tabTheme';
 
 // Expose the type-safe ArthaAPI that the preload script injects onto `window`.
 // All IPC calls go through `window.artha.*` — there is no direct Node.js access
@@ -57,6 +61,9 @@ export default function App() {
   // recent chats. Otherwise the canvas is the conversation.
   const showProjectHome = activeProjectId !== null && !activeSessionId;
   const { isOpen: isBrowserOpen, setOpen: setBrowserOpen } = useBrowserStore();
+  // Colour of the active room (Artha=indigo / Workflows=violet / Code=emerald),
+  // driving the canvas accent line + ambient tint.
+  const canvasTheme = tabTheme(activeTab);
 
   // First-run onboarding gate. `null` = still loading the flag; show nothing
   // structural until we know, to avoid a flash of the empty chat behind it.
@@ -204,7 +211,21 @@ export default function App() {
               backdrop because the canvas content underneath is unchanged. */}
           <TabBar />
 
-          {/* Per-tab canvas ------------------------------------------------ */}
+          {/* Per-tab accent line — a 2px bar in the active room's colour
+              (indigo / violet / emerald) so each surface is instantly
+              distinguishable. Sits flush under the tab bar. */}
+          <div
+            aria-hidden
+            className="h-0.5 w-full shrink-0 transition-colors"
+            style={{ backgroundColor: canvasTheme.accent }}
+          />
+
+          {/* Per-tab canvas — a whisper of the room's colour as an ambient tint
+              behind the content. ----------------------------------------- */}
+          <div
+            className="flex flex-1 flex-col overflow-hidden"
+            style={{ backgroundColor: canvasTheme.tint }}
+          >
           {activeTab === 'chat' && (
             <div className="flex flex-1 overflow-hidden">
               {showProjectHome ? <ProjectHome /> : <ChatWindow />}
@@ -212,12 +233,23 @@ export default function App() {
                   it's a sidekick rail, not a tab — and it's also useful when
                   Project home is showing for inspecting prior tool runs. */}
               {isBrowserOpen
-                ? <BrowserPane onClose={() => setBrowserOpen(false)} />
+                ? <><BrowserResizer /><BrowserPane onClose={() => setBrowserOpen(false)} /></>
                 : <ExecutionLog />}
             </div>
           )}
           {activeTab === 'workflows' && <WorkflowsTab />}
           {activeTab === 'code'      && <CodeTab />}
+          {activeTab === 'delegate' && (
+            // Delegate hosts the embedded browser pane too: when a delegated
+            // task drives the browser (e.g. a login-gated site), the user must
+            // be able to SEE the page and complete a handoff (log in, then hand
+            // control back). Without this the run stalls invisibly on the login.
+            <div className="flex flex-1 overflow-hidden">
+              <DelegateTab />
+              {isBrowserOpen && <><BrowserResizer /><BrowserPane onClose={() => setBrowserOpen(false)} /></>}
+            </div>
+          )}
+          </div>
         </main>
 
         {/* Modal layer — sits above the canvas regardless of tab. */}

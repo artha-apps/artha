@@ -423,11 +423,26 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
 
   const routed = resolveModelName(modelOverride, taskType);
 
+  // Use the ROUTED model's OWN context window, not the active model's. Routing
+  // (e.g. Delegate's fast model) can select a different model than the active
+  // one; forcing it into the active model's (possibly tiny) num_ctx truncates
+  // the large tool-using prompt + tool schemas, which silently breaks tool use
+  // and reading. Floor at 8192 so a tool-heavy loop never runs in a
+  // truncating-small window.
+  let effectiveContextWindow = contextWindow;
+  if (routed && routed !== (row?.ollama_name as string)) {
+    const routedRow = db
+      .prepare(`SELECT context_window FROM llm_models WHERE ollama_name = ?`)
+      .get(routed) as { context_window?: number } | undefined;
+    if (routedRow?.context_window) effectiveContextWindow = routedRow.context_window;
+  }
+  effectiveContextWindow = Math.max(effectiveContextWindow, 8192);
+
   return new LLMClient({
     baseUrl,
     apiKey,
     model: routed ?? fallbackModel,
-    contextWindow,
+    contextWindow: effectiveContextWindow,
     keepAlive: '30m',
   });
 }

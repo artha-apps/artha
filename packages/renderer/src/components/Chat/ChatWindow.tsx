@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Bot, Zap, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw } from 'lucide-react';
+import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore, type ReasoningStep } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -176,12 +176,71 @@ function AgentText({ content }: { content: string }) {
   );
 }
 
+/** Map a tool name to a friendly present-tense status for the thinking
+ *  indicator ("Searching the web…"), so the user sees what Artha is actually
+ *  doing rather than a generic spinner. Returns null for unknown tools so the
+ *  caller falls back to a rotating generic phrase. */
+function toolStatusLabel(name?: string): string | null {
+  if (!name) return null;
+  if (name === 'fs_list_directory')                 return 'Looking through a folder…';
+  if (name === 'fs_search_files')                   return 'Searching your files…';
+  if (name === 'fs_write_file' || name === 'fs_create_directory') return 'Creating files…';
+  if (name === 'fs_rename_file')                    return 'Renaming files…';
+  if (name.startsWith('fs_move') || name === 'fs_copy_file' || name === 'fs_delete_file') return 'Organizing your files…';
+  if (name.startsWith('fs_'))                        return 'Working with your files…';
+  if (name === 'web_search')                         return 'Searching the web…';
+  if (name === 'web_fetch')                          return 'Reading a web page…';
+  if (name.startsWith('browser_'))                   return 'Browsing the web…';
+  if (name.startsWith('rag_'))                       return 'Searching your documents…';
+  if (name.startsWith('memory_'))                    return 'Recalling what I know…';
+  if (name === 'docs_generate')                      return 'Creating a document…';
+  if (name.startsWith('desktop_'))                   return 'Controlling your desktop…';
+  return 'Working on it…';
+}
+
+/** Generic phases cycled through (≈every 3s, via `elapsed`) before any tool has
+ *  run, so the indicator feels alive even during pure reasoning. */
+const THINKING_PHASES = ['Thinking…', 'Planning the steps…', 'Reasoning it through…', 'Working on it…'];
+
+/** Live "thinking" line shown in the streaming bubble: the real tool status
+ *  when a tool is mid-run, otherwise a rotating generic phase, plus the elapsed
+ *  timer. Paired with the pulsing brand-mark avatar for a clear "Artha is on
+ *  it" cue. */
+function ThinkingIndicator({ latestTool, elapsed }: { latestTool?: string; elapsed: number }) {
+  const label = toolStatusLabel(latestTool) ?? THINKING_PHASES[Math.floor(elapsed / 3) % THINKING_PHASES.length];
+  return (
+    <span className="flex items-center gap-2 py-0.5">
+      <span className="flex items-center gap-1">
+        <span className="w-1.5 h-1.5 bg-artha-accent rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+        <span className="w-1.5 h-1.5 bg-artha-accent rounded-full animate-bounce" style={{ animationDelay: '160ms' }} />
+        <span className="w-1.5 h-1.5 bg-artha-accent rounded-full animate-bounce" style={{ animationDelay: '320ms' }} />
+      </span>
+      <span className="text-[13px] font-medium text-artha-text">{label}</span>
+      <span className="text-xs text-artha-subtle tabular-nums">{elapsed}s</span>
+    </span>
+  );
+}
+
+/** Pulsing brand-mark avatar — used for both the agent's reply rows and the
+ *  in-flight thinking bubble so every Artha turn carries the logo. `pulse`
+ *  adds the accent glow while a run is live. */
+function AgentAvatar({ pulse = false }: { pulse?: boolean }) {
+  return (
+    <span
+      className={`w-7 h-7 rounded-lg overflow-hidden shrink-0 mt-1 ring-1 select-none ${pulse ? 'ring-artha-accent/50 animate-pulse' : 'ring-artha-border'}`}
+      style={pulse ? { boxShadow: '0 0 0 3px rgba(79,70,229,0.12)' } : undefined}
+    >
+      <img src="/logo-mark.png" alt="Artha" width={28} height={28} draggable={false} className="w-full h-full object-cover" />
+    </span>
+  );
+}
+
 export default function ChatWindow() {
   const {
     messages, streamingContent, isStreaming, activeSessionId,
     addUserMessage, activeWorkflowId, setStreaming, pendingCitations, activeSkill,
     pendingAttachments, setPendingAttachments, scopes, setScopes,
-    projects, activeProjectId,
+    projects, activeProjectId, pendingToolEvents,
     liveReasoning, showReasoning, setLiveReasoning,
   } = useChatStore();
   // Project-aware suggested prompts. When the user is in a project, the
@@ -213,6 +272,11 @@ export default function ChatWindow() {
   // Live "thinking" timer — seconds elapsed since the current run started, so
   // the user can see how long a task is taking while it runs.
   const [elapsed, setElapsed] = useState(0);
+  // Most recent tool the agent invoked this run — drives the thinking
+  // indicator's status line ("Searching the web…"). Latest tool_invoke wins.
+  const latestToolName = isStreaming
+    ? [...pendingToolEvents].reverse().find(e => e.type === 'tool_invoke' && e.name)?.name
+    : undefined;
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -502,9 +566,14 @@ export default function ChatWindow() {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-8 px-6">
         <div className="text-center">
-          <div className="w-12 h-12 rounded-2xl bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center mx-auto mb-4">
-            <Bot size={22} className="text-artha-accent" />
-          </div>
+          <img
+            src="/logo-mark.png"
+            alt="Artha"
+            width={56}
+            height={56}
+            draggable={false}
+            className="rounded-2xl shadow-lifted ring-1 ring-artha-border-strong/50 mx-auto mb-4 select-none"
+          />
           <h1 className="text-2xl font-semibold text-artha-text mb-1">Artha</h1>
           <p className="text-artha-muted text-sm">Your local AI agent. Fully private, runs on your Mac.</p>
         </div>
@@ -552,10 +621,27 @@ export default function ChatWindow() {
             </div>
           )}
 
-          {/* Empty session — show prompt grid */}
+          {/* Empty session — branded welcome + prompt grid */}
           {sessionMessages.length === 0 && !isStreaming && (
-            <div className="flex flex-col items-center gap-6 pt-8">
-              <p className="text-artha-muted text-sm">What would you like to do?</p>
+            <div className="flex flex-col items-center gap-7 pt-10">
+              <div className="flex flex-col items-center gap-3 text-center">
+                <img
+                  src="/logo-mark.png"
+                  alt="Artha"
+                  width={60}
+                  height={60}
+                  draggable={false}
+                  className="rounded-2xl shadow-lifted ring-1 ring-artha-border-strong/50 select-none"
+                />
+                <div>
+                  <h2 className="text-xl font-semibold tracking-tight text-artha-text">
+                    How can Artha help?
+                  </h2>
+                  <p className="mt-1 text-sm text-artha-muted">
+                    Your private, local AI agent — files, the web, and your tools.
+                  </p>
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-2 w-full max-w-md">
                 {displayedPrompts.slice(0, 4).map(({ icon, text }) => (
                   <button key={text} onClick={() => send(text)}
@@ -572,9 +658,7 @@ export default function ChatWindow() {
           {sessionMessages.map(msg => (
             <div key={msg.id} className={`flex gap-3 ${msg.senderType === 'user' ? 'justify-end' : 'justify-start'}`}>
               {msg.senderType === 'agent' && (
-                <div className="w-7 h-7 rounded-full bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center shrink-0 mt-1">
-                  <Bot size={13} className="text-artha-accent" />
-                </div>
+                <AgentAvatar />
               )}
               <div className={`text-sm leading-relaxed rounded-2xl px-4 py-3
                 ${msg.senderType === 'user'
@@ -618,9 +702,7 @@ export default function ChatWindow() {
           {/* Streaming / thinking bubble */}
           {isStreaming && (
             <div className="flex gap-3 justify-start">
-              <div className="w-7 h-7 rounded-full bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center shrink-0 mt-1">
-                <Zap size={13} className="text-artha-accent animate-pulse" />
-              </div>
+              <AgentAvatar pulse />
               <div className="max-w-[80%] bg-artha-surface border border-artha-border text-artha-text rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed shadow-soft">
                 {showReasoning && liveReasoning && liveReasoning.length > 0 && (
                   <ReasoningDisclosure steps={liveReasoning} live />
@@ -632,14 +714,9 @@ export default function ChatWindow() {
                     {pendingCitations.length > 0 && <Citations citations={pendingCitations} />}
                   </>
                 ) : (
-                  <span className="flex items-center gap-2 py-0.5">
-                    <span className="flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '160ms' }} />
-                      <span className="w-1.5 h-1.5 bg-artha-muted rounded-full animate-bounce" style={{ animationDelay: '320ms' }} />
-                    </span>
-                    <span className="text-xs text-artha-subtle">Thinking… {elapsed}s</span>
-                  </span>
+                  // No tokens yet — show the live "thinking" indicator with the
+                  // real tool status (or a rotating phase) so the wait feels alive.
+                  <ThinkingIndicator latestTool={latestToolName} elapsed={elapsed} />
                 )}
               </div>
             </div>
