@@ -41,6 +41,7 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
+import { shouldNudgeToAct, compactStaleDomDumps } from './actGuard';
 import { noteDesktopControlActive } from '../controlOverlay';
 
 const MAX_RETRIES = 3; // kept for future retry logic
@@ -520,7 +521,8 @@ Respond ONLY with a valid JSON object (no markdown, no explanation):
 
 Rules:
 - Set requiresApproval=true whenever steps move, delete, or modify files
-- Always start with fs_list_directory or fs_search_files before moving anything
+- For filesystem work, always start with fs_list_directory or fs_search_files before moving anything
+- For browser/website work (sending email, filling a form, posting), plan concrete browser_* steps: browser_navigate → browser_read_dom to find the fields → browser_type → browser_click to submit → confirm. These are real actions to perform, not advice to give the user.
 - Keep steps minimal and concrete
 - Set requiresParallel=true ONLY when the request is clearly several INDEPENDENT tasks that don't depend on each other's output (e.g. "research X, Y and Z separately", "summarize each of these 3 files"). In that case put each independent task as a self-contained prompt string in "subTasks" (2-4 items). For normal sequential work leave requiresParallel=false and subTasks=[].`,
     };
@@ -586,9 +588,13 @@ Rules:
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
         role: 'system',
-        content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools, and you ACT.
+        content: `You are Artha, a local AI agent on a Mac. You have real filesystem tools AND a real browser, and you ACT. On every task you reach the goal by CALLING TOOLS — never by describing what the user could do, and never by writing out the steps you "would" take.
 
-When the user asks you to move, organise, rename, create, or delete files, you DO it by calling tools — you NEVER just list a folder and then describe it or ask what to do next. Listing a directory (fs_list_directory) is only the FIRST step to see what's there; you must IMMEDIATELY continue calling tools to perform the actual task, and keep going until it is fully done and verified. Do not summarise the folder contents back to the user instead of acting. Only write a plain-English reply once the task is COMPLETE (or you are genuinely blocked and must ask one specific question).
+When the user asks you to move, organise, rename, create, or delete files, you DO it by calling tools — you NEVER just list a folder and then describe it or ask what to do next. Listing a directory (fs_list_directory) is only the FIRST step to see what's there; you must IMMEDIATELY continue calling tools to perform the actual task, and keep going until it is fully done and verified. Do not summarise the folder contents back to the user instead of acting.
+
+The SAME act-don't-describe rule governs the browser. When the user asks you to do something on a website — send an email, fill or submit a form, post, reply, book, search-then-click — you DO it by calling browser_* tools, not by explaining how. The pattern is: browser_navigate to the page → browser_read_dom to see the actual fields/buttons → browser_type into each field → browser_click the send/submit control → browser_read_dom (or browser_get_url) to CONFIRM it actually happened (e.g. a "Message sent" confirmation). Keep calling browser tools until the action is genuinely completed and verified. NEVER stop and tell the user how they could do it themselves, and never claim you sent/submitted something unless a browser tool call actually did it. The only reason to pause is a genuine login, captcha, or 2FA wall — and for that you call browser_request_user, you do not give up or narrate.
+
+Only write a plain-English reply once the task is COMPLETE (or you are genuinely blocked and must ask one specific question).
 
 ${memoryBlock}${skillBlock}${projectBlock}
 
@@ -611,8 +617,10 @@ RULES — follow exactly, no exceptions:
 8. Write a plain-English summary ONLY after all tool calls and verification are complete.
 9. When you used web_fetch or web_search, weave the source URL into your answer (e.g. "according to example.com/foo") — the UI renders citations from those URLs.
 10. Browser tools (browser_navigate, browser_click, browser_type, browser_read_dom, browser_screenshot) open a real, visible browser pane the user can watch.
-    - Prefer web_fetch for plain article reads. Use the browser only when the page needs interaction (logins, SPAs, dynamic content, form submission).
-    - If the page needs a login, captcha, 2FA, or anything you cannot do safely, call browser_request_user with a short reason. The user will complete it and resume you — the call returns "resumed" or "cancelled".
+    - Prefer web_fetch for plain article reads. Use the browser only when the page needs interaction (logins, SPAs, dynamic content, form submission, sending email).
+    - To act on a page you must SEE it first: call browser_read_dom to find the real selectors (compose button, To/Subject/Body fields, Send button) before typing or clicking — do not guess selectors blindly.
+    - For an email-send request the loop is concrete: browser_navigate to the mail app → click Compose → browser_type the recipient, subject, and body into their fields → click Send → browser_read_dom to confirm it shows as sent. Do NOT report success until that confirmation is on screen.
+    - If the page needs a login, captcha, 2FA, or anything you cannot do safely, call browser_request_user with a short reason. The user will complete it and resume you — the call returns "resumed" or "cancelled". If the page is already logged in, just proceed — do not request the user unnecessarily.
 11. When the user asks for a report, proposal, summary document, presentation, or spreadsheet AS A FILE, call docs_generate (type docx/pptx/xlsx/pdf). Gather facts first with web_fetch/web_search when needed and pass them in the "context" argument so the document is sourced. Do not paste a long document into chat when the user wanted a file.
 12. When the user asks about THEIR OWN files, notes, or documents, call rag_search to retrieve relevant passages from their indexed files, then answer from those passages and cite the source filenames. Do not fabricate file contents.
 13. Use memory_store to persist important facts about the user or their work for future sessions (preferences, project names, contacts, decisions). Use memory_recall before answering questions about things the user has told you before. Use memory_forget if a memory is outdated.
@@ -754,6 +762,20 @@ RULES — follow exactly, no exceptions:
 
     let finalEmitted = false;
 
+    // Backstop for the "narrates instead of acting" failure mode on browser
+    // tasks: count browser_* tool calls and how many times we've nudged the
+    // model to actually act. When the model tries to finalise with plain prose
+    // on a clear web-action request WITHOUT ever having driven the browser, we
+    // inject one corrective turn and keep looping instead of accepting the
+    // narration. Bounded by MAX_ACT_NUDGES so a genuinely-stuck model still ends.
+    let browserToolCalls = 0;
+    let actNudges = 0;
+    const MAX_ACT_NUDGES = 2;
+
+    // tool_call ids of every browser_read_dom call, so we can keep only the
+    // latest DOM dump in context and stub the rest (see compactStaleDomDumps).
+    const readDomCallIds = new Set<string>();
+
     while (iterations < MAX_ITERATIONS) {
       iterations++;
 
@@ -764,6 +786,11 @@ RULES — follow exactly, no exceptions:
         db.prepare(`UPDATE agent_runs SET status='cancelled' WHERE run_id=?`).run(args.runId);
         break;
       }
+
+      // Keep only the most recent browser_read_dom payload in context; stub the
+      // rest. Stale ~12k-char DOM dumps otherwise re-send on every turn and are
+      // the main driver of slow/expensive browser-action runs.
+      compactStaleDomDumps(messages, readDomCallIds);
 
       // Stream the turn. Text deltas are emitted live; if the turn turns out to
       // be a tool step (or its text gets replaced by a verified summary), we
@@ -802,6 +829,8 @@ RULES — follow exactly, no exceptions:
         // Intermediate step — suppress any preamble text shown live.
         if (streamedLive) emit('agent:streamReset');
         for (const toolCall of msg.tool_calls) {
+          if (toolCall.function.name.startsWith('browser_')) browserToolCalls++;
+          if (toolCall.function.name === 'browser_read_dom') readDomCallIds.add(toolCall.id);
           emit('agent:toolCall', {
             type: 'tool_invoke',
             name: toolCall.function.name,
@@ -915,6 +944,35 @@ RULES — follow exactly, no exceptions:
       } else if (msg.content?.trim()) {
         // ── Final response branch ──────────────────────────────────────────
         const rawContent = msg.content;
+
+        // Backstop: the model is trying to answer a web-action request with
+        // prose, but it never actually drove the browser. Unless it's asking a
+        // genuine clarifying question, reject the narration, tell it to act, and
+        // loop again. Capped so we never trap a model that truly can't proceed.
+        if (shouldNudgeToAct({
+          goal: args.goal,
+          browserToolCalls,
+          mutationCount: mutations.length,
+          nudges: actNudges,
+          maxNudges: MAX_ACT_NUDGES,
+          content: rawContent,
+        })) {
+          if (streamedLive) emit('agent:streamReset');
+          actNudges++;
+          messages.push({
+            role: 'system',
+            content:
+              `You replied with words but did NOT call any browser tool, so nothing actually happened. ` +
+              `The user asked you to act on a website ("${args.goal.slice(0, 200)}"). ` +
+              `Do it now by calling tools — browser_navigate to the page, browser_read_dom to find the real ` +
+              `fields and buttons, browser_type to fill them, browser_click to submit — and verify the result. ` +
+              `Do not describe the steps; perform them. Only call browser_request_user if you hit a real login/captcha/2FA wall.`,
+          });
+          recordStep(stepIdx++, 'system', { note: 'act-nudge', nudge: actNudges });
+          emptyCount = 0;
+          continue;
+        }
+
         let finalText: string;
 
         if (mutations.length > 0) {
