@@ -14,8 +14,10 @@
 | `Dockerfile.hub` | Interim container build for the org hub — wraps the Electron app in `xvfb` so the LAN server runs headlessly until the Phase 2 native-headless service ships |
 | `assets/` | App icons (mandala अ mark) — `icon.icns` (macOS), `icon.ico` (Windows), `icon.png` (Linux); `entitlements.mac.plist` — hardened-runtime entitlements for macOS signing/notarization |
 | `scripts/sign-license.mjs` | Offline seller-side CLI — `--genkeys` mints the Ed25519 keypair once; `--tier/--seats/--org/--days` issues a signed license token. Private key stays in `~/.artha-license-key.pem` (gitignored) and never ships |
+| `scripts/gen-windows-test-cert.mjs` | Seller-only CLI that generates a self-signed Windows Authenticode test `.pfx` (into `~/.artha-win-signing/`, gitignored) + prints the `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` secret values. For exercising the CI signing pipeline — does NOT clear SmartScreen on its own; see `docs/windows-signing.md` |
 | `.github/workflows/ci.yml` | CI: typecheck + lint + test on push/PR |
-| `.github/workflows/release.yml` | Release: build DMG/EXE/DEB, code-sign + notarize macOS (via `CSC_*`/`APPLE_*` secrets), and publish to `artha-apps/artha` GitHub Releases on tag push |
+| `.github/workflows/release.yml` | Release: build DMG/EXE/DEB; sign + notarize macOS (`CSC_*`/`APPLE_*`); sign Windows via Azure Trusted Signing (`AZURE_*`) or a `.pfx` (`WIN_CSC_*`), unsigned fallback; publish to `artha-apps/artha` GitHub Releases on tag push |
+| `docs/windows-signing.md` | Windows Authenticode signing guide — the three strategies (unsigned / self-signed `.pfx` / Azure Trusted Signing), what each clears, secret setup, and the honest SmartScreen truth |
 | `docs/deploy/org-hub.md` | Runbook for standing up the Enterprise org hub — dedicated-host (Option A, recommended) + interim Docker (Option B), sizing, network, updates, backups, license issuance, member quick-connect |
 | `docs/gtm/onboarding/single-client.md` | SOP for B2C / single-customer onboarding — persona=Individual, optional Pro license, upgrade triggers |
 | `docs/gtm/onboarding/institution.md` | SOP for B2B / large-institution onboarding — mint org license, customer-operated hub deploy, seat provisioning, renewals |
