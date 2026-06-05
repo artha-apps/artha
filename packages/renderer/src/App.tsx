@@ -22,6 +22,7 @@ import ChatWindow from './components/Chat/ChatWindow';
 import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
 import ClarificationModal from './components/Chat/ClarificationModal';
+import ToolApprovalModal from './components/Chat/ToolApprovalModal';
 import BrowserPane from './components/Browser/BrowserPane';
 import BrowserResizer from './components/Browser/BrowserResizer';
 import { useBrowserStore } from './stores/browser';
@@ -51,7 +52,7 @@ declare global {
 export default function App() {
   const {
     appendToken, resetStream, finaliseStream, addToolEvent, addCitations,
-    setPendingPlan, setPendingClarify, setSessions, sessions,
+    setPendingPlan, setPendingClarify, setPendingToolApproval, setSessions, sessions,
     setStreaming, setActiveWorkflowId, setActiveSkill,
     activeTab, setProjects, openWorkspaceSettings, closeWorkspaceSettings,
     workspaceSettingsOpen, activeProjectId, activeSessionId, setActiveSession, openGuide,
@@ -117,7 +118,9 @@ export default function App() {
 
     // agent:streamEnd fires when the orchestrator is fully done — authoritative
     // signal to flush the message, even for tool-only responses with no tokens.
-    const offEnd = window.artha.agent.onStreamEnd(finaliseStream);
+    // Also clear any stale tool-approval modal: if the run ended (e.g. the user
+    // hit Stop while an approval was pending), the modal must not linger.
+    const offEnd = window.artha.agent.onStreamEnd(() => { setPendingToolApproval(null); finaliseStream(); });
     const offReset = window.artha.agent.onStreamReset(resetStream);
     const offWorkflow = window.artha.agent.onWorkflowStart((id) => {
       setStreaming(true);
@@ -133,6 +136,12 @@ export default function App() {
     const offClarify = window.artha.agent.onClarifyRequest((req) => {
       setStreaming(false); // not streaming yet — waiting for user answers
       setPendingClarify(req);
+    });
+
+    // Per-tool-call approval — a policy with the "confirm" tier paused a single
+    // function call. Show the approval modal; the run resumes on the answer.
+    const offToolApproval = window.artha.agent.onToolApprovalRequest((req) => {
+      setPendingToolApproval(req);
     });
 
     // Live session title updates — main auto-titles a session from its first
@@ -152,7 +161,7 @@ export default function App() {
     window.artha.sessions.list().then(setSessions);
     window.artha.projects.list().then(setProjects).catch(() => { /* fresh DB */ });
 
-    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offClarify(); offTitle(); offAutoOpen(); };
+    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offClarify(); offToolApproval(); offTitle(); offAutoOpen(); };
   }, []);
 
   // ── Always land on a ready chat ──────────────────────────────────────────
@@ -256,6 +265,7 @@ export default function App() {
         <WorkspaceSettings />
         <PlanApproval />
         <ClarificationModal />
+        <ToolApprovalModal />
 
         {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
 
@@ -275,7 +285,7 @@ export default function App() {
             </span>
             <button
               onClick={() => window.artha.updates.openDownload()}
-              className="px-3 py-1 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-xs font-medium transition-colors"
+              className="px-3 py-1 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-artha-on-accent text-xs font-medium transition-colors"
             >
               Download
             </button>
@@ -300,7 +310,7 @@ export default function App() {
               </p>
               <button
                 onClick={ackSentryDisclosure}
-                className="mt-2 px-3 py-1 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-xs font-medium transition-colors"
+                className="mt-2 px-3 py-1 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-artha-on-accent text-xs font-medium transition-colors"
               >
                 Got it
               </button>

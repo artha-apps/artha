@@ -131,13 +131,13 @@ export default function LicensePanel() {
             rows={3}
             className="w-full font-mono text-xs px-3 py-2 rounded-lg bg-artha-surface border border-artha-border focus:border-artha-accent focus:outline-none text-artha-text resize-none"
           />
-          {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
-          {flash && <p className="text-xs text-green-400 mt-2 inline-flex items-center gap-1"><CheckCircle2 size={12} /> {flash}</p>}
+          {error && <p className="text-xs text-artha-danger mt-2">{error}</p>}
+          {flash && <p className="text-xs text-artha-success mt-2 inline-flex items-center gap-1"><CheckCircle2 size={12} /> {flash}</p>}
           <div className="flex items-center gap-2 mt-3">
             <button
               onClick={apply}
               disabled={busy || !draft.trim()}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-white transition-colors disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-artha-on-accent transition-colors disabled:opacity-40"
             >
               <KeyRound size={12} /> Apply
             </button>
@@ -145,7 +145,7 @@ export default function LicensePanel() {
               <button
                 onClick={clear}
                 disabled={busy}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-surface hover:bg-white/5 border border-artha-border text-xs text-artha-muted hover:text-white transition-colors disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-surface hover:bg-artha-text/5 border border-artha-border text-xs text-artha-muted hover:text-artha-text transition-colors disabled:opacity-40"
               >
                 <Trash2 size={12} /> Clear key (revert to Free)
               </button>

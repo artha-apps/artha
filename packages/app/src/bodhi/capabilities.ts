@@ -95,7 +95,7 @@ export function skillToCapability(skill: Skill): Capability {
     name: skill.name,
     description: skill.description,
     icon: skill.icon,
-    kind: 'skill',
+    kind: skill.kind === 'agent' ? 'agent' : 'skill',
     tools,
     skillSlug: skill.slug,
   };
@@ -109,7 +109,7 @@ export function activeSkillToCapability(skill: ActiveSkill): Capability {
     name: skill.name,
     description: '',
     icon: skill.icon,
-    kind: 'skill',
+    kind: skill.kind === 'agent' ? 'agent' : 'skill',
     tools: skill.allowedTools,
     skillSlug: skill.slug,
   };

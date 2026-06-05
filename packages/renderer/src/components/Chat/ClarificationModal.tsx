@@ -120,7 +120,7 @@ export default function ClarificationModal() {
           </button>
           <button
             onClick={submit}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-white text-sm font-medium transition-all duration-200 active:scale-95"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-artha-on-accent text-sm font-medium transition-all duration-200 active:scale-95"
           >
             Continue
             <ArrowRight size={14} />

@@ -32,14 +32,22 @@ function bytesToMB(n: number) {
   return `${Math.round(n / 1024 / 1024)} MB`;
 }
 
-/** Format the release timestamp as e.g. "Jun 4, 2026, 2:30 PM UTC". */
+/** Format the release timestamp as e.g. "Jun 4, 2026, 2:30 PM UTC".
+ *  The timestamp is always rendered in UTC and explicitly labelled so the
+ *  reader never mistakes it for their local time. `timeZoneName` cannot be
+ *  combined with `dateStyle`/`timeStyle` (that throws), so the date and time
+ *  parts are spelled out as individual components. */
 function formatReleaseDate(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   return new Intl.DateTimeFormat('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
     timeZone: 'UTC',
+    timeZoneName: 'short',
   }).format(d);
 }
 

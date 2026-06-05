@@ -289,7 +289,7 @@ export default function SkillsPanel() {
           </div>
 
           {error && (
-            <p className="text-xs text-red-400 flex items-center gap-1"><X size={11} /> {error}</p>
+            <p className="text-xs text-artha-danger flex items-center gap-1"><X size={11} /> {error}</p>
           )}
 
           <div className="flex gap-2 pt-2">
@@ -339,7 +339,7 @@ export default function SkillsPanel() {
       </div>
 
       {error && (
-        <p className="text-xs text-red-400 flex items-center gap-1 mb-3"><X size={11} /> {error}</p>
+        <p className="text-xs text-artha-danger flex items-center gap-1 mb-3"><X size={11} /> {error}</p>
       )}
 
       {loading ? (
@@ -400,7 +400,7 @@ export default function SkillsPanel() {
                     </button>
                     {!s.is_builtin && (
                       <button onClick={() => remove(s)} title="Delete"
-                        className="p-1.5 text-artha-muted hover:text-red-400 hover:bg-artha-text/5 rounded-lg transition-colors">
+                        className="p-1.5 text-artha-muted hover:text-artha-danger hover:bg-artha-text/5 rounded-lg transition-colors">
                         <Trash2 size={13} />
                       </button>
                     )}

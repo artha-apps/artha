@@ -31,7 +31,7 @@ interface Override {
 
 const TASK_INFO: Record<TaskType, { icon: React.ElementType; label: string; description: string; color: string }> = {
   plan: { icon: Brain, label: 'Plan', description: 'Decomposing user requests into steps', color: 'text-violet-400 bg-violet-400/10' },
-  tool_args: { icon: Wrench, label: 'Tool args', description: 'JSON tool-call argument generation', color: 'text-cyan-400 bg-cyan-400/10' },
+  tool_args: { icon: Wrench, label: 'Tool args', description: 'JSON tool-call argument generation', color: 'text-artha-accent bg-artha-accent/10' },
   synthesis: { icon: Sparkles, label: 'Synthesis', description: 'Doc generation, summaries, follow-ups', color: 'text-amber-400 bg-amber-400/10' },
 };
 

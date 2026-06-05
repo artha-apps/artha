@@ -67,7 +67,7 @@ const MARKETPLACE: MarketplaceServer[] = [
     category: 'Web',
     command: 'npx -y @modelcontextprotocol/server-fetch',
     icon: Globe,
-    iconColor: 'text-cyan-400',
+    iconColor: 'text-artha-accent',
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/fetch',
   },
   {
@@ -110,7 +110,7 @@ const MARKETPLACE: MarketplaceServer[] = [
     command: 'npx -y @modelcontextprotocol/server-slack',
     requiresEnv: ['SLACK_BOT_TOKEN', 'SLACK_TEAM_ID'],
     icon: MessageSquare,
-    iconColor: 'text-green-400',
+    iconColor: 'text-artha-success',
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/slack',
   },
   {
@@ -172,7 +172,7 @@ function relativeTime(unixSec: number): string {
 
 function toolColor(name: string): string {
   if (name.startsWith('fs_')) return 'text-blue-400 bg-blue-400/10';
-  if (name.startsWith('web_')) return 'text-cyan-400 bg-cyan-400/10';
+  if (name.startsWith('web_')) return 'text-artha-accent bg-artha-accent/10';
   if (name.startsWith('browser_')) return 'text-yellow-400 bg-yellow-400/10';
   return 'text-violet-400 bg-violet-400/10';
 }
@@ -188,7 +188,7 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
   return (
     <div className={`rounded-xl border text-xs ${
       entry.status === 'error'
-        ? 'border-red-500/20 bg-red-500/5'
+        ? 'border-artha-danger/20 bg-artha-danger/5'
         : 'border-artha-border bg-artha-surface'
     }`}>
       <button
@@ -196,8 +196,8 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
         className="w-full flex items-center gap-3 px-3 py-2.5 text-left"
       >
         {entry.status === 'error'
-          ? <XCircle size={12} className="text-red-400 shrink-0" />
-          : <CheckCircle2 size={12} className="text-green-400 shrink-0" />}
+          ? <XCircle size={12} className="text-artha-danger shrink-0" />
+          : <CheckCircle2 size={12} className="text-artha-success shrink-0" />}
 
         <code className={`font-mono font-medium px-1.5 py-0.5 rounded text-xs ${toolColor(entry.tool_name)}`}>
           {entry.tool_name}
@@ -230,7 +230,7 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
             <div>
               <p className="text-artha-muted mb-1 uppercase tracking-wide text-[10px]">Result</p>
               <pre className={`font-mono whitespace-pre-wrap break-all ${
-                entry.status === 'error' ? 'text-red-400/80' : 'text-green-300/70'
+                entry.status === 'error' ? 'text-artha-danger/80' : 'text-artha-success/70'
               }`}>
                 {entry.result.slice(0, 400)}
               </pre>
@@ -275,18 +275,18 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
   };
 
   const categoryColors: Record<string, string> = {
-    Web: 'bg-cyan-400/10 text-cyan-400',
+    Web: 'bg-artha-accent/10 text-artha-accent',
     Search: 'bg-orange-400/10 text-orange-400',
     Memory: 'bg-violet-400/10 text-violet-400',
     Dev: 'bg-artha-text/8 text-artha-text',
-    Communication: 'bg-green-400/10 text-green-400',
+    Communication: 'bg-artha-success/10 text-artha-success',
     Browser: 'bg-yellow-400/10 text-yellow-400',
     Data: 'bg-blue-400/10 text-blue-400',
   };
 
   return (
     <div className={`rounded-xl border transition-all ${
-      isInstalled ? 'border-green-500/30 bg-green-500/5' : 'border-artha-border bg-artha-s2'
+      isInstalled ? 'border-artha-success/30 bg-artha-success/5' : 'border-artha-border bg-artha-s2'
     }`}>
       <div className="flex items-start gap-3 px-4 py-3">
         {/* Icon */}
@@ -325,7 +325,7 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
             </a>
           )}
           {isInstalled ? (
-            <span className="flex items-center gap-1 text-xs text-green-400 font-medium px-2 py-1">
+            <span className="flex items-center gap-1 text-xs text-artha-success font-medium px-2 py-1">
               <CheckCircle2 size={12} /> Connected
             </span>
           ) : (
@@ -363,7 +363,7 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
             </div>
           ))}
           {error && (
-            <p className="text-xs text-red-400 flex items-center gap-1">
+            <p className="text-xs text-artha-danger flex items-center gap-1">
               <XCircle size={11} /> {error}
             </p>
           )}
@@ -388,7 +388,7 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
       {/* Error without env form */}
       {error && !server.requiresEnv && (
         <div className="px-4 pb-3">
-          <p className="text-xs text-red-400 flex items-center gap-1">
+          <p className="text-xs text-artha-danger flex items-center gap-1">
             <XCircle size={11} /> {error}
           </p>
         </div>
@@ -569,7 +569,7 @@ export default function MCPToolsPanel() {
                   className="flex items-center gap-2 px-3 py-2 rounded-lg bg-artha-s2 border border-artha-border">
                   <Zap size={11} className="text-blue-400 shrink-0" />
                   <code className="text-xs font-mono text-artha-text truncate">{name}</code>
-                  <CheckCircle2 size={11} className="text-green-400 ml-auto shrink-0" />
+                  <CheckCircle2 size={11} className="text-artha-success ml-auto shrink-0" />
                 </div>
               ))}
             </div>
@@ -623,7 +623,7 @@ export default function MCPToolsPanel() {
 
                     {/* Remove */}
                     <button onClick={() => remove(tool)} title="Remove server"
-                      className="text-artha-muted hover:text-red-400 transition-colors">
+                      className="text-artha-muted hover:text-artha-danger transition-colors">
                       <Trash2 size={14} />
                     </button>
                   </div>
@@ -649,7 +649,7 @@ export default function MCPToolsPanel() {
                 </button>
               </div>
               {addError && (
-                <p className="text-xs text-red-400 flex items-center gap-1">
+                <p className="text-xs text-artha-danger flex items-center gap-1">
                   <XCircle size={11} /> {addError}
                 </p>
               )}
@@ -736,10 +736,10 @@ export default function MCPToolsPanel() {
               {/* Summary bar */}
               <div className="flex items-center gap-4 px-4 py-2 bg-artha-s2 border border-artha-border rounded-xl mb-4 text-xs">
                 <span className="text-artha-muted">{auditLog.length} invocations</span>
-                <span className="text-green-400">
+                <span className="text-artha-success">
                   {auditLog.filter(e => e.status === 'ok').length} ok
                 </span>
-                <span className="text-red-400">
+                <span className="text-artha-danger">
                   {auditLog.filter(e => e.status === 'error').length} errors
                 </span>
                 {auditLog.length > 0 && auditLog[0].duration_ms != null && (

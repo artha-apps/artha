@@ -19,6 +19,7 @@
   --artha-subtle:         138 147 163;  /* tertiary text */
   --artha-accent:         0 53 237;     /* ripple blue */
   --artha-accent-hover:   0 40 184;
+  --artha-on-accent:      255 255 255;  /* text/icons on an accent fill (white on blue) */
   --artha-mint:           0 53 237;     /* light theme: mint == accent */
   --artha-danger:         180 35 24;
   --artha-success:        21 128 61;
@@ -48,6 +49,7 @@
   --artha-subtle:         110 133 121;  /* #6E8579 */
   --artha-accent:         16 185 129;   /* #10B981 emerald */
   --artha-accent-hover:   52 211 153;   /* #34D399 emerald-400 */
+  --artha-on-accent:      8 18 13;      /* near-black on emerald — ~6.7:1 vs white's ~2.5:1 */
   --artha-mint:           110 231 183;  /* #6EE7B7 neon mint */
   --artha-danger:         248 113 113;  /* #F87171 light-on-dark */
   --artha-success:        52 211 153;   /* #34D399 */
@@ -131,7 +133,7 @@ code, pre, .font-mono {
            focus-visible:outline-none;
   }
   .btn-primary {
-    @apply btn-artha bg-artha-accent text-white
+    @apply btn-artha bg-artha-accent text-artha-on-accent
            hover:bg-artha-accent-hover hover:shadow-glow-sm;
   }
   .btn-secondary {

@@ -265,6 +265,46 @@ export async function initDatabase(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id, idx);
 
+    -- ── Tool-call policies (governance for function calling) ────────────────
+    -- Per-tool trust tiers evaluated before every function call (see
+    -- bodhi/policy.ts). pattern follows the Skills allowlist convention (exact
+    -- name, a prefix ending in "_", or "*"). tier decides what happens:
+    -- auto=run silently, confirm=ask first, dry_run=describe but don't execute,
+    -- forbid=block. scope='outside_roots' applies a rule only to calls whose
+    -- path arguments fall outside the chat's sandbox folders.
+    CREATE TABLE IF NOT EXISTS tool_policies (
+      policy_id   TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      pattern     TEXT NOT NULL,
+      tier        TEXT NOT NULL DEFAULT 'confirm' CHECK(tier IN ('auto','confirm','dry_run','forbid')),
+      scope       TEXT NOT NULL DEFAULT 'always'  CHECK(scope IN ('always','outside_roots')),
+      note        TEXT NOT NULL DEFAULT '',
+      is_enabled  INTEGER NOT NULL DEFAULT 1,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    -- ── Verified tool receipts (provenance for function calls) ──────────────
+    -- One row per tool call (including policy-blocked / dry-run calls). Carries
+    -- a plain-English effect, a content hash of the result, the governing policy
+    -- tier, and status, so the user gets a verifiable audit trail of what the
+    -- agent did (see bodhi/receipts.ts). Local-only; never transmitted.
+    CREATE TABLE IF NOT EXISTS tool_receipts (
+      receipt_id  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      run_id      TEXT,
+      session_id  TEXT,
+      workflow_id TEXT,
+      idx         INTEGER NOT NULL DEFAULT 0,
+      tool_name   TEXT NOT NULL,
+      args_json   TEXT NOT NULL DEFAULT '{}',
+      effect      TEXT NOT NULL DEFAULT '',
+      result_hash TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok','error','blocked','skipped')),
+      tier        TEXT NOT NULL DEFAULT 'auto',
+      is_mutation INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      ts          INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_receipts_run ON tool_receipts(run_id, idx);
+
     -- ── Adaptive model router ──────────────────────────────────────────────
     -- Per-task-type benchmark profile: latency + a quality heuristic score.
     CREATE TABLE IF NOT EXISTS model_profiles (
@@ -580,6 +620,14 @@ export async function initDatabase(): Promise<void> {
         1,
         'agent'
       );
+
+    -- Seed ONE safe default tool policy so the governance feature is visible and
+    -- valuable out of the box: confirm before deleting a file. Seeded only when
+    -- no policies exist yet, so a user who clears the list isn't fought with.
+    INSERT INTO tool_policies (pattern, tier, scope, note)
+    SELECT 'fs_delete_file', 'confirm', 'always',
+           'Ask before deleting any file (default — edit or remove in Settings → Tool Policies).'
+    WHERE NOT EXISTS (SELECT 1 FROM tool_policies);
   `);
 
   console.log('[Artha] Database schema ready at', dbPath);
