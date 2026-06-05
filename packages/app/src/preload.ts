@@ -467,6 +467,16 @@ const api = {
       }[]>,
   },
 
+  // ── Briefing ─────────────────────────────────────────────────────────────
+  // Opt-in digest of recent activity (see briefing/briefing.ts).
+  briefing: {
+    get: () => ipcRenderer.invoke('briefing:get') as Promise<{
+      since: number; runs: number; failedRuns: number; filesChanged: number;
+      newArtifacts: number; newMemories: number; newContacts: number; hasActivity: boolean;
+    }>,
+    markSeen: () => ipcRenderer.invoke('briefing:markSeen') as Promise<void>,
+  },
+
   // ── Memory ───────────────────────────────────────────────────────────────
   // Long-term agent memory stored in SQLite memory_entities table. MemoryPanel
   // lists entries; user can delete individual rows or clear all.

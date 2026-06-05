@@ -126,6 +126,18 @@ describe('classifyHealth', () => {
     expect(classifyHealth({ total: 3, recent_n: 3, recent_ok: 3 }).status).toBe('unknown');
     expect(classifyHealth({}).status).toBe('unknown');
   });
+
+  it('does not treat user cancellations as a regression', () => {
+    // Raw recent looks like 3/5 = 60% vs prior 100% (would be "degraded"), but 2
+    // of the recent runs were cancelled by the user. Excluding them, recent is
+    // 3/3 = 100% — healthy.
+    const h = classifyHealth({
+      total: 10, recent_n: 5, recent_ok: 3, recent_cancelled: 2, recent_dur: 5000,
+      prior_n: 5, prior_ok: 5, prior_cancelled: 0, prior_dur: 5000,
+    });
+    expect(h.status).toBe('healthy');
+    expect(h.recentSuccessRate).toBeCloseTo(1);
+  });
 });
 
 describe('recommendModel', () => {

@@ -194,9 +194,11 @@ interface HealthRow {
   total: number;
   recent_n: number;
   recent_ok: number;
+  recent_cancelled: number;
   recent_dur: number | null;
   prior_n: number;
   prior_ok: number;
+  prior_cancelled: number;
   prior_dur: number | null;
 }
 
@@ -208,16 +210,19 @@ const UNKNOWN_HEALTH: SkillHealth = {
 /** Classify one skill's health from its recent-vs-prior segments. Tolerant of
  *  partial/garbage rows (returns 'unknown') so it never throws into a render. */
 export function classifyHealth(r: Partial<HealthRow>): SkillHealth {
-  const total = Number(r.total) || 0;
-  if (total < HEALTH_MIN_RUNS) return UNKNOWN_HEALTH;
+  // Cancellations are user decisions, not skill failures — exclude them from the
+  // success signal (and from latency, which would be partial). "Effective" counts
+  // are the non-cancelled runs in each window, and drive both the enough-data
+  // gate and the comparison, so a burst of recent cancels can't fake a regression.
+  const recentEff = (Number(r.recent_n) || 0) - (Number(r.recent_cancelled) || 0);
+  const priorEff = (Number(r.prior_n) || 0) - (Number(r.prior_cancelled) || 0);
+  if (recentEff + priorEff < HEALTH_MIN_RUNS) return UNKNOWN_HEALTH;
 
-  const recentN = Number(r.recent_n) || 0;
-  const priorN = Number(r.prior_n) || 0;
-  const recentRate = recentN ? (Number(r.recent_ok) || 0) / recentN : 0;
-  const priorRate = priorN ? (Number(r.prior_ok) || 0) / priorN : 0;
+  const recentRate = recentEff > 0 ? (Number(r.recent_ok) || 0) / recentEff : 0;
+  const priorRate = priorEff > 0 ? (Number(r.prior_ok) || 0) / priorEff : 0;
   const recentDur = Number(r.recent_dur) || 0;
   const priorDur = Number(r.prior_dur) || 0;
-  const comparable = recentN >= MIN_SEGMENT && priorN >= MIN_SEGMENT;
+  const comparable = recentEff >= MIN_SEGMENT && priorEff >= MIN_SEGMENT;
   const pct = (x: number) => `${Math.round(x * 100)}%`;
   const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
@@ -225,7 +230,7 @@ export function classifyHealth(r: Partial<HealthRow>): SkillHealth {
   let reason = 'Stable';
   if (comparable && recentRate <= priorRate - SUCCESS_DROP) {
     status = 'degraded';
-    reason = `Success fell from ${pct(priorRate)} to ${pct(recentRate)} over the last ${recentN} runs`;
+    reason = `Success fell from ${pct(priorRate)} to ${pct(recentRate)} over the last ${recentEff} runs`;
   } else if (comparable && priorDur > 0 && recentDur >= priorDur * SLOWDOWN) {
     status = 'slow';
     reason = `~${(recentDur / priorDur).toFixed(1)}× slower recently (${secs(priorDur)} → ${secs(recentDur)})`;
@@ -258,10 +263,12 @@ function healthMap(): Map<string, SkillHealth> {
         COUNT(*)                                          AS total,
         SUM(CASE WHEN rn <= @k THEN 1 ELSE 0 END)         AS recent_n,
         SUM(CASE WHEN rn <= @k THEN (status='ok') ELSE 0 END) AS recent_ok,
-        AVG(CASE WHEN rn <= @k THEN duration_ms END)      AS recent_dur,
+        SUM(CASE WHEN rn <= @k THEN (status='cancelled') ELSE 0 END) AS recent_cancelled,
+        AVG(CASE WHEN rn <= @k AND status != 'cancelled' THEN duration_ms END) AS recent_dur,
         SUM(CASE WHEN rn >  @k THEN 1 ELSE 0 END)         AS prior_n,
         SUM(CASE WHEN rn >  @k THEN (status='ok') ELSE 0 END) AS prior_ok,
-        AVG(CASE WHEN rn >  @k THEN duration_ms END)      AS prior_dur
+        SUM(CASE WHEN rn >  @k THEN (status='cancelled') ELSE 0 END) AS prior_cancelled,
+        AVG(CASE WHEN rn >  @k AND status != 'cancelled' THEN duration_ms END) AS prior_dur
       FROM ranked GROUP BY skill_id
     `).all({ k: RECENT_WINDOW }) as HealthRow[];
     for (const r of rows) m.set(r.skill_id, classifyHealth(r));

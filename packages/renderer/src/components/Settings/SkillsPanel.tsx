@@ -341,7 +341,6 @@ export default function SkillsPanel() {
 
   // Store actions for the failure "re-run" → opens a fresh chat on the skill.
   const setActiveSession = useChatStore(s => s.setActiveSession);
-  const setMessages = useChatStore(s => s.setMessages);
   const setSessions = useChatStore(s => s.setSessions);
   const setActiveTab = useChatStore(s => s.setActiveTab);
   const closeWorkspaceSettings = useChatStore(s => s.closeWorkspaceSettings);
@@ -349,14 +348,16 @@ export default function SkillsPanel() {
   const activeProjectId = useChatStore(s => s.activeProjectId);
 
   /** Re-run a failed task: spin up a new chat, send the skill-prefixed goal so
-   *  it re-resolves the skill explicitly, then jump the user to that chat. */
+   *  it re-resolves the skill explicitly, then jump the user to that chat.
+   *  Order matters: setActiveSession clears the message list, so addUserMessage
+   *  must follow it; agent:sendMessage also persists the user message server-side
+   *  so it survives a reload. */
   const rerun = async (slug: string, goal: string) => {
     const text = `/${slug} ${goal}`.trim();
     const session = await window.artha.sessions.create(activeProjectId);
     const updated = await window.artha.sessions.list();
     setSessions(updated);
-    setActiveSession(session.session_id);
-    setMessages([]);
+    setActiveSession(session.session_id); // clears messages for the new chat
     setActiveTab('chat');
     closeWorkspaceSettings();
     addUserMessage(session.session_id, text);

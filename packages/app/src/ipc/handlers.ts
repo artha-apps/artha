@@ -41,6 +41,7 @@ import { AgentOrchestrator } from '../agent/orchestrator';
 import { runWithContext } from '../agent/runContext';
 import { listUndoable, revert } from '../agent/undo';
 import { globalSearch } from '../search/global';
+import { getBriefing, markBriefingSeen } from '../briefing/briefing';
 import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
@@ -1452,6 +1453,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // path. See search/global.ts.
   ipcMain.handle('search:global', (_e, query: string, semantic?: boolean) =>
     globalSearch(query, { semantic: !!semantic }));
+
+  // ── Briefing ───────────────────────────────────────────────────────────
+  // Opt-in digest of activity since the user last looked. See briefing/briefing.ts.
+  ipcMain.handle('briefing:get', () => getBriefing());
+  ipcMain.handle('briefing:markSeen', () => markBriefingSeen());
 
   // ── License ────────────────────────────────────────────────────────────
   // Offline Ed25519-signed keys gate Pro/Enterprise capabilities. The raw key

@@ -394,16 +394,21 @@ ${envBlock}`,
     const showReasoning = this.showReasoningEnabled();
     let reasoningText = '';
     let lastReasonEmit = 0;
-    const onReasoning = (chunk: string) => {
-      reasoningText += chunk;
-      const now = Date.now();
-      if (now - lastReasonEmit < 100) return;
-      lastReasonEmit = now;
-      this.emit('agent:reasoning', {
-        steps: [{ phase: 'reasoning', content: reasoningText, context_score: 0 }],
-        showReasoning,
-      });
-    };
+    // Only forward live reasoning when the disclosure is on — when it's off the
+    // renderer discards the event, so skip the IPC entirely. The model still
+    // thinks (think:true is independent of this flag).
+    const onReasoning = showReasoning
+      ? (chunk: string) => {
+          reasoningText += chunk;
+          const now = Date.now();
+          if (now - lastReasonEmit < 100) return;
+          lastReasonEmit = now;
+          this.emit('agent:reasoning', {
+            steps: [{ phase: 'reasoning', content: reasoningText, context_score: 0 }],
+            showReasoning,
+          });
+        }
+      : undefined;
     try {
       const llm = getActiveLLMClient(undefined, 'synthesis');
       const result = await llm.streamComplete(
@@ -415,7 +420,7 @@ ${envBlock}`,
       );
       // Flush any reasoning buffered since the last throttled emit so the final
       // thinking text is complete before the answer takes over the bubble.
-      if (reasoningText) {
+      if (showReasoning && reasoningText) {
         this.emit('agent:reasoning', {
           steps: [{ phase: 'reasoning', content: reasoningText, context_score: 0 }],
           showReasoning,
@@ -527,6 +532,14 @@ or
       WHERE s.step_id = ?
     `).get(stepId) as { run_id: string; idx: number; messages_snapshot: string | null; session_id: string; goal: string } | undefined;
     if (!step?.messages_snapshot) return null;
+
+    // The original run's session may no longer exist — e.g. an ephemeral
+    // sub-capability child session that was cleaned up after the sub-task
+    // finished (those runs still surface in the Activity list). Forking would
+    // create an orphan run and violate the agent_states → chat_sessions FK, so
+    // bail gracefully and let the caller report it.
+    const sessionExists = db.prepare(`SELECT 1 FROM chat_sessions WHERE session_id=?`).get(step.session_id);
+    if (!sessionExists) return null;
 
     const snapshot = JSON.parse(step.messages_snapshot) as OpenAI.ChatCompletionMessageParam[];
     const newWorkflowId = crypto.randomUUID();
@@ -1129,6 +1142,9 @@ RULES — follow exactly, no exceptions:
     const messages = args.messages;
     const mutations: TrackedMutation[] = [];
     const reasoningSteps: ReasoningStep[] = [];
+    // Resolved once for the whole loop: showReasoningEnabled() hits SQLite, so it
+    // must not be called per token inside the throttled onReasoning callback.
+    const showReasoning = this.showReasoningEnabled();
     const recordStep = this.makeStepRecorder(args.runId);
     let stepIdx = 0;
 
@@ -1183,7 +1199,7 @@ RULES — follow exactly, no exceptions:
           // Live disclosure: ChatWindow shows these while the agent works. The
           // flag lets the renderer hide the panel when the user turned reasoning
           // off in Settings (the phase still ran — only the UI is suppressed).
-          emit('agent:reasoning', { steps: reasoningSteps, showReasoning: this.showReasoningEnabled() });
+          emit('agent:reasoning', { steps: reasoningSteps, showReasoning });
         }
       } catch (err) {
         console.warn('[Artha] context/think phase failed (continuing):', err);
@@ -1256,16 +1272,21 @@ RULES — follow exactly, no exceptions:
       // thinking as it decides which tool to use.
       let turnReasoning = '';
       let lastReasonEmit = 0;
-      const onReasoning = (chunk: string) => {
-        turnReasoning += chunk;
-        const now = Date.now();
-        if (now - lastReasonEmit < 100) return;
-        lastReasonEmit = now;
-        emit('agent:reasoning', {
-          steps: [...reasoningSteps, { phase: 'reasoning', content: turnReasoning, context_score: 0 }],
-          showReasoning: this.showReasoningEnabled(),
-        });
-      };
+      // Only forward live reasoning when the user has the disclosure on — saves
+      // an IPC message per ~100ms that the renderer would otherwise discard. The
+      // model still thinks (think:true is independent); we just don't ship it.
+      const onReasoning = showReasoning
+        ? (chunk: string) => {
+            turnReasoning += chunk;
+            const now = Date.now();
+            if (now - lastReasonEmit < 100) return;
+            lastReasonEmit = now;
+            emit('agent:reasoning', {
+              steps: [...reasoningSteps, { phase: 'reasoning', content: turnReasoning, context_score: 0 }],
+              showReasoning,
+            });
+          }
+        : undefined;
       try {
         msg = await llm.streamComplete(
           messages,

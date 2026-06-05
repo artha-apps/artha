@@ -12,7 +12,7 @@
  * immediately (not just at next launch).
  */
 import { useEffect, useState } from 'react';
-import { Bell, BellOff, Sparkles, ShieldCheck, Power } from 'lucide-react';
+import { Bell, BellOff, Sparkles, ShieldCheck, Power, Newspaper } from 'lucide-react';
 
 /**
  * Loose shape of the settings blob — the index signature lets the same `toggle`
@@ -108,6 +108,9 @@ export default function SettingsPanel() {
   // Default OFF: Artha leaves the lightweight Ollama server running for instant
   // restarts (the resident model is always freed on quit regardless).
   const stopOllamaOnQuit = settings.ollama_stop_on_quit === true;
+  // Opt-IN (default off): a privacy-first audience shouldn't get proactive
+  // surfaces unless they ask for them.
+  const briefingsOn = settings.briefingsEnabled === true;
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -142,6 +145,17 @@ export default function SettingsPanel() {
               on={reasoningOn}
               disabled={saving}
               onToggle={() => toggle('show_reasoning', !reasoningOn)}
+            />
+
+            {/* Daily briefing — opt-IN. A quiet launch digest of recent activity,
+                computed locally from your own data. */}
+            <ToggleRow
+              icon={<Newspaper size={16} className={briefingsOn ? 'text-artha-accent' : 'text-artha-muted'} />}
+              title="Daily briefing"
+              description="Show a short 'since you were last here' summary on launch — recent runs, file changes, and new contacts/memory. Off by default; computed entirely on-device."
+              on={briefingsOn}
+              disabled={saving}
+              onToggle={() => toggle('briefingsEnabled', !briefingsOn)}
             />
 
             {/* Crash reporting (Sentry) — opt-out, no files or conversations. */}
