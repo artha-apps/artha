@@ -12,10 +12,11 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw, Bot } from 'lucide-react';
+import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw, Bot, Pencil } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore, type ReasoningStep } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
+import { toast, useToastStore } from '../../stores/toast';
 import ToolCallInline from './ToolCallInline';
 import Citations from './Citations';
 import AtAutocomplete, { type AtSuggestion } from './AtAutocomplete';
@@ -235,6 +236,47 @@ function AgentAvatar({ pulse = false }: { pulse?: boolean }) {
   );
 }
 
+/** Hover-revealed action row under a message bubble. Copy is available on every
+ *  message; user messages get "Edit & resend" (pre-fills the composer), agent
+ *  messages get "Regenerate" (re-asks the preceding question as a fresh turn —
+ *  there is no message-delete IPC, so this appends rather than replaces). */
+function MessageActions({
+  isUser, align, content, onEdit, onRegenerate,
+}: {
+  isUser: boolean;
+  align: string;
+  content: string;
+  onEdit?: () => void;
+  onRegenerate?: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(content).catch(() => { /* clipboard blocked */ });
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+  const btn = 'p-1 rounded-md text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors';
+  return (
+    <div className={`flex items-center gap-0.5 mt-1 ${align} opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity`}>
+      <Tooltip content={copied ? 'Copied' : 'Copy'}>
+        <button onClick={copy} className={btn} aria-label="Copy message">
+          {copied ? <Check size={12} className="text-artha-success" /> : <Copy size={12} />}
+        </button>
+      </Tooltip>
+      {isUser && onEdit && (
+        <Tooltip content="Edit & resend">
+          <button onClick={onEdit} className={btn} aria-label="Edit and resend"><Pencil size={12} /></button>
+        </Tooltip>
+      )}
+      {!isUser && onRegenerate && (
+        <Tooltip content="Regenerate">
+          <button onClick={onRegenerate} className={btn} aria-label="Regenerate response"><RefreshCw size={12} /></button>
+        </Tooltip>
+      )}
+    </div>
+  );
+}
+
 export default function ChatWindow() {
   const {
     messages, streamingContent, isStreaming, activeSessionId,
@@ -242,6 +284,7 @@ export default function ChatWindow() {
     pendingAttachments, setPendingAttachments, scopes, setScopes,
     projects, activeProjectId, pendingToolEvents,
     liveReasoning, showReasoning, setLiveReasoning,
+    lastError, setLastError, openWorkspaceSettings,
   } = useChatStore();
   // Project-aware suggested prompts. When the user is in a project, the
   // hard-coded macOS prompts ("Organize my Desktop") feel wrong — swap to
@@ -281,6 +324,12 @@ export default function ChatWindow() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
+  // Cached "is a model active?" flag — seeded on mount, flipped true after the
+  // first confirmed model so the send-guard doesn't pay a round-trip each time.
+  const modelReadyRef = useRef(false);
+  useEffect(() => {
+    window.artha.llm.getActiveModel().then((m) => { modelReadyRef.current = !!m; }).catch(() => { /* none yet */ });
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -393,21 +442,79 @@ export default function ChatWindow() {
   const send = async (text?: string) => {
     const msg = (text ?? input).trim();
     if (!msg || !activeSessionId || isStreaming) return;
+    // Model-readiness guard: sending with no active model used to fail opaquely.
+    // Route the user to model setup instead. Only pays a round-trip until a
+    // model is first confirmed (then the ref short-circuits).
+    if (!modelReadyRef.current) {
+      const active = await window.artha.llm.getActiveModel().catch(() => null);
+      if (!active) {
+        useToastStore.getState().show({
+          kind: 'warning',
+          title: 'No model selected',
+          message: 'Pick a local or cloud model to start chatting.',
+          action: { label: 'Choose model', onClick: () => openWorkspaceSettings('models') },
+        });
+        return;
+      }
+      modelReadyRef.current = true;
+    }
     // Stop any active voice recognition before sending.
     if (isListening) { recognitionRef.current?.stop(); setIsListening(false); }
     const attachments = pendingAttachments.length ? [...pendingAttachments] : undefined;
+    const sid = activeSessionId;
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setPendingAttachments([]);
-    setStreaming(true);
-    addUserMessage(activeSessionId, msg, attachments);
-    try {
-      await window.artha.agent.sendMessage(activeSessionId, msg, attachments);
-    } catch (err) {
-      // Always reset streaming on error so the composer doesn't get stuck.
-      setStreaming(false);
-      console.error('[Artha] sendMessage failed:', err);
-    }
+    addUserMessage(sid, msg, attachments);
+
+    // Dispatch is retryable: the user bubble is added once above, and Retry
+    // (inline banner or toast) re-runs only the IPC send below.
+    const dispatch = async () => {
+      setLastError(null);
+      setStreaming(true);
+      try {
+        await window.artha.agent.sendMessage(sid, msg, attachments);
+      } catch (err) {
+        // Reset streaming so the composer doesn't get stuck, and surface the
+        // failure both inline (banner) and as a toast — it used to fail silently.
+        setStreaming(false);
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error('[Artha] sendMessage failed:', err);
+        setLastError({ title: 'Artha couldn’t complete that', detail, retry: dispatch });
+        toast.error('Message failed', detail, { label: 'Retry', onClick: () => { void dispatch(); } });
+      }
+    };
+    void dispatch();
+  };
+
+  /** Regenerate: re-ask `text` (the question that produced an agent answer)
+   *  without adding a second user bubble. Appends a fresh answer. */
+  const regenerate = (text: string) => {
+    if (!activeSessionId || isStreaming) return;
+    const sid = activeSessionId;
+    const dispatch = async () => {
+      setLastError(null);
+      setStreaming(true);
+      try {
+        await window.artha.agent.sendMessage(sid, text);
+      } catch (err) {
+        setStreaming(false);
+        const detail = err instanceof Error ? err.message : String(err);
+        setLastError({ title: 'Couldn’t regenerate', detail, retry: dispatch });
+        toast.error('Regenerate failed', detail, { label: 'Retry', onClick: () => { void dispatch(); } });
+      }
+    };
+    void dispatch();
+  };
+
+  /** Edit & resend: drop a previous user message back into the composer for
+   *  tweaking, then let the user send it normally. Pure client-side. */
+  const editInComposer = (text: string) => {
+    setInput(text);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (ta) { ta.focus(); ta.style.height = 'auto'; ta.style.height = `${ta.scrollHeight}px`; ta.setSelectionRange(text.length, text.length); }
+    });
   };
 
   const attachImage = async () => {
@@ -650,8 +757,14 @@ export default function ChatWindow() {
           )}
 
           {/* Message bubbles */}
-          {sessionMessages.map(msg => (
-            <div key={msg.id} className={`flex gap-3 ${msg.senderType === 'user' ? 'justify-end' : 'justify-start'}`}>
+          {sessionMessages.map((msg, i) => {
+            // The user question that produced an agent answer — used by Regenerate.
+            const precedingUser = msg.senderType === 'agent'
+              ? [...sessionMessages.slice(0, i)].reverse().find(m => m.senderType === 'user')
+              : undefined;
+            return (
+            <div key={msg.id} className="group flex flex-col">
+            <div className={`flex gap-3 ${msg.senderType === 'user' ? 'justify-end' : 'justify-start'}`}>
               {msg.senderType === 'agent' && (
                 <AgentAvatar />
               )}
@@ -692,7 +805,19 @@ export default function ChatWindow() {
                 )}
               </div>
             </div>
-          ))}
+            {/* Hover actions — copy always; edit/resend (user) or regenerate (agent). */}
+            {(msg.content || msg.senderType === 'user') && (
+              <MessageActions
+                isUser={msg.senderType === 'user'}
+                align={msg.senderType === 'user' ? 'self-end pr-1' : 'self-start pl-11'}
+                content={msg.content || ''}
+                onEdit={msg.senderType === 'user' ? () => editInComposer(msg.content) : undefined}
+                onRegenerate={precedingUser ? () => regenerate(precedingUser.content) : undefined}
+              />
+            )}
+            </div>
+            );
+          })}
 
           {/* Streaming / thinking bubble */}
           {isStreaming && (
@@ -829,6 +954,35 @@ export default function ChatWindow() {
             <div className="flex items-center gap-1.5 mb-2 w-fit px-2.5 py-1 rounded-full bg-artha-accent/10 border border-artha-accent/30 text-xs text-artha-accent">
               <span className="leading-none">{activeSkill.icon}</span>
               <span className="font-medium">Skill: {activeSkill.name}</span>
+            </div>
+          )}
+
+          {/* Inline run-error banner — a failed send used to vanish silently.
+              Shows the cause + a one-click Retry (re-dispatches the same send). */}
+          {lastError && !isStreaming && (
+            <div className="flex items-start gap-2.5 mb-2 px-3 py-2.5 rounded-xl bg-artha-danger/10 border border-artha-danger/30 text-sm">
+              <Bot size={15} className="text-artha-danger shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-artha-text font-medium leading-snug">{lastError.title}</p>
+                {lastError.detail && (
+                  <p className="text-artha-muted text-xs leading-snug mt-0.5 break-words line-clamp-3">{lastError.detail}</p>
+                )}
+              </div>
+              {lastError.retry && (
+                <button
+                  onClick={() => lastError.retry?.()}
+                  className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-artha-danger/15 hover:bg-artha-danger/25 text-artha-danger text-xs font-medium transition-colors active:scale-95"
+                >
+                  <RefreshCw size={12} /> Retry
+                </button>
+              )}
+              <button
+                onClick={() => setLastError(null)}
+                className="shrink-0 text-artha-danger/70 hover:text-artha-danger transition-colors"
+                aria-label="Dismiss error"
+              >
+                <X size={13} />
+              </button>
             </div>
           )}
 

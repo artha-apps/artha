@@ -12,10 +12,12 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Sparkles, Plus, Trash2, Pencil, ToggleLeft, ToggleRight,
   RefreshCw, Save, X, Lock, Wrench, Upload, Download,
-  Activity, Clock, Zap, Gauge,
+  Activity, Clock, Zap, Gauge, ChevronDown, ChevronRight,
+  Cpu, AlertTriangle, ShieldCheck, RotateCw, Pin, TrendingDown, Hourglass,
 } from 'lucide-react';
 import { FeatureGuide } from '../ui/FeatureGuide';
 import { GUIDES } from './guides';
+import { useChatStore } from '../../stores/chat';
 
 interface Skill {
   skill_id: string;
@@ -29,6 +31,16 @@ interface Skill {
   is_builtin: number;
   created_at: number;
   updated_at: number;
+}
+
+/** Health verdict (mirrors SkillHealth in app/src/skills/metrics.ts). */
+interface SkillHealth {
+  status: 'healthy' | 'degraded' | 'slow' | 'unknown';
+  reason: string;
+  recentSuccessRate: number;
+  priorSuccessRate: number;
+  recentAvgDurationMs: number;
+  priorAvgDurationMs: number;
 }
 
 /** Per-skill usage metrics (mirrors SkillMetric in app/src/skills/metrics.ts). */
@@ -46,7 +58,15 @@ interface SkillMetric {
   viaAuto: number;
   viaInvoke: number;
   estTimeSavedMs: number;
+  health: SkillHealth;
 }
+
+/** Insight DTOs (mirror the same names in app/src/skills/metrics.ts). */
+interface SkillModelStat { model: string; runs: number; successes: number; successRate: number; avgDurationMs: number; }
+interface SkillModelStats { models: SkillModelStat[]; recommended: string | null; currentPin: string | null; }
+interface SkillToolStat { tool: string; calls: number; errors: number; blocked: number; allowed: boolean; }
+interface SkillToolUsage { tools: SkillToolStat[]; grantedButUnused: string[]; expandHints: string[]; allowlistEmpty: boolean; }
+interface SkillFailure { runId: string | null; sessionId: string | null; goal: string; status: string; matchedVia: string; toolErrors: number; durationMs: number; createdAt: number; }
 
 type SortKey = 'usage' | 'name';
 
@@ -127,6 +147,183 @@ function toDraft(skill: Skill): Draft {
   };
 }
 
+/** Small health pill — only rendered for problem states (degraded / slow); a
+ *  healthy or not-yet-judged skill shows nothing so the list stays calm. */
+function HealthBadge({ health }: { health: SkillHealth }) {
+  if (health.status === 'healthy' || health.status === 'unknown') return null;
+  const degraded = health.status === 'degraded';
+  return (
+    <span
+      title={health.reason}
+      className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border ${
+        degraded
+          ? 'text-artha-danger border-artha-danger/40 bg-artha-danger/10'
+          : 'text-artha-warn border-artha-warn/40 bg-artha-warn/10'
+      }`}
+    >
+      {degraded ? <TrendingDown size={9} /> : <Hourglass size={9} />}
+      {degraded ? 'Degraded' : 'Slower'}
+    </span>
+  );
+}
+
+/** Expandable per-skill insights: model breakdown + pin (model dim.), tool
+ *  usage + least-privilege tuning (tool dim.), and recent failures + re-run
+ *  (lineage dim.). Data is fetched lazily on first expand. */
+function SkillInsights({
+  skill, onRerun, onPinChanged,
+}: {
+  skill: Skill;
+  onRerun: (slug: string, goal: string) => void;
+  onPinChanged: () => void;
+}) {
+  const [models, setModels] = useState<SkillModelStats | null>(null);
+  const [tools, setTools] = useState<SkillToolUsage | null>(null);
+  const [failures, setFailures] = useState<SkillFailure[] | null>(null);
+  const [busy, setBusy] = useState(true);
+  const [pinning, setPinning] = useState(false);
+
+  const load = async () => {
+    setBusy(true);
+    const [m, t, f] = await Promise.all([
+      window.artha.skills.modelStats(skill.skill_id).catch(() => null),
+      window.artha.skills.toolUsage(skill.skill_id).catch(() => null),
+      window.artha.skills.failures(skill.skill_id, 8).catch(() => [] as SkillFailure[]),
+    ]);
+    setModels(m); setTools(t); setFailures(f);
+    setBusy(false);
+  };
+  // load() depends only on the skill id; refetch when the drawer's skill changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [skill.skill_id]);
+
+  const pin = async (model: string | null) => {
+    setPinning(true);
+    await window.artha.skills.pinModel(skill.skill_id, model).catch(() => {});
+    await load();
+    onPinChanged();
+    setPinning(false);
+  };
+
+  if (busy && !models && !tools && !failures) {
+    return <div className="mt-3 h-16 rounded-lg bg-artha-surface/60 border border-artha-border animate-pulse" />;
+  }
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-artha-border pt-3">
+      {/* ── Models ─────────────────────────────────────────────────────────── */}
+      <section>
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-artha-muted mb-1.5">
+          <Cpu size={12} /> Model performance
+        </div>
+        {!models || models.models.length === 0 ? (
+          <p className="text-[11px] text-artha-muted/70">No model history yet.</p>
+        ) : (
+          <div className="space-y-1">
+            {models.models.map(m => {
+              const isPin = models.currentPin === m.model;
+              const isRec = models.recommended === m.model;
+              return (
+                <div key={m.model} className="flex items-center gap-2 text-[11px]">
+                  <code className="font-mono text-artha-text/90 truncate max-w-[40%]">{m.model}</code>
+                  <span className={m.successRate >= 0.9 ? 'text-artha-accent' : m.successRate < 0.6 ? 'text-artha-danger' : 'text-artha-muted'}>
+                    {Math.round(m.successRate * 100)}%
+                  </span>
+                  <span className="text-artha-muted/70">{m.runs} run{m.runs === 1 ? '' : 's'}</span>
+                  <span className="text-artha-muted/70">{fmtDuration(m.avgDurationMs)}</span>
+                  {isRec && <span className="text-[9px] px-1 rounded bg-artha-accent/15 text-artha-accent border border-artha-accent/30">best</span>}
+                  {isPin ? (
+                    <button onClick={() => pin(null)} disabled={pinning}
+                      className="ml-auto flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-artha-accent/15 text-artha-accent border border-artha-accent/40">
+                      <Pin size={8} /> pinned · unpin
+                    </button>
+                  ) : (
+                    <button onClick={() => pin(m.model)} disabled={pinning}
+                      className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full border border-artha-border text-artha-muted hover:text-artha-text hover:border-artha-accent/40">
+                      pin
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {models.recommended && models.currentPin !== models.recommended && (
+              <button onClick={() => pin(models.recommended)} disabled={pinning}
+                className="mt-1 text-[10px] text-artha-accent hover:underline">
+                Pin best model ({models.recommended}) →
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* ── Tools (least-privilege) ────────────────────────────────────────── */}
+      <section>
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-artha-muted mb-1.5">
+          <ShieldCheck size={12} /> Tool usage
+        </div>
+        {!tools || tools.tools.length === 0 ? (
+          <p className="text-[11px] text-artha-muted/70">No tool calls recorded yet.</p>
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {tools.tools.map(t => (
+              <code key={t.tool}
+                title={`${t.calls} call(s)${t.errors ? `, ${t.errors} error(s)` : ''}${t.blocked ? `, ${t.blocked} blocked` : ''}${t.allowed ? '' : ' — not in allowlist'}`}
+                className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${
+                  t.allowed
+                    ? 'text-artha-muted/80 bg-artha-surface border-artha-border'
+                    : 'text-artha-warn bg-artha-warn/10 border-artha-warn/40'
+                }`}>
+                {t.tool} · {t.calls}{t.errors ? ` ⚠${t.errors}` : ''}
+              </code>
+            ))}
+          </div>
+        )}
+        {/* Only suggest tightening once there's real usage to compare against —
+            otherwise a skill that simply hasn't run looks like it over-grants. */}
+        {tools && tools.tools.length > 0 && tools.grantedButUnused.length > 0 && (
+          <p className="mt-1.5 text-[10px] text-artha-muted">
+            <AlertTriangle size={9} className="inline mr-1 -mt-0.5" />
+            Granted but never used: <span className="font-mono">{tools.grantedButUnused.join(', ')}</span> — consider tightening the allowlist.
+          </p>
+        )}
+        {tools && tools.expandHints.length > 0 && (
+          <p className="mt-1 text-[10px] text-artha-warn">
+            <AlertTriangle size={9} className="inline mr-1 -mt-0.5" />
+            Tried but not allowed: <span className="font-mono">{tools.expandHints.join(', ')}</span> — add to the allowlist if intended.
+          </p>
+        )}
+      </section>
+
+      {/* ── Failures + re-run ──────────────────────────────────────────────── */}
+      <section>
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-artha-muted mb-1.5">
+          <AlertTriangle size={12} /> Recent failures
+        </div>
+        {!failures || failures.length === 0 ? (
+          <p className="text-[11px] text-artha-muted/70">No failed runs — nice.</p>
+        ) : (
+          <div className="space-y-1">
+            {failures.map((f, i) => (
+              <div key={f.runId ?? i} className="flex items-center gap-2 text-[11px]">
+                <span className={`text-[9px] px-1 rounded ${f.status === 'cancelled' ? 'text-artha-muted bg-artha-text/5' : 'text-artha-danger bg-artha-danger/10'}`}>
+                  {f.status}
+                </span>
+                <span className="text-artha-text/80 truncate flex-1" title={f.goal}>{f.goal || '(no goal)'}</span>
+                <span className="text-artha-muted/60 shrink-0">{fmtRelative(f.createdAt)}</span>
+                <button onClick={() => onRerun(skill.slug, f.goal)}
+                  title="Re-run this task in a new chat"
+                  className="shrink-0 flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full border border-artha-border text-artha-muted hover:text-artha-accent hover:border-artha-accent/40">
+                  <RotateCw size={8} /> re-run
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 /** Skills list + editor panel. Renders the editor in-place when `editing` is set,
  *  otherwise shows the full list view. */
 export default function SkillsPanel() {
@@ -139,6 +336,32 @@ export default function SkillsPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('usage');
+  // skill_id of the card whose insights drawer is open (only one at a time).
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Store actions for the failure "re-run" → opens a fresh chat on the skill.
+  const setActiveSession = useChatStore(s => s.setActiveSession);
+  const setMessages = useChatStore(s => s.setMessages);
+  const setSessions = useChatStore(s => s.setSessions);
+  const setActiveTab = useChatStore(s => s.setActiveTab);
+  const closeWorkspaceSettings = useChatStore(s => s.closeWorkspaceSettings);
+  const addUserMessage = useChatStore(s => s.addUserMessage);
+  const activeProjectId = useChatStore(s => s.activeProjectId);
+
+  /** Re-run a failed task: spin up a new chat, send the skill-prefixed goal so
+   *  it re-resolves the skill explicitly, then jump the user to that chat. */
+  const rerun = async (slug: string, goal: string) => {
+    const text = `/${slug} ${goal}`.trim();
+    const session = await window.artha.sessions.create(activeProjectId);
+    const updated = await window.artha.sessions.list();
+    setSessions(updated);
+    setActiveSession(session.session_id);
+    setMessages([]);
+    setActiveTab('chat');
+    closeWorkspaceSettings();
+    addUserMessage(session.session_id, text);
+    await window.artha.agent.sendMessage(session.session_id, text).catch(() => {});
+  };
 
   const load = async () => {
     setLoading(true);
@@ -516,6 +739,7 @@ export default function SkillsPanel() {
                           <Lock size={9} /> built-in
                         </span>
                       )}
+                      {m && <HealthBadge health={m.health} />}
                     </div>
                     <p className="text-xs text-artha-muted leading-relaxed line-clamp-2">{s.description}</p>
                     {tools.length > 0 && (
@@ -547,6 +771,12 @@ export default function SkillsPanel() {
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      onClick={() => setExpandedId(prev => prev === s.skill_id ? null : s.skill_id)}
+                      title="Insights — models, tools, failures"
+                      className={`p-1.5 rounded-lg transition-colors hover:bg-artha-text/5 ${expandedId === s.skill_id ? 'text-artha-accent' : 'text-artha-muted hover:text-artha-text'}`}>
+                      {expandedId === s.skill_id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
                     <button onClick={() => toggle(s)} title={s.is_enabled ? 'Disable' : 'Enable'}
                       className="text-artha-muted hover:text-artha-text transition-colors">
                       {s.is_enabled ? <ToggleRight size={20} className="text-artha-accent" /> : <ToggleLeft size={20} />}
@@ -567,6 +797,9 @@ export default function SkillsPanel() {
                     )}
                   </div>
                 </div>
+                {expandedId === s.skill_id && (
+                  <SkillInsights skill={s} onRerun={rerun} onPinChanged={load} />
+                )}
               </div>
             );
           })}

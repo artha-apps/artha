@@ -822,7 +822,12 @@ Rules:
     // Caller may pre-create the run id (non-blocking starts insert the row up
     // front so it can be polled immediately); otherwise mint one here.
     const runId = opts.runId ?? crypto.randomUUID();
-    const model = this.activeModelName();
+    // A skill can pin its own model; record the model that will ACTUALLY run so
+    // the per-skill model breakdown is honest (and so a pinned run isn't logged
+    // under the active model it bypassed). A stale pin (model uninstalled) is
+    // resolved to null so the run falls back instead of failing.
+    const pinnedModel = this.resolvePinnedModel(plan.skill?.pinnedModel);
+    const model = pinnedModel || this.activeModelName();
     const planStartMs = Date.now();
 
     db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`)
@@ -908,6 +913,8 @@ RULES — follow exactly, no exceptions:
         goal: plan.goal,
         messages,
         skill,
+        // Honour a per-skill model pin; undefined falls through to the router.
+        modelOverride: pinnedModel ?? undefined,
         startMs: planStartMs,
         silent: opts.silent,
         taskType: opts.taskType,
@@ -1620,6 +1627,7 @@ RULES — follow exactly, no exceptions:
       slug: row.slug, name: row.name, icon: row.icon,
       instructions: row.instructions, allowedTools,
       kind: row.kind === 'agent' ? 'agent' : 'skill',
+      pinnedModel: row.pinned_model ?? null,
     };
 
     try {
@@ -1656,10 +1664,12 @@ RULES — follow exactly, no exceptions:
 
     db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'delegate')`)
       .run(childSessionId, `Sub: ${args.skill.name}`.slice(0, 60));
+    const childPin = this.resolvePinnedModel(args.skill.pinnedModel);
+    const childModel = childPin || this.activeModelName();
     db.prepare(`
       INSERT INTO agent_runs (run_id, session_id, workflow_id, parent_run_id, goal, model, status)
       VALUES (?, ?, ?, ?, ?, ?, 'running')
-    `).run(runId, childSessionId, workflowId, args.parentRunId, args.input, this.activeModelName());
+    `).run(runId, childSessionId, workflowId, args.parentRunId, args.input, childModel);
 
     const envBlock = this.buildEnvironmentContext();
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -1690,6 +1700,7 @@ Rules:
         goal: args.input,
         messages,
         skill: args.skill,
+        modelOverride: childPin ?? undefined,
         silent: true,
         taskType: 'tool_args',
         depth: args.depth + 1,
@@ -1836,6 +1847,23 @@ Rules:
     } catch {
       return 'unknown';
     }
+  }
+
+  /** A skill's pinned model, but only if it's still a configured model. Returns
+   *  null when there's no pin OR the pinned model has since been removed — so a
+   *  stale pin (e.g. the model was uninstalled) gracefully falls back to the
+   *  router/active model instead of failing every run. The pin itself is left in
+   *  the DB, so reinstalling the model re-activates it. */
+  private resolvePinnedModel(pinned: string | null | undefined): string | null {
+    if (!pinned) return null;
+    try {
+      const exists = getDb()
+        .prepare(`SELECT 1 FROM llm_models WHERE ollama_name=? LIMIT 1`)
+        .get(pinned);
+      if (exists) return pinned;
+      console.warn(`[Artha] skill pinned model "${pinned}" is not installed — falling back to router.`);
+    } catch { /* fall through to null */ }
+    return null;
   }
 
   /** Best-effort destination extraction from the user's goal. Returns an

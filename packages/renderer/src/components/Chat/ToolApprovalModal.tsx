@@ -11,12 +11,42 @@
  * The exact arguments are shown verbatim so you can see precisely what would
  * happen (which file, which URL) before it does.
  */
-import { useEffect } from 'react';
-import { ShieldQuestion, Check, X, Wrench } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ShieldQuestion, Check, X, Wrench, Code2, SlidersHorizontal } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
+/** Map common tool-arg keys to friendly labels so non-technical users can read
+ *  what a call will touch without parsing JSON. */
+const ARG_LABELS: Record<string, string> = {
+  path: 'File', file_path: 'File', filePath: 'File', dir: 'Folder', directory: 'Folder',
+  url: 'URL', query: 'Search', content: 'Content', text: 'Text', body: 'Content',
+  destination: 'Destination', dest: 'Destination', source: 'Source', src: 'Source',
+  command: 'Command', cmd: 'Command', name: 'Name', prompt: 'Prompt', message: 'Message',
+};
+
+/** Parse a JSON arg preview into readable label/value rows. Returns null when
+ *  the preview isn't a flat JSON object (caller falls back to the raw view). */
+function humanizeArgs(raw: string): { label: string; value: string }[] | null {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const rows = Object.entries(parsed as Record<string, unknown>).map(([k, v]) => {
+    const label = ARG_LABELS[k] ?? k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    let value: string;
+    if (typeof v === 'string') {
+      value = v.length > 240 ? `${v.slice(0, 200)}… (${v.length} chars)` : v;
+    } else {
+      value = JSON.stringify(v);
+      if (value.length > 240) value = `${value.slice(0, 200)}…`;
+    }
+    return { label, value };
+  });
+  return rows.length ? rows : null;
+}
+
 export default function ToolApprovalModal() {
-  const { pendingToolApproval, setPendingToolApproval } = useChatStore();
+  const { pendingToolApproval, setPendingToolApproval, openWorkspaceSettings } = useChatStore();
+  const [showRaw, setShowRaw] = useState(false);
 
   // Keyboard: Enter approves, Escape denies. Registered only while open.
   useEffect(() => {
@@ -39,6 +69,16 @@ export default function ToolApprovalModal() {
     setPendingToolApproval(null);
     window.artha.agent.respondToolApproval(approvalId, approved);
   };
+
+  /** Stepping away to manage rules means skipping this specific call (the safe
+   *  default when you're unsure), then opening the policy editor. Avoids the
+   *  modal-stacking issue of opening Settings beneath this z-60 gate. */
+  const reviewPolicies = () => {
+    respond(false);
+    openWorkspaceSettings('policies');
+  };
+
+  const rows = humanizeArgs(argsPreview);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-artha-bg/60 backdrop-blur-md animate-fade-in">
@@ -67,10 +107,31 @@ export default function ToolApprovalModal() {
             <p className="text-xs text-artha-muted italic">{note}</p>
           )}
           <div>
-            <p className="text-[10px] uppercase tracking-wide text-artha-subtle mb-1">Arguments</p>
-            <pre className="text-[11px] font-mono text-artha-text bg-artha-bg border border-artha-border rounded-lg p-3 max-h-48 overflow-auto whitespace-pre-wrap break-words">
-              {argsPreview}
-            </pre>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] uppercase tracking-wide text-artha-subtle">This call will use</p>
+              {rows && (
+                <button
+                  onClick={() => setShowRaw((v) => !v)}
+                  className="inline-flex items-center gap-1 text-[10px] text-artha-muted hover:text-artha-text transition-colors"
+                >
+                  <Code2 size={11} /> {showRaw ? 'Readable' : 'Raw'}
+                </button>
+              )}
+            </div>
+            {rows && !showRaw ? (
+              <div className="space-y-1.5 bg-artha-bg border border-artha-border rounded-lg p-3 max-h-48 overflow-auto">
+                {rows.map((r) => (
+                  <div key={r.label} className="flex gap-2 text-xs">
+                    <span className="text-artha-muted shrink-0 min-w-20 font-medium">{r.label}</span>
+                    <span className="text-artha-text break-words min-w-0">{r.value}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <pre className="text-[11px] font-mono text-artha-text bg-artha-bg border border-artha-border rounded-lg p-3 max-h-48 overflow-auto whitespace-pre-wrap break-words">
+                {argsPreview}
+              </pre>
+            )}
           </div>
         </div>
 
@@ -89,9 +150,15 @@ export default function ToolApprovalModal() {
             <Check size={15} /> Approve & Run
           </button>
         </div>
-        <p className="px-5 pb-4 -mt-1 text-[10px] text-artha-subtle">
-          Manage these rules in Settings → Tool Policies. Enter approves · Esc denies.
-        </p>
+        <div className="flex items-center justify-between px-5 pb-4 -mt-1">
+          <button
+            onClick={reviewPolicies}
+            className="inline-flex items-center gap-1 text-[10px] text-artha-muted hover:text-artha-accent transition-colors"
+          >
+            <SlidersHorizontal size={11} /> Manage tool policies
+          </button>
+          <span className="text-[10px] text-artha-subtle">Enter approves · Esc denies</span>
+        </div>
       </div>
     </div>
   );

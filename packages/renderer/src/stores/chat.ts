@@ -93,6 +93,14 @@ export interface ToolApprovalRequest {
   note: string;
 }
 
+/** A run-level failure surfaced inline in the thread (and as a toast). `retry`
+ *  re-dispatches the same send so the user recovers in one click. */
+export interface ChatError {
+  title: string;
+  detail?: string;
+  retry?: () => void;
+}
+
 /** A clarification request the orchestrator paused on — drives the ClarificationModal. */
 export interface ClarifyRequest {
   workflowId: string;
@@ -133,6 +141,11 @@ export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 
  *  Artha plans, coordinates, and runs it. */
 export type ActiveTab = 'chat' | 'workflows' | 'code' | 'delegate';
 
+/** Sections inside the Workflows hub — the operational surfaces relocated out
+ *  of the Settings modal (runs activity, schedules, generated artifacts, and the
+ *  audit views). */
+export type WorkflowsSection = 'runs' | 'scheduled' | 'artifacts' | 'receipts' | 'provenance' | 'timetravel';
+
 /** A project as exposed by the `projects:*` IPC. Mirrors the `projects`
  *  table on disk (created by migrations v3→v6). */
 export interface Project {
@@ -165,6 +178,12 @@ interface ChatState {
   pendingPlan: AgentPlan | null;
   pendingClarify: ClarifyRequest | null;
   pendingToolApproval: ToolApprovalRequest | null;
+  /** Run id the Run Inspector drawer is showing (null = closed). */
+  inspectorRunId: string | null;
+  /** Active section inside the Workflows hub. */
+  workflowsSection: WorkflowsSection;
+  /** Last run-level failure, rendered inline above the composer with a Retry. */
+  lastError: ChatError | null;
   pendingToolEvents: ToolCallEvent[];
   pendingCitations: Citation[];
   /** Live chain-of-thought for the in-flight run (from the `agent:reasoning`
@@ -212,6 +231,13 @@ interface ChatState {
   setPendingPlan: (plan: AgentPlan | null) => void;
   setPendingClarify: (req: ClarifyRequest | null) => void;
   setPendingToolApproval: (req: ToolApprovalRequest | null) => void;
+  /** Open (id) / close (null) the Run Inspector drawer. */
+  setInspectorRunId: (runId: string | null) => void;
+  setWorkflowsSection: (section: WorkflowsSection) => void;
+  /** Jump to the Workflows hub, optionally to a specific section. */
+  openWorkflows: (section?: WorkflowsSection) => void;
+  /** Set or clear the inline run-error banner. */
+  setLastError: (e: ChatError | null) => void;
   setActiveView: (view: ActiveView) => void;
   setActiveTab: (tab: ActiveTab) => void;
   /** Open the Workspace Settings modal, optionally scrolled to a section. */
@@ -300,6 +326,9 @@ export const useChatStore = create<ChatState>((set) => ({
   pendingPlan: null,
   pendingClarify: null,
   pendingToolApproval: null,
+  inspectorRunId: null,
+  workflowsSection: 'runs',
+  lastError: null,
   pendingToolEvents: [],
   pendingCitations: [],
   liveReasoning: null,
@@ -331,13 +360,15 @@ export const useChatStore = create<ChatState>((set) => ({
       activeSessionId: id, messages: [], streamingContent: '',
       isStreaming: false, executionLog: [], pendingToolEvents: [],
       pendingCitations: [], activeWorkflowId: null, activeSkill: null,
-      scopes: [], liveReasoning: null,
+      scopes: [], liveReasoning: null, lastError: null,
     });
   },
   setMessages: (messages) => set({ messages }),
 
   addUserMessage: (sessionId, content, attachments) =>
     set((s) => ({
+      // A fresh send clears any stale error banner from the previous turn.
+      lastError: null,
       messages: [...s.messages, {
         id: crypto.randomUUID(), sessionId, senderType: 'user', content,
         timestamp: Date.now(),
@@ -411,6 +442,13 @@ export const useChatStore = create<ChatState>((set) => ({
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
   setPendingClarify: (req) => set({ pendingClarify: req }),
   setPendingToolApproval: (req) => set({ pendingToolApproval: req }),
+  setInspectorRunId: (runId) => set({ inspectorRunId: runId }),
+  setWorkflowsSection: (section) => set({ workflowsSection: section }),
+  openWorkflows: (section) => {
+    saveActiveTab('workflows');
+    set(section ? { activeTab: 'workflows', workflowsSection: section } : { activeTab: 'workflows' });
+  },
+  setLastError: (e) => set({ lastError: e }),
   // Legacy view setter. 'chat' returns to the tabbed canvas; anything else is
   // a settings panel id and routes to the Workspace Settings modal so old
   // call-sites keep working without refactor.

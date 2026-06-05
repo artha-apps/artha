@@ -39,13 +39,15 @@ import * as os from 'os';
 import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { runWithContext } from '../agent/runContext';
+import { listUndoable, revert } from '../agent/undo';
+import { globalSearch } from '../search/global';
 import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
 import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { parseSkillImport } from '../skills/util';
-import { getSkillMetrics } from '../skills/metrics';
+import { getSkillMetrics, getSkillModelStats, getSkillToolUsage, getSkillFailures } from '../skills/metrics';
 import { getDefaultRagIndexer } from '../rag/indexer';
 import { listContacts, addContact, listInteractions, logInteraction, deleteContact } from '../tools/crm';
 import { listEntities, listRelations, queryGraphDb } from '../bodhi/knowledgeGraph';
@@ -840,6 +842,35 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     });
   });
 
+  // Rename a chat. Used by the contextual chat header's inline title editor.
+  // Title is trimmed and length-capped; an empty title falls back to 'New Chat'.
+  ipcMain.handle('sessions:rename', (_e, sessionId: string, title: string) => {
+    const clean = (title ?? '').trim().slice(0, 120) || 'New Chat';
+    getDb().prepare(`UPDATE chat_sessions SET title=? WHERE session_id=?`).run(clean, sessionId);
+    return clean;
+  });
+
+  // ── Runs (Activity hub) ──────────────────────────────────────────────────
+  // Recent agent runs across ALL sessions — drives the Workflows ▸ Runs activity
+  // list. Joins receipt counts + the backing session's title/origin so a run
+  // reads as "what it was for". Delegate/scheduled runs are included (their
+  // sessions carry origin != 'chat'), which is exactly the background work the
+  // transient working-indicator could never surface after the fact.
+  ipcMain.handle('runs:listRecent', (_e, limit?: number) => {
+    return getDb().prepare(`
+      SELECT ar.run_id, ar.session_id, ar.workflow_id, ar.goal, ar.status, ar.model,
+             ar.parent_run_id, ar.created_at,
+             IFNULL(cs.title, '')  AS session_title,
+             IFNULL(cs.origin, 'chat') AS session_origin,
+             (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id) AS calls,
+             (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id AND tr.is_mutation = 1) AS mutations
+      FROM agent_runs ar
+      LEFT JOIN chat_sessions cs ON cs.session_id = ar.session_id
+      ORDER BY ar.created_at DESC
+      LIMIT ?
+    `).all(Math.min(limit ?? 60, 300));
+  });
+
   // ── Scopes ───────────────────────────────────────────────────────────────
   // A scope is a folder or individual file attached to ONE chat. The agent is
   // made aware of it (context injection in the orchestrator) and confined to it
@@ -1292,6 +1323,15 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('skills:listEnabled', () => skills.listEnabled());
   // Per-skill usage metrics for the Skills dashboard (runs, success rate, …).
   ipcMain.handle('skills:metrics', () => getSkillMetrics());
+  // Insight drill-downs for one skill (model / tools / failures dimensions).
+  ipcMain.handle('skills:modelStats', (_e, skillId: string) => getSkillModelStats(skillId));
+  ipcMain.handle('skills:toolUsage', (_e, skillId: string) => getSkillToolUsage(skillId));
+  ipcMain.handle('skills:failures', (_e, skillId: string, limit?: number) => getSkillFailures(skillId, limit ?? 10));
+  // Pin (or clear with null) the model a skill runs on.
+  ipcMain.handle('skills:pinModel', (_e, skillId: string, model: string | null) => {
+    skills.setPinnedModel(skillId, model);
+    return true;
+  });
   ipcMain.handle('skills:create', (_e, input: SkillInput) => skills.create(input));
   ipcMain.handle('skills:update', (_e, skillId: string, patch: Partial<SkillInput>) =>
     skills.update(skillId, patch)
@@ -1399,6 +1439,19 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
     db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify({ ...existing, ...patch }));
   });
+
+  // ── Undo ───────────────────────────────────────────────────────────────
+  // Reverse a reversible filesystem action the agent performed (move / copy /
+  // create-dir / trash). In-memory, process-lifetime — see agent/undo.ts.
+  ipcMain.handle('undo:list', () => listUndoable());
+  ipcMain.handle('undo:revert', (_e, id: string) => revert(id));
+
+  // ── Global search ──────────────────────────────────────────────────────
+  // One query across chats, memory, and artifacts. `semantic` opts into an
+  // embedding re-rank (slower); the palette typeahead uses the fast keyword
+  // path. See search/global.ts.
+  ipcMain.handle('search:global', (_e, query: string, semantic?: boolean) =>
+    globalSearch(query, { semantic: !!semantic }));
 
   // ── License ────────────────────────────────────────────────────────────
   // Offline Ed25519-signed keys gate Pro/Enterprise capabilities. The raw key

@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as os from 'os';
 import OpenAI from 'openai';
 import type { ScopeRoot } from '../db/scopes';
+import { recordFilesystemEffect } from '../agent/undo';
 
 const HOME = os.homedir();
 
@@ -441,6 +442,18 @@ async function deleteFileImpl(filePath: string, permanent = false, roots?: Scope
  *  smaller / quantised models often shorten field names — preventing a
  *  retry loop where the agent re-issues the call with a different alias. */
 export async function invokeFilesystemTool(
+  name: string,
+  args: Record<string, unknown>,
+  allowedRoots?: ScopeRoot[] | null
+): Promise<string> {
+  const result = await dispatchFilesystemTool(name, args, allowedRoots);
+  // Record reversible mutations so the user can Undo them. Wrapped so undo
+  // bookkeeping can never break a tool call.
+  try { recordFilesystemEffect(name, result); } catch { /* non-fatal */ }
+  return result;
+}
+
+async function dispatchFilesystemTool(
   name: string,
   args: Record<string, unknown>,
   allowedRoots?: ScopeRoot[] | null

@@ -46,5 +46,6 @@ export function buildOperatorSkill(
     icon: '🤝',
     instructions: OPERATOR_PLAYBOOK + extra,
     allowedTools: [], // full tool access — delegation acts on the user's behalf
+    pinnedModel: null, // the operator follows the active model / router
   };
 }
