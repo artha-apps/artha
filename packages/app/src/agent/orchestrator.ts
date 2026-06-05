@@ -945,6 +945,15 @@ RULES — follow exactly, no exceptions:
   ): void {
     try {
       const db = getDb();
+      // Only record runs of REAL skills (rows in the skills table). Synthetic
+      // ActiveSkills that aren't persisted — notably the Delegate operator
+      // (slug 'delegate-operator', built per-run by buildOperatorSkill) — must
+      // NOT enter the per-skill ledger: their skill_id has no skills row, so the
+      // dashboard (which joins FROM skills) would never show them and they'd just
+      // accumulate as orphans. The operator isn't a dashboard skill; skip it.
+      const skillRow = this.skills.getBySlug(skill.slug);
+      if (!skillRow) return;
+
       const run = db.prepare(`SELECT status FROM agent_runs WHERE run_id=?`)
         .get(runId) as { status: string } | undefined;
       const status: SkillRunStatus =
@@ -956,7 +965,7 @@ RULES — follow exactly, no exceptions:
          FROM tool_receipts WHERE run_id=?`
       ).get(runId) as { calls: number; errors: number } | undefined;
 
-      const skillId = this.skills.getBySlug(skill.slug)?.skill_id ?? skill.slug;
+      const skillId = skillRow.skill_id;
       recordSkillRun({
         skillId,
         slug: skill.slug,
