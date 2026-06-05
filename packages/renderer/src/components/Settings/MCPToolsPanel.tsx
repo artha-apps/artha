@@ -9,7 +9,7 @@ import {
   Wrench, Plus, Trash2, ToggleLeft, ToggleRight,
   RefreshCw, Clock, CheckCircle2, XCircle, ChevronDown, ChevronRight,
   Shield, Zap, Store, ExternalLink, Loader2, Globe, Brain,
-  GitBranch, MessageSquare, Monitor, Database, Search, Eye,
+  GitBranch, MessageSquare, Monitor, Database, Search, Eye, AlertCircle,
 } from 'lucide-react';
 import { FeatureGuide } from '../ui/FeatureGuide';
 import { GUIDES } from './guides';
@@ -42,7 +42,9 @@ interface AuditEntry {
 }
 
 /** Curated marketplace entry. `requiresEnv` triggers the env-var sub-form
- *  before install; `docs` adds an "open docs" external link. */
+ *  before install; `docs` adds an "open docs" external link; `example` is a
+ *  ready-to-try chat prompt shown after connecting so the user knows what to
+ *  actually do with it. */
 interface MarketplaceServer {
   id: string;
   name: string;
@@ -53,7 +55,34 @@ interface MarketplaceServer {
   icon: React.ElementType;
   iconColor: string;
   docs?: string;
+  example?: string;
 }
+
+/** Friendly, per-credential guidance so a non-technical user knows WHAT each
+ *  field is and WHERE to get it — keyed by the raw env-var name the server
+ *  expects. Anything not listed falls back to the raw key. */
+const ENV_HELP: Record<string, { label: string; url: string; hint: string }> = {
+  GITHUB_PERSONAL_ACCESS_TOKEN: {
+    label: 'GitHub access token',
+    url: 'https://github.com/settings/tokens',
+    hint: 'Create a token with read access to your repos, then paste it here.',
+  },
+  BRAVE_API_KEY: {
+    label: 'Brave Search API key',
+    url: 'https://brave.com/search/api/',
+    hint: 'Sign up (there’s a free tier) and copy your API key.',
+  },
+  SLACK_BOT_TOKEN: {
+    label: 'Slack bot token',
+    url: 'https://api.slack.com/apps',
+    hint: 'Create a Slack app, add bot scopes, install it to your workspace, then copy the Bot User OAuth Token (starts with xoxb-).',
+  },
+  SLACK_TEAM_ID: {
+    label: 'Slack workspace ID',
+    url: 'https://slack.com/help/articles/221769328-Locate-your-Slack-URL-or-ID',
+    hint: 'Your workspace/team ID — it starts with “T”.',
+  },
+};
 
 // ── Curated MCP server catalogue ──────────────────────────────────────────────
 // Hand-picked list shown in the Marketplace tab. Adding a row here is enough
@@ -69,6 +98,7 @@ const MARKETPLACE: MarketplaceServer[] = [
     icon: Globe,
     iconColor: 'text-artha-accent',
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/fetch',
+    example: 'Read and summarize https://example.com',
   },
   {
     id: 'brave-search',
@@ -80,6 +110,7 @@ const MARKETPLACE: MarketplaceServer[] = [
     icon: Search,
     iconColor: 'text-orange-400',
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search',
+    example: 'Search the web for the latest on local AI agents',
   },
   {
     id: 'memory',
@@ -101,6 +132,7 @@ const MARKETPLACE: MarketplaceServer[] = [
     icon: GitBranch,
     iconColor: 'text-artha-text',
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/github',
+    example: 'List my open GitHub issues',
   },
   {
     id: 'slack',
@@ -112,6 +144,7 @@ const MARKETPLACE: MarketplaceServer[] = [
     icon: MessageSquare,
     iconColor: 'text-artha-success',
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/slack',
+    example: 'Summarize today’s messages in #general',
   },
   {
     id: 'puppeteer',
@@ -132,6 +165,7 @@ const MARKETPLACE: MarketplaceServer[] = [
     icon: Database,
     iconColor: 'text-blue-400',
     docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite',
+    example: 'How many rows are in the users table?',
   },
   {
     id: 'everything',
@@ -308,6 +342,11 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
           <code className="text-[10px] text-artha-muted/60 font-mono mt-1 block truncate">
             {server.command}
           </code>
+
+          {/* What to do with it, once connected. */}
+          {isInstalled && server.example && (
+            <p className="text-[11px] text-artha-accent/90 mt-1.5">💡 Try asking: “{server.example}”</p>
+          )}
         </div>
 
         {/* Action */}
@@ -348,20 +387,37 @@ function MarketplaceCard({ server, isInstalled, onInstall }: MarketplaceCardProp
       {expanded && !isInstalled && server.requiresEnv && (
         <div className="px-4 pb-4 space-y-3 border-t border-artha-border/40 pt-3">
           <p className="text-xs text-artha-muted">
-            This server needs API credentials. Enter them below — they're passed as environment variables to the server process and never leave your machine.
+            This connector needs a key to sign in. Enter it below — it stays on your machine and is only passed to the connector.
           </p>
-          {server.requiresEnv.map(envKey => (
-            <div key={envKey}>
-              <label className="block text-xs font-medium text-artha-muted mb-1">{envKey}</label>
-              <input
-                type="password"
-                value={envValues[envKey] ?? ''}
-                onChange={e => setEnvValues(v => ({ ...v, [envKey]: e.target.value }))}
-                placeholder={`Enter ${envKey}`}
-                className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-xs text-artha-text placeholder-artha-muted/50 focus:border-artha-accent/50 focus:outline-none font-mono"
-              />
-            </div>
-          ))}
+          {server.requiresEnv.map(envKey => {
+            const help = ENV_HELP[envKey];
+            return (
+              <div key={envKey}>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-medium text-artha-text">{help?.label ?? envKey}</label>
+                  {help?.url && (
+                    <a
+                      href={help.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      className="inline-flex items-center gap-0.5 text-[10px] text-artha-accent hover:underline"
+                    >
+                      Get this <ExternalLink size={9} />
+                    </a>
+                  )}
+                </div>
+                {help?.hint && <p className="text-[10px] text-artha-muted leading-snug mb-1.5">{help.hint}</p>}
+                <input
+                  type="password"
+                  value={envValues[envKey] ?? ''}
+                  onChange={e => setEnvValues(v => ({ ...v, [envKey]: e.target.value }))}
+                  placeholder={help ? `Paste your ${help.label.toLowerCase()}` : `Enter ${envKey}`}
+                  className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-xs text-artha-text placeholder-artha-muted/50 focus:border-artha-accent/50 focus:outline-none font-mono"
+                />
+              </div>
+            );
+          })}
           {error && (
             <p className="text-xs text-artha-danger flex items-center gap-1">
               <XCircle size={11} /> {error}
@@ -415,6 +471,11 @@ export default function MCPToolsPanel() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState('');
   const [marketplaceCategory, setMarketplaceCategory] = useState<string>('All');
+  // npx-based connectors need Node.js on PATH; warn (with a fix) if it's absent.
+  const [npxMissing, setNpxMissing] = useState(false);
+  useEffect(() => {
+    window.artha.system.checkRuntime().then(r => setNpxMissing(!r.npx)).catch(() => { /* ignore */ });
+  }, []);
 
   // ── Data loading ───────────────────────────────────────────────────────────
 
@@ -670,6 +731,28 @@ export default function MCPToolsPanel() {
               <code className="text-xs bg-artha-s2 border border-artha-border px-1.5 py-0.5 rounded font-mono">npx</code>
               {' '}— no cloud, no accounts required (unless the service itself needs one).
             </p>
+
+            {/* Prerequisite: npx-based connectors can't start without Node.js. Tell
+                the user up front with a one-click fix, instead of a cryptic error. */}
+            {npxMissing && (
+              <div className="flex items-start gap-2.5 mb-4 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-sm">
+                <AlertCircle size={15} className="text-amber-500 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-artha-text font-medium">Node.js is required for these connectors</p>
+                  <p className="text-xs text-artha-muted leading-snug mt-0.5">
+                    They start with <code className="font-mono">npx</code>, which needs Node.js (a free, one-time install). Install it, then reopen this tab.
+                  </p>
+                  <a
+                    href="https://nodejs.org/en/download"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 mt-1.5 text-xs text-artha-accent hover:underline"
+                  >
+                    Install Node.js <ExternalLink size={11} />
+                  </a>
+                </div>
+              </div>
+            )}
 
             {/* Category filter */}
             <div className="flex gap-1.5 flex-wrap mb-5">
