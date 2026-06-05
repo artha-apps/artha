@@ -88,7 +88,7 @@ export default function CloudIntegrationsPanel() {
         <FeatureGuide {...GUIDES.cloud} />
         {/* Header */}
         <div className="flex items-center gap-3 mb-6">
-          <LinkIcon size={22} className="text-cyan-400" />
+          <LinkIcon size={22} className="text-artha-accent" />
           <div>
             <h2 className="text-lg font-semibold text-artha-text">Cloud Integrations</h2>
             <p className="text-sm text-artha-muted">Connect Google Workspace so the agent can read your mail, calendar, and files</p>
@@ -97,7 +97,7 @@ export default function CloudIntegrationsPanel() {
 
         {/* No-client-id warning */}
         {!savedClientId && (
-          <div className="flex items-start gap-3 p-3 mb-4 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-sm text-yellow-300">
+          <div className="flex items-start gap-3 p-3 mb-4 rounded-xl bg-artha-warn/10 border border-artha-warn/30 text-sm text-artha-warn">
             <AlertTriangle size={16} className="shrink-0 mt-0.5" />
             <span>No Google Client ID set yet. Add one in <strong>Setup</strong> below before connecting.</span>
           </div>
@@ -111,7 +111,7 @@ export default function CloudIntegrationsPanel() {
           >
             {setupOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             Setup
-            {savedClientId && <span className="ml-auto text-xs text-green-400">Client ID saved</span>}
+            {savedClientId && <span className="ml-auto text-xs text-artha-success">Client ID saved</span>}
           </button>
           {setupOpen && (
             <div className="px-4 pb-4 space-y-3 border-t border-artha-border pt-3">
@@ -124,7 +124,7 @@ export default function CloudIntegrationsPanel() {
                 href="https://console.cloud.google.com/apis/credentials"
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300"
+                className="inline-flex items-center gap-1.5 text-xs text-artha-accent hover:text-artha-accent"
               >
                 <ExternalLink size={12} /> Open Google Cloud Console credentials
               </a>
@@ -133,12 +133,12 @@ export default function CloudIntegrationsPanel() {
                   value={clientId}
                   onChange={e => setClientId(e.target.value)}
                   placeholder="xxxxxxxx.apps.googleusercontent.com"
-                  className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text placeholder-artha-muted font-mono focus:outline-none focus:border-cyan-500/50"
+                  className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text placeholder-artha-muted font-mono focus:outline-none focus:border-artha-accent/50"
                 />
                 <button
                   onClick={saveClientId}
                   disabled={clientId.trim() === savedClientId}
-                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed text-artha-text text-sm font-medium transition-colors"
+                  className="px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover disabled:opacity-40 disabled:cursor-not-allowed text-artha-on-accent text-sm font-medium transition-colors"
                 >
                   Save
                 </button>
@@ -149,7 +149,7 @@ export default function CloudIntegrationsPanel() {
 
         {/* Error */}
         {error && (
-          <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-sm text-red-400">
+          <div className="mb-4 px-4 py-3 rounded-xl bg-artha-danger/10 border border-artha-danger/30 text-sm text-artha-danger">
             {error}
           </div>
         )}
@@ -162,7 +162,7 @@ export default function CloudIntegrationsPanel() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-artha-text">{label}</span>
-                  <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-gray-500'}`} />
+                  <span className={`w-2 h-2 rounded-full ${connected ? 'bg-artha-success shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-artha-muted'}`} />
                   <span className="text-xs text-artha-muted">{connected ? 'Connected' : 'Disconnected'}</span>
                 </div>
                 <p className="text-xs text-artha-muted mt-0.5">{desc}</p>
@@ -180,7 +180,7 @@ export default function CloudIntegrationsPanel() {
                   onClick={connect}
                   disabled={busy || !savedClientId}
                   title={!savedClientId ? 'Set a Google Client ID first' : 'Connect'}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed text-artha-text text-xs font-medium transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent-hover disabled:opacity-40 disabled:cursor-not-allowed text-artha-on-accent text-xs font-medium transition-colors"
                 >
                   {busy ? <><Loader size={12} className="animate-spin" /> Connecting…</> : 'Connect'}
                 </button>

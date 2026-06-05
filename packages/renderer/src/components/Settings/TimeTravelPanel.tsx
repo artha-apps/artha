@@ -48,10 +48,10 @@ const KIND_ICON: Record<StepRow['kind'], React.ElementType> = {
 
 const KIND_COLOR: Record<StepRow['kind'], string> = {
   system: 'text-artha-muted bg-artha-text/5',
-  user: 'text-green-400 bg-green-400/10',
+  user: 'text-artha-success bg-artha-success/10',
   assistant: 'text-amber-400 bg-amber-400/10',
   tool_call: 'text-violet-400 bg-violet-400/10',
-  tool_result: 'text-cyan-400 bg-cyan-400/10',
+  tool_result: 'text-artha-accent bg-artha-accent/10',
   final: 'text-artha-accent bg-artha-accent/10',
 };
 
@@ -181,7 +181,7 @@ export default function TimeTravelPanel() {
                   <span>{relativeTime(r.created_at)}</span>
                   <span className="opacity-50">·</span>
                   <span className="truncate">{r.model}</span>
-                  {r.status === 'failed' && <XCircle size={9} className="text-red-400" />}
+                  {r.status === 'failed' && <XCircle size={9} className="text-artha-danger" />}
                   {r.status === 'cancelled' && <XCircle size={9} className="text-amber-400" />}
                 </div>
               </div>

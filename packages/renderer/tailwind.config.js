@@ -26,6 +26,7 @@ export default {
           subtle:          token('--artha-subtle'),
           accent:          token('--artha-accent'),
           'accent-hover':  token('--artha-accent-hover'),
+          'on-accent':     token('--artha-on-accent'),
           mint:            token('--artha-mint'),
           danger:          token('--artha-danger'),
           success:         token('--artha-success'),

@@ -38,11 +38,16 @@ import * as http from 'http';
 import * as os from 'os';
 import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
+import { runWithContext } from '../agent/runContext';
 import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
+import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
+import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { parseSkillImport } from '../skills/util';
 import { getDefaultRagIndexer } from '../rag/indexer';
+import { listContacts, addContact, listInteractions, logInteraction, deleteContact } from '../tools/crm';
+import { listEntities, listRelations, queryGraphDb } from '../bodhi/knowledgeGraph';
 import { buildShallowTree } from '../agent/folderTree';
 import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
@@ -318,10 +323,13 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
     }
 
     if (req.method === 'POST' && url.pathname === '/chat') {
-      // Rate-limit per client IP — one /chat = one full agent run, so an
-      // unthrottled caller could exhaust CPU or run up cloud-model spend.
+      // Rate-limit per authenticated identity — one /chat = one full agent run,
+      // so an unthrottled caller could exhaust CPU or run up cloud-model spend.
+      // Keying by member id (not just IP) means one teammate can't DoS the
+      // server from rotating/spoofed source addresses on a shared LAN.
       const clientIp = req.socket.remoteAddress ?? 'unknown';
-      if (!lanChatLimiter.take(clientIp)) {
+      const limitKey = identity.memberId ?? `ip:${clientIp}`;
+      if (!lanChatLimiter.take(limitKey)) {
         json(429, { error: 'Too many requests. Slow down and retry shortly.' });
         return;
       }
@@ -345,7 +353,14 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
           // desktop UI but writes final messages to the DB synchronously).
           const before = (db.prepare(`SELECT COALESCE(MAX(rowid), 0) AS m FROM messages WHERE session_id=?`).get(sid) as { m: number }).m;
 
-          await orchestrator.handleMessage(sid, parsed.message, []);
+          // Bind the run to the calling teammate's identity so tool-audit rows
+          // are attributable and memory visibility is restricted to shared-only
+          // (a LAN run must never see the host's private memories).
+          const actor = identity.memberName ?? identity.memberId ?? 'lan:unknown';
+          const message = parsed.message;
+          await runWithContext({ actor, lan: true }, () =>
+            orchestrator.handleMessage(sid, message, []),
+          );
 
           // Replay all agent replies written during this run as NDJSON lines.
           const rows = db.prepare(
@@ -569,6 +584,25 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('agent:clarifyRespond', (_e, workflowId: string, answers: string[] | null) => {
     orchestrator.clarifyRespond(workflowId, answers);
   });
+
+  // Per-tool-call approval (policy `confirm` tier). The renderer answers the
+  // `agent:toolApprovalRequest` event with the user's decision.
+  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean) => {
+    orchestrator.respondToolApproval(approvalId, approved);
+  });
+
+  // ── Tool-call policies (governance for function calling) ─────────────────
+  // CRUD over per-tool trust tiers evaluated before every function call.
+  ipcMain.handle('policies:list', () => listPolicies());
+  ipcMain.handle('policies:create', (_e, input: PolicyInput) => createPolicy(input));
+  ipcMain.handle('policies:update', (_e, policyId: string, patch: Partial<PolicyInput>) => updatePolicy(policyId, patch));
+  ipcMain.handle('policies:delete', (_e, policyId: string) => deletePolicy(policyId));
+
+  // ── Verified tool receipts (provenance for function calls) ───────────────
+  // Read-only audit views. `listRuns` drives the panel's left list (one row per
+  // run); `listByRun` returns every receipt for a chosen run.
+  ipcMain.handle('receipts:listRuns', (_e, limit?: number) => listReceiptRuns(limit ?? 50));
+  ipcMain.handle('receipts:listByRun', (_e, runId: string) => listReceiptsByRun(runId));
 
   // ── Delegate ─────────────────────────────────────────────────────────────
   // Goal-driven execution. Creates an isolated Task session, routes the goal to
@@ -1238,6 +1272,12 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   });
 
   ipcMain.handle('mcp:getAuditLog', (_e, limit = 200) => {
+    // Exporting the org-wide audit trail is an Enterprise entitlement. Free/Pro
+    // see their own local activity only via the in-app log; the bulk export that
+    // backs compliance reporting is gated.
+    if (!currentEntitlements().auditExport) {
+      throw new Error('Audit log export requires an Enterprise license.');
+    }
     return getDb().prepare(
       `SELECT * FROM tool_audit_log ORDER BY ts DESC LIMIT ?`
     ).all(limit);
@@ -1667,6 +1707,30 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return true;
   });
 
+  // ── CRM ─────────────────────────────────────────────────────────────────────
+  // The CrmPanel reads/writes the SAME tables (and the same KG projection) the
+  // CRM Agent's crm_* tools use — one source of truth, never a parallel store.
+  ipcMain.handle('crm:listContacts', () => listContacts(null));
+  ipcMain.handle('crm:addContact', (_e, input: { name: string; company?: string; email?: string; title?: string }) => {
+    const { contact } = addContact({
+      name: input.name, company: input.company ?? null, email: input.email ?? null, title: input.title ?? null,
+    });
+    return { contact_id: contact.contact_id };
+  });
+  ipcMain.handle('crm:listInteractions', (_e, contactId: string) => listInteractions(contactId));
+  ipcMain.handle('crm:logInteraction', (_e, input: { contactId: string; kind: string; summary: string }) => {
+    const i = logInteraction({ contactId: input.contactId, kind: input.kind, summary: input.summary });
+    return { interaction_id: i.interaction_id };
+  });
+  ipcMain.handle('crm:deleteContact', (_e, contactId: string) => deleteContact(contactId));
+
+  // ── Knowledge Graph ─────────────────────────────────────────────────────────
+  // Read-mostly views over the general KG engine. The query handler is a thin
+  // pass-through to the engine's pure query so the UI and the agent agree.
+  ipcMain.handle('kg:listNodes', (_e, filter?: { kind?: string }) => listEntities({ kind: filter?.kind }));
+  ipcMain.handle('kg:listEdges', (_e, nodeId?: string) => listRelations(nodeId));
+  ipcMain.handle('kg:query', (_e, q: string) => queryGraphDb(String(q ?? '')));
+
   // ── Bring-Your-Own-Memory (BYOM) ────────────────────────────────────────────
   // Parse a memory export pasted from another AI, review it, then commit. Parse
   // is split from commit so the renderer can show an editable review step first.
@@ -2050,6 +2114,12 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Toggle is_shared on a memory entity. Shared memories are injected into LAN
   // server sessions so remote teammates get the same persistent context.
   ipcMain.handle('memory:setShared', (_e, entityId: string, shared: boolean) => {
+    // Sharing memory across LAN sessions is a Pro/Enterprise capability. Gate the
+    // enable path so a Free user can't mark memories shared (they have no LAN
+    // server to inject them into anyway); always allow turning sharing OFF.
+    if (shared && !currentEntitlements().sharedMemory) {
+      throw new Error('Shared memory requires a Pro or Enterprise license.');
+    }
     getDb().prepare(`UPDATE memory_entities SET is_shared=? WHERE entity_id=?`).run(shared ? 1 : 0, entityId);
     return true;
   });

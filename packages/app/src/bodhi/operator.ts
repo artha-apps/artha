@@ -40,6 +40,7 @@ export function buildOperatorSkill(
     ? `\n\nTask-specific playbook — "${taskPlaybook.name}":\n${taskPlaybook.instructions}`
     : '';
   return {
+    kind: 'skill',
     slug: 'delegate-operator',
     name: 'Delegation Operator',
     icon: '🤝',

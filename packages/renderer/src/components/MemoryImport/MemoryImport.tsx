@@ -45,10 +45,10 @@ const TYPE_OPTIONS = ['fact', 'preference', 'person', 'project', 'decision', 'ot
 const TYPE_COLOURS: Record<string, string> = {
   fact:       'bg-blue-500/20 text-blue-300',
   preference: 'bg-purple-500/20 text-purple-300',
-  person:     'bg-green-500/20 text-green-300',
+  person:     'bg-artha-success/20 text-artha-success',
   project:    'bg-orange-500/20 text-orange-300',
   decision:   'bg-yellow-500/20 text-yellow-300',
-  other:      'bg-gray-500/20 text-gray-300',
+  other:      'bg-artha-muted/20 text-artha-muted',
 };
 
 /** The export prompt we hand users to run in their old assistant. Designed so
@@ -173,7 +173,7 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
               onClick={() => setTool(t.id)}
               className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
                 tool === t.id
-                  ? 'bg-artha-accent text-white border-artha-accent'
+                  ? 'bg-artha-accent text-artha-on-accent border-artha-accent'
                   : 'bg-artha-surface text-artha-muted border-artha-border hover:text-artha-text'
               }`}
             >
@@ -196,7 +196,7 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
             </pre>
             <button
               onClick={copyPrompt}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-white transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-artha-on-accent transition-colors"
             >
               {copied ? <><Check size={13} /> Copied</> : <><ClipboardCopy size={13} /> Copy prompt</>}
             </button>
@@ -218,7 +218,7 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
           Refine with AI (uses your local model — slower, handles messy formats)
         </label>
 
-        {error && <p className="text-xs text-red-400">{error}</p>}
+        {error && <p className="text-xs text-artha-danger">{error}</p>}
 
         <div className="flex items-center justify-between pt-1">
           <button
@@ -230,7 +230,7 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
           <button
             onClick={handleParse}
             disabled={!raw.trim() || busy}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-white transition-colors disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-artha-on-accent transition-colors disabled:opacity-40"
           >
             {busy ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
             {busy ? 'Reading…' : 'Continue'}
@@ -257,7 +257,7 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
               key={e._id}
               className={`flex items-start gap-3 p-3 rounded-xl border transition-colors ${
                 e.keep
-                  ? 'bg-artha-text/5 border-white/5'
+                  ? 'bg-artha-text/5 border-artha-border'
                   : 'bg-transparent border-artha-border opacity-50'
               }`}
             >
@@ -289,7 +289,7 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
               </div>
               <button
                 onClick={() => updateEntry(e._id, { keep: false })}
-                className="p-1.5 rounded-lg text-artha-subtle hover:bg-red-500/20 hover:text-red-400 transition-colors shrink-0"
+                className="p-1.5 rounded-lg text-artha-subtle hover:bg-artha-danger/20 hover:text-artha-danger transition-colors shrink-0"
                 title="Drop this entry"
               >
                 <Trash2 size={14} />
@@ -298,7 +298,7 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
           ))}
         </div>
 
-        {error && <p className="text-xs text-red-400">{error}</p>}
+        {error && <p className="text-xs text-artha-danger">{error}</p>}
 
         <div className="flex items-center justify-between pt-1">
           <button
@@ -310,7 +310,7 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
           <button
             onClick={handleCommit}
             disabled={keptCount === 0 || busy}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-white transition-colors disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-artha-on-accent transition-colors disabled:opacity-40"
           >
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
             Add {keptCount} {keptCount === 1 ? 'memory' : 'memories'} to Artha
@@ -323,8 +323,8 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
   // ── Done step ───────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col items-center text-center gap-3 py-4">
-      <div className="w-12 h-12 rounded-2xl bg-green-500/15 border border-green-500/20 flex items-center justify-center">
-        <PartyPopper size={24} className="text-green-400" />
+      <div className="w-12 h-12 rounded-2xl bg-artha-success/15 border border-artha-success/20 flex items-center justify-center">
+        <PartyPopper size={24} className="text-artha-success" />
       </div>
       <h2 className="text-base font-semibold text-artha-text">Artha now knows you</h2>
       <p className="text-sm text-artha-muted max-w-sm">
@@ -335,13 +335,13 @@ export default function MemoryImport({ onDone, onSkip, variant = 'onboarding' }:
       <div className="flex items-center gap-2 pt-1">
         <button
           onClick={() => { setRaw(''); setEntries([]); setResult(null); setStep('paste'); }}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-artha-muted hover:text-artha-text border border-artha-border hover:bg-white/5 transition-colors"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-artha-muted hover:text-artha-text border border-artha-border hover:bg-artha-text/5 transition-colors"
         >
           <RotateCcw size={13} /> Import more
         </button>
         <button
           onClick={() => onDone(result ?? undefined)}
-          className="px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-white transition-colors"
+          className="px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-artha-on-accent transition-colors"
         >
           Done
         </button>

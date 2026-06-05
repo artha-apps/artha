@@ -165,8 +165,13 @@ async function createWindow(): Promise<void> {
     db.prepare(`INSERT INTO chat_sessions (session_id, title) VALUES (?, ?)`).run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
     // Dynamically import to avoid circular deps — orchestrator is already constructed by registerIpcHandlers.
     const { AgentOrchestrator } = await import('./agent/orchestrator');
+    const { runWithContext } = await import('./agent/runContext');
     const orch = new AgentOrchestrator(mainWindow!);
-    await orch.handleMessage(sessionId, prompt);
+    // Mark the run unattended so a `confirm`-tier tool policy fails closed
+    // instead of popping a desktop modal nobody is watching at fire time.
+    await runWithContext({ actor: 'scheduler', lan: false, unattended: true }, () =>
+      orch.handleMessage(sessionId, prompt),
+    );
   }).catch(err => console.error('[Artha] Scheduler init failed:', err));
 
   // Load renderer

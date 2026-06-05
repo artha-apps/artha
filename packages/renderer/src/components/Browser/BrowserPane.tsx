@@ -112,8 +112,8 @@ export default function BrowserPane({ onClose }: Props) {
             native BrowserView so it's visible over the page. */}
         {agentDriving && (
           <div className="pointer-events-none absolute inset-0 z-[5] ring-2 ring-inset ring-artha-accent/70">
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-artha-text/92 text-white text-[11px] font-medium shadow-lifted">
-              <span className="w-1.5 h-1.5 rounded-full bg-artha-accent animate-pulse" />
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-artha-accent text-artha-on-accent text-[11px] font-medium shadow-glow">
+              <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
               🤖 Artha is browsing this page
             </div>
           </div>
@@ -137,7 +137,7 @@ export default function BrowserPane({ onClose }: Props) {
               </p>
               <button
                 onClick={() => void window.artha.browser.recover()}
-                className="px-4 py-2 rounded-md bg-artha-accent text-white text-[13px] font-medium hover:opacity-90 transition"
+                className="px-4 py-2 rounded-md bg-artha-accent text-artha-on-accent text-[13px] font-medium hover:opacity-90 transition"
               >
                 Reload page
               </button>

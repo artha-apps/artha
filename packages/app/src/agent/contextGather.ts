@@ -18,6 +18,7 @@
  * step, how strong the contextual grounding was.
  */
 import { getDb } from '../db/schema';
+import { getRunContext } from './runContext';
 import { getSessionScopes } from '../db/scopes';
 
 const OLLAMA_EMBED_URL = 'http://localhost:11434/api/embeddings';
@@ -68,17 +69,23 @@ function cosine(a: number[], b: number[]): number {
 }
 
 /** Candidate memories for a session's project bucket (global + project), newest
- *  first, capped so embedding stays cheap. */
+ *  first, capped so embedding stays cheap.
+ *
+ *  When the run originates from the LAN server, only memories explicitly marked
+ *  `is_shared=1` are eligible — a remote teammate's agent turn must never see
+ *  the host's private memories. The desktop (local) path has full visibility. */
 function loadCandidateMemories(projectId: string | null, cap = 40): MemoryRow[] {
   const db = getDb();
+  // LAN runs are restricted to shared memories; local runs see everything.
+  const sharedOnly = getRunContext()?.lan === true ? 'AND is_shared=1' : '';
   const rows = (projectId
     ? db.prepare(
         `SELECT entity_id, name, entity_type, content, updated_at FROM memory_entities
-         WHERE project_id IS NULL OR project_id = ? ORDER BY updated_at DESC LIMIT ?`,
+         WHERE (project_id IS NULL OR project_id = ?) ${sharedOnly} ORDER BY updated_at DESC LIMIT ?`,
       ).all(projectId, cap)
     : db.prepare(
         `SELECT entity_id, name, entity_type, content, updated_at FROM memory_entities
-         WHERE project_id IS NULL ORDER BY updated_at DESC LIMIT ?`,
+         WHERE project_id IS NULL ${sharedOnly} ORDER BY updated_at DESC LIMIT ?`,
       ).all(cap)) as MemoryRow[];
   return rows;
 }

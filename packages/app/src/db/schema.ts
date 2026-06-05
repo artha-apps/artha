@@ -188,6 +188,10 @@ export async function initDatabase(): Promise<void> {
       icon               TEXT NOT NULL DEFAULT '✨',
       is_enabled         INTEGER NOT NULL DEFAULT 1,
       is_builtin         INTEGER NOT NULL DEFAULT 0,
+      -- A capability is realised either as a stateless 'skill' (playbook + tool
+      -- scope) or promoted to a first-class 'agent'. Same row shape — the kind
+      -- is the only difference, so "promote a skill to an agent" is a flag.
+      kind               TEXT NOT NULL DEFAULT 'skill' CHECK(kind IN ('skill','agent')),
       created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at         INTEGER NOT NULL DEFAULT (unixepoch())
     );
@@ -202,6 +206,7 @@ export async function initDatabase(): Promise<void> {
       result      TEXT,
       duration_ms INTEGER,
       status      TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok','error')),
+      actor       TEXT NOT NULL DEFAULT 'local',
       ts          INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
@@ -259,6 +264,46 @@ export async function initDatabase(): Promise<void> {
     );
 
     CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id, idx);
+
+    -- ── Tool-call policies (governance for function calling) ────────────────
+    -- Per-tool trust tiers evaluated before every function call (see
+    -- bodhi/policy.ts). pattern follows the Skills allowlist convention (exact
+    -- name, a prefix ending in "_", or "*"). tier decides what happens:
+    -- auto=run silently, confirm=ask first, dry_run=describe but don't execute,
+    -- forbid=block. scope='outside_roots' applies a rule only to calls whose
+    -- path arguments fall outside the chat's sandbox folders.
+    CREATE TABLE IF NOT EXISTS tool_policies (
+      policy_id   TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      pattern     TEXT NOT NULL,
+      tier        TEXT NOT NULL DEFAULT 'confirm' CHECK(tier IN ('auto','confirm','dry_run','forbid')),
+      scope       TEXT NOT NULL DEFAULT 'always'  CHECK(scope IN ('always','outside_roots')),
+      note        TEXT NOT NULL DEFAULT '',
+      is_enabled  INTEGER NOT NULL DEFAULT 1,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    -- ── Verified tool receipts (provenance for function calls) ──────────────
+    -- One row per tool call (including policy-blocked / dry-run calls). Carries
+    -- a plain-English effect, a content hash of the result, the governing policy
+    -- tier, and status, so the user gets a verifiable audit trail of what the
+    -- agent did (see bodhi/receipts.ts). Local-only; never transmitted.
+    CREATE TABLE IF NOT EXISTS tool_receipts (
+      receipt_id  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      run_id      TEXT,
+      session_id  TEXT,
+      workflow_id TEXT,
+      idx         INTEGER NOT NULL DEFAULT 0,
+      tool_name   TEXT NOT NULL,
+      args_json   TEXT NOT NULL DEFAULT '{}',
+      effect      TEXT NOT NULL DEFAULT '',
+      result_hash TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok','error','blocked','skipped')),
+      tier        TEXT NOT NULL DEFAULT 'auto',
+      is_mutation INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      ts          INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_receipts_run ON tool_receipts(run_id, idx);
 
     -- ── Adaptive model router ──────────────────────────────────────────────
     -- Per-task-type benchmark profile: latency + a quality heuristic score.
@@ -391,12 +436,100 @@ export async function initDatabase(): Promise<void> {
       is_enabled   INTEGER NOT NULL DEFAULT 1
     );
 
+    -- ── Knowledge Graph (Bodhi engine) ────────────────────────────────────
+    -- General-purpose typed entities + directed typed relations — the real
+    -- "Knowledge Graph" layer of the intelligence stack. Domain producers (the
+    -- CRM Agent today; Email/Calendar later) PROJECT their rows in here via a
+    -- stable (source, kind, external_id) key so re-projection is idempotent.
+    -- Distinct from memory_entities (a flat fact bag with no relation concept).
+    CREATE TABLE IF NOT EXISTS kg_entities (
+      entity_id   TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      kind        TEXT NOT NULL,                  -- 'person' | 'company' | 'deal' | … (open vocab)
+      name        TEXT NOT NULL,                  -- display label
+      external_id TEXT,                           -- producer's own id (e.g. crm contact_id); NULL = ad-hoc
+      source      TEXT NOT NULL DEFAULT 'manual', -- 'crm' | 'manual' | … which producer owns it
+      props_json  TEXT NOT NULL DEFAULT '{}',     -- arbitrary structured attributes
+      project_id  TEXT,                           -- NULL = global; mirrors memory_entities scoping
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    -- Idempotent re-projection key: one node per (source, kind, external_id).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_kg_entity_ext
+      ON kg_entities(source, kind, external_id) WHERE external_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_kg_entity_name ON kg_entities(name);
+    CREATE INDEX IF NOT EXISTS idx_kg_entity_kind ON kg_entities(kind);
+
+    CREATE TABLE IF NOT EXISTS kg_relations (
+      relation_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      src_id      TEXT NOT NULL REFERENCES kg_entities(entity_id) ON DELETE CASCADE,
+      dst_id      TEXT NOT NULL REFERENCES kg_entities(entity_id) ON DELETE CASCADE,
+      rel_type    TEXT NOT NULL,                  -- 'works_at' | 'owns_deal' | 'interacted_with' | …
+      props_json  TEXT NOT NULL DEFAULT '{}',
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    -- One edge of a given type between two nodes (idempotent linking).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_kg_rel_unique ON kg_relations(src_id, dst_id, rel_type);
+    CREATE INDEX IF NOT EXISTS idx_kg_rel_src ON kg_relations(src_id);
+    CREATE INDEX IF NOT EXISTS idx_kg_rel_dst ON kg_relations(dst_id);
+
+    -- ── CRM (local-only; backs the CRM Agent capability) ───────────────────
+    -- Plain local SQLite — no cloud, no API keys. Writes also project into the
+    -- Knowledge Graph above so relationships are queryable.
+    CREATE TABLE IF NOT EXISTS crm_companies (
+      company_id  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name        TEXT NOT NULL,
+      domain      TEXT,
+      notes       TEXT NOT NULL DEFAULT '',
+      project_id  TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_company_name ON crm_companies(name, IFNULL(project_id,''));
+
+    CREATE TABLE IF NOT EXISTS crm_contacts (
+      contact_id  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name        TEXT NOT NULL,
+      email       TEXT,
+      phone       TEXT,
+      company_id  TEXT REFERENCES crm_companies(company_id) ON DELETE SET NULL,
+      title       TEXT,
+      notes       TEXT NOT NULL DEFAULT '',
+      project_id  TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_crm_contact_name ON crm_contacts(name);
+    CREATE INDEX IF NOT EXISTS idx_crm_contact_email ON crm_contacts(email);
+
+    CREATE TABLE IF NOT EXISTS crm_deals (
+      deal_id     TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      title       TEXT NOT NULL,
+      company_id  TEXT REFERENCES crm_companies(company_id) ON DELETE SET NULL,
+      contact_id  TEXT REFERENCES crm_contacts(contact_id) ON DELETE SET NULL,
+      stage       TEXT NOT NULL DEFAULT 'lead',
+      amount      REAL,
+      project_id  TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_crm_deal_contact ON crm_deals(contact_id);
+
+    CREATE TABLE IF NOT EXISTS crm_interactions (
+      interaction_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      contact_id  TEXT REFERENCES crm_contacts(contact_id) ON DELETE CASCADE,
+      kind        TEXT NOT NULL DEFAULT 'note',   -- call | email | meeting | note
+      summary     TEXT NOT NULL DEFAULT '',
+      occurred_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_crm_interaction_contact ON crm_interactions(contact_id);
+
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
 
     -- Seed built-in skills (idempotent — keyed by slug). These ship enabled and
     -- can be edited or disabled by the user, but not deleted (is_builtin=1).
-    INSERT OR IGNORE INTO skills (slug, name, description, instructions, allowed_tools_json, icon, is_builtin)
+    INSERT OR IGNORE INTO skills (slug, name, description, instructions, allowed_tools_json, icon, is_builtin, kind)
     VALUES
       (
         'research',
@@ -410,7 +543,8 @@ export async function initDatabase(): Promise<void> {
         '5. Never state a fact you did not read from a fetched page.',
         '["web_","browser_navigate","browser_read_dom"]',
         '🔎',
-        1
+        1,
+        'skill'
       ),
       (
         'organize',
@@ -424,7 +558,8 @@ export async function initDatabase(): Promise<void> {
         '5. Never delete a file unless the user explicitly asked you to.',
         '["fs_"]',
         '🗂️',
-        1
+        1,
+        'skill'
       ),
       (
         'summarize',
@@ -437,7 +572,8 @@ export async function initDatabase(): Promise<void> {
         '4. Quote sparingly and attribute which file each point came from when summarizing multiple files.',
         '["fs_list_directory","fs_search_files","fs_read_file","fs_get_file_info"]',
         '📝',
-        1
+        1,
+        'skill'
       ),
       (
         'report',
@@ -452,7 +588,8 @@ export async function initDatabase(): Promise<void> {
         '6. After the file is created, tell the user the file name and where it was saved. Never claim a document exists unless docs_generate returned success.',
         '["web_","browser_navigate","browser_read_dom","docs_generate","fs_read_file","fs_list_directory"]',
         '📊',
-        1
+        1,
+        'skill'
       ),
       (
         'ask',
@@ -465,8 +602,32 @@ export async function initDatabase(): Promise<void> {
         '4. If nothing relevant is found, say so plainly — do NOT invent file contents.',
         '["rag_search","rag_list_indexes","fs_read_file"]',
         '📚',
-        1
+        1,
+        'skill'
+      ),
+      (
+        'crm',
+        'CRM Agent',
+        'Manage contacts, companies, deals, and interactions in your local CRM, and reason over who-knows-whom. Use when the user wants to add or find a contact, log a call/email/meeting, track a deal, or ask about their relationships and network.',
+        'You are the CRM Agent — you maintain a local, private CRM and the relationship graph behind it.' || char(10) ||
+        '1. To record a person, call crm_add_contact with their name (and email/company/title if known). Companies are created automatically.' || char(10) ||
+        '2. Log every call, email, or meeting with crm_log_interaction against the contact, with a short summary.' || char(10) ||
+        '3. Track opportunities with crm_add_deal, tied to a contact or company.' || char(10) ||
+        '4. To answer "who/what do we know" questions, use crm_find for records and kg_query / kg_search to traverse the relationship graph (works_at, owns_deal, interacted_with).' || char(10) ||
+        '5. Never invent a contact, deal, or interaction — only report what the tools actually returned.',
+        '["crm_","kg_"]',
+        '👥',
+        1,
+        'agent'
       );
+
+    -- Seed ONE safe default tool policy so the governance feature is visible and
+    -- valuable out of the box: confirm before deleting a file. Seeded only when
+    -- no policies exist yet, so a user who clears the list isn't fought with.
+    INSERT INTO tool_policies (pattern, tier, scope, note)
+    SELECT 'fs_delete_file', 'confirm', 'always',
+           'Ask before deleting any file (default — edit or remove in Settings → Tool Policies).'
+    WHERE NOT EXISTS (SELECT 1 FROM tool_policies);
   `);
 
   console.log('[Artha] Database schema ready at', dbPath);
@@ -611,6 +772,31 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] memory origin migration skipped:', err);
+  }
+
+  // Migration v11→v12: kind on skills — promotes the capability model from
+  // skills-only to skills + first-class agents. Existing rows back-fill to
+  // 'skill'; the seeded CRM Agent ships as 'agent'. Additive, constant default.
+  try {
+    const skillCols = db.prepare(`PRAGMA table_info(skills)`).all() as { name: string }[];
+    if (skillCols.length && !skillCols.some(c => c.name === 'kind')) {
+      db.exec(`ALTER TABLE skills ADD COLUMN kind TEXT NOT NULL DEFAULT 'skill'`);
+    }
+  } catch (err) {
+    console.warn('[Artha] skills kind migration skipped:', err);
+  }
+
+  // Migration v12→v13: actor on tool_audit_log — records WHO initiated each tool
+  // call ('local' = the desktop user; a team-member name/id for LAN requests).
+  // Required for the B2B compliance story ("which teammate ran what tool").
+  // Existing rows default to 'local' so pre-team history stays attributable.
+  try {
+    const auditCols = db.prepare(`PRAGMA table_info(tool_audit_log)`).all() as { name: string }[];
+    if (auditCols.length && !auditCols.some(c => c.name === 'actor')) {
+      db.exec(`ALTER TABLE tool_audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT 'local'`);
+    }
+  } catch (err) {
+    console.warn('[Artha] tool_audit_log actor migration skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

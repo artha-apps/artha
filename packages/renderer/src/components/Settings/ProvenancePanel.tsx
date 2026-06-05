@@ -60,7 +60,7 @@ const SOURCE_COLOR: Record<AnchorRow['source_type'], string> = {
   rag: 'text-blue-400 bg-blue-400/10',
   tool: 'text-violet-400 bg-violet-400/10',
   llm: 'text-amber-400 bg-amber-400/10',
-  user: 'text-green-400 bg-green-400/10',
+  user: 'text-artha-success bg-artha-success/10',
 };
 
 function relativeTime(unixSec: number): string {
@@ -208,7 +208,7 @@ export default function ProvenancePanel() {
                     onClick={() => copy('content', receipt.contentHash)}
                     className="text-artha-muted hover:text-artha-text shrink-0"
                   >
-                    {copied === 'content' ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
+                    {copied === 'content' ? <Check size={11} className="text-artha-success" /> : <Copy size={11} />}
                   </button>
                 </div>
               </div>

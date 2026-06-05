@@ -45,7 +45,7 @@ export default function DelegatePlanView({ plan, status, onConfirm, onCancel }: 
               ) : step.status === 'running' ? (
                 <Loader2 size={15} className="animate-spin" style={{ color: theme.accent }} />
               ) : step.status === 'failed' ? (
-                <AlertTriangle size={15} className="text-red-400" />
+                <AlertTriangle size={15} className="text-artha-danger" />
               ) : (
                 <Circle size={15} className="text-artha-subtle" />
               )}

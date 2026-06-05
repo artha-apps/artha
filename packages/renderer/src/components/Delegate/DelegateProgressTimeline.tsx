@@ -89,7 +89,7 @@ export default function DelegateProgressTimeline({ status }: { status: DelegateS
                 {!isLast && (
                   <div
                     className="w-px flex-1 my-1 min-h-[14px]"
-                    style={{ backgroundColor: state === 'done' ? theme.accent : 'var(--artha-border, rgba(255,255,255,0.08))' }}
+                    style={{ backgroundColor: state === 'done' ? theme.accent : 'rgb(var(--artha-border))' }}
                   />
                 )}
               </div>

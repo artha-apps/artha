@@ -148,7 +148,7 @@ export default function ProjectSwitcher() {
                   onClick={(e) => removeProject(e, p.project_id)}
                   aria-label="Delete project"
                   title="Delete project (chats are kept, moved to General)"
-                  className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-red-400 hover:bg-red-500/20 transition-all"
+                  className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-artha-danger hover:bg-artha-danger/20 transition-all"
                 >
                   <Trash2 size={11} />
                 </button>

@@ -51,6 +51,12 @@ export class LLMClient {
   private client: OpenAI;
   private config: LLMConfig;
 
+  /** Models (by ollama name) that returned 400 "does not support thinking".
+   *  Cached process-wide so we stop sending `think: true` to a non-reasoning
+   *  model after the first rejection, sparing every later turn a doomed
+   *  round-trip + retry. */
+  private static thinkingUnsupported = new Set<string>();
+
   constructor(config: LLMConfig) {
     this.config = config;
     this.client = new OpenAI({
@@ -208,18 +214,23 @@ export class LLMClient {
 
   /** Streaming completion for the ReAct loop. Forwards text deltas via
    *  `onToken` and assembles any tool calls. `shouldAbort` is polled between
-   *  chunks so the Stop button can interrupt a long generation mid-stream. */
+   *  chunks so the Stop button can interrupt a long generation mid-stream.
+   *  `onReasoning` receives the model's separate chain-of-thought deltas (Ollama
+   *  `message.thinking` / OpenAI `reasoning_content`) so the UI can show *what*
+   *  the model is thinking during the long silent reasoning phase, instead of a
+   *  blank spinner. */
   async streamComplete(
     messages: OpenAI.ChatCompletionMessageParam[],
     tools: OpenAI.ChatCompletionTool[] | undefined,
     onToken: (token: string) => void,
-    shouldAbort?: () => boolean
+    shouldAbort?: () => boolean,
+    onReasoning?: (chunk: string) => void
   ): Promise<StreamedMessage> {
     // Local Ollama: use the native endpoint so we can set num_ctx + keep_alive.
     // This is the hot ReAct path, so the bigger context window (no per-turn
     // truncation/re-eval) and a warm model matter most here.
     if (this.isOllama) {
-      return this.streamCompleteOllamaNative(messages, tools, onToken, shouldAbort);
+      return this.streamCompleteOllamaNative(messages, tools, onToken, shouldAbort, onReasoning);
     }
     const stream = await this.client.chat.completions.create({
       model: this.config.model,
@@ -242,6 +253,12 @@ export class LLMClient {
       }
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
+      // Reasoning models on OpenAI-compatible endpoints stream their
+      // chain-of-thought in a separate `reasoning_content` (or `reasoning`)
+      // field that the SDK doesn't type. Surface it so the wait feels alive.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const reasoning = (delta as any).reasoning_content ?? (delta as any).reasoning;
+      if (reasoning && onReasoning) onReasoning(reasoning);
       if (delta.content) {
         content += delta.content;
         onToken(delta.content);
@@ -268,29 +285,53 @@ export class LLMClient {
     tools: OpenAI.ChatCompletionTool[] | undefined,
     onToken: (token: string) => void,
     shouldAbort?: () => boolean,
+    onReasoning?: (chunk: string) => void,
   ): Promise<StreamedMessage> {
     const oMessages = this.toOllamaMessages(messages);
 
-    const body = {
+    const buildBody = (think: boolean) => ({
       model: this.config.model,
       messages: oMessages,
       tools: tools && tools.length ? tools : undefined,
       stream: true,
+      // Ask thinking models to emit their reasoning as a separate `thinking`
+      // field (instead of inline <think> tags or hidden) so we can stream it to
+      // the UI. Non-thinking models reject this with a 400 — handled below by
+      // retrying once without it.
+      ...(think ? { think: true } : {}),
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
         num_ctx: this.config.contextWindow ?? 8192,
         num_predict: this.config.maxTokens ?? 2048,
         temperature: this.config.temperature ?? 0.3,
       },
-    };
+    });
 
     const controller = new AbortController();
-    const res = await fetch(`${this.ollamaBase}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    const post = (think: boolean) =>
+      fetch(`${this.ollamaBase}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildBody(think)),
+        signal: controller.signal,
+      });
+
+    // Skip the thinking request entirely for models already known not to
+    // support it, so repeat turns don't pay the 400 + retry every time.
+    const wantThink = !LLMClient.thinkingUnsupported.has(this.config.model);
+    let res = await post(wantThink);
+    // A model that doesn't support thinking returns 400 ("does not support
+    // thinking"). Retry once without `think` so non-reasoning models still work,
+    // and remember the model so future turns skip straight to the no-think call.
+    if (wantThink && res.status === 400) {
+      const errText = await res.text().catch(() => '');
+      if (/think/i.test(errText)) {
+        LLMClient.thinkingUnsupported.add(this.config.model);
+        res = await post(false);
+      } else {
+        throw new Error(`Ollama /api/chat failed: 400 ${errText}`);
+      }
+    }
     if (!res.ok || !res.body) {
       throw new Error(`Ollama /api/chat failed: ${res.status} ${res.statusText}`);
     }
@@ -315,6 +356,8 @@ export class LLMClient {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let evt: any;
         try { evt = JSON.parse(line); } catch { continue; }
+        const think: string | undefined = evt?.message?.thinking;
+        if (think && onReasoning) onReasoning(think);
         const tok: string | undefined = evt?.message?.content;
         if (tok) { content += tok; onToken(tok); }
         const tcs = evt?.message?.tool_calls;

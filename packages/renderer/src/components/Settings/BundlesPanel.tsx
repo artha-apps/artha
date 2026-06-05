@@ -193,7 +193,7 @@ export default function BundlesPanel() {
           </button>
 
           {exportStatus && (
-            <p className={`text-xs ${exportStatus.startsWith('Bundle') ? 'text-green-400' : 'text-red-400'}`}>
+            <p className={`text-xs ${exportStatus.startsWith('Bundle') ? 'text-artha-success' : 'text-artha-danger'}`}>
               {exportStatus}
             </p>
           )}
@@ -214,14 +214,14 @@ export default function BundlesPanel() {
             <div className="space-y-4">
               <div className={`rounded-xl border p-4 flex items-start gap-3 ${
                 imported.signatureValid
-                  ? 'border-green-500/30 bg-green-500/5'
-                  : 'border-red-500/30 bg-red-500/5'
+                  ? 'border-artha-success/30 bg-artha-success/5'
+                  : 'border-artha-danger/30 bg-artha-danger/5'
               }`}>
                 {imported.signatureValid
-                  ? <ShieldCheck size={20} className="text-green-400 mt-0.5" />
-                  : <ShieldAlert size={20} className="text-red-400 mt-0.5" />}
+                  ? <ShieldCheck size={20} className="text-artha-success mt-0.5" />
+                  : <ShieldAlert size={20} className="text-artha-danger mt-0.5" />}
                 <div className="flex-1">
-                  <p className={`text-sm font-semibold ${imported.signatureValid ? 'text-green-400' : 'text-red-400'}`}>
+                  <p className={`text-sm font-semibold ${imported.signatureValid ? 'text-artha-success' : 'text-artha-danger'}`}>
                     {imported.signatureValid ? 'Signature valid' : 'Signature INVALID — bundle has been modified'}
                   </p>
                   <p className="text-xs text-artha-muted mt-1">
@@ -272,7 +272,7 @@ export default function BundlesPanel() {
                   <ul className="space-y-1 text-xs">
                     {imported.artifactNames.map(n => (
                       <li key={n} className="flex items-center gap-2 text-artha-text">
-                        <CheckCircle2 size={11} className="text-green-400" />
+                        <CheckCircle2 size={11} className="text-artha-success" />
                         <code className="font-mono">{n}</code>
                       </li>
                     ))}
@@ -289,7 +289,7 @@ export default function BundlesPanel() {
           )}
 
           {exportStatus.startsWith('Import') && (
-            <p className="text-xs text-red-400 flex items-center gap-1">
+            <p className="text-xs text-artha-danger flex items-center gap-1">
               <XCircle size={11} /> {exportStatus}
             </p>
           )}
