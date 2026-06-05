@@ -73,6 +73,18 @@ export default function Sidebar() {
     });
   };
 
+  /** Drop a pin without toggling it on — used when a chat is deleted so its id
+   *  doesn't linger in localStorage forever. */
+  const dropPin = (id: string) => {
+    setPinned(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      try { localStorage.setItem(PINS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
   // Hydrate the project list on mount. Sessions are hydrated by App.tsx.
   useEffect(() => {
     window.artha.projects.list().then(setProjects).catch(() => { /* fresh DB */ });
@@ -137,6 +149,7 @@ export default function Sidebar() {
     e.stopPropagation(); // don't also open the chat we're deleting
     if (!confirm('Delete this chat? This permanently removes the conversation and all of its messages. This cannot be undone.')) return;
     await window.artha.sessions.delete(id);
+    dropPin(id); // don't leave an orphan pin in localStorage
     const updated: Session[] = await window.artha.sessions.list();
     setSessions(updated);
     if (id !== activeSessionId) return; // deleted a background chat — nothing else to do

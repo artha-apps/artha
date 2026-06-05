@@ -35,7 +35,7 @@ const STATUS_META: Record<Receipt['status'], { icon: typeof CheckCircle2; color:
 };
 
 export default function RunInspector() {
-  const { inspectorRunId, setInspectorRunId, setActiveTab } = useChatStore();
+  const { inspectorRunId, setInspectorRunId, setActiveTab, setActiveSession, setMessages } = useChatStore();
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [steps, setSteps] = useState<Step[]>([]);
   const [showSteps, setShowSteps] = useState(false);
@@ -77,9 +77,27 @@ export default function RunInspector() {
   const fork = async (stepId: string) => {
     setForking(true);
     try {
-      await window.artha.timetravel.fork(stepId);
+      const newRunId = await window.artha.timetravel.fork(stepId) as string | null;
+      // Null = the run's original session no longer exists (e.g. an ephemeral
+      // sub-task run). Report it instead of silently switching to an empty chat.
+      if (!newRunId) {
+        toast.error('Can’t fork this run', 'Its original chat session no longer exists.');
+        return;
+      }
       setInspectorRunId(null);
-      setActiveTab('chat'); // the forked run streams into its session
+      // Land the user on the forked run's session so they can watch it stream —
+      // the inspector may have been opened from a DIFFERENT session (an Activity
+      // row), where merely switching to the Chat tab wouldn't show the new run.
+      try {
+        const all = await window.artha.timetravel.listRuns() as { run_id: string; session_id: string }[];
+        const run = all.find(r => r.run_id === newRunId);
+        if (run?.session_id) {
+          setActiveSession(run.session_id);
+          setMessages(await window.artha.sessions.getMessages(run.session_id));
+        }
+      } catch { /* best-effort — fall back to just switching tabs */ }
+      toast.success('Forked run started', 'Replaying from this step…');
+      setActiveTab('chat');
     } finally {
       setForking(false);
     }

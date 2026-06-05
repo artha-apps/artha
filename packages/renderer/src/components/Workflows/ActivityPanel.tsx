@@ -7,8 +7,10 @@
  * Inspector (receipts + step trace) for that exact run.
  */
 import { useEffect, useState } from 'react';
-import { Activity, CheckCircle2, XCircle, Loader, Ban, RefreshCw, FileEdit, ChevronRight } from 'lucide-react';
+import { Activity, CheckCircle2, XCircle, Loader, Ban, RefreshCw, FileEdit, ChevronRight, CalendarPlus } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
+import { useDraftStore } from '../../stores/draft';
+import { toast } from '../../stores/toast';
 
 interface Run {
   run_id: string; session_id: string; goal: string; status: 'running' | 'completed' | 'failed' | 'cancelled';
@@ -40,9 +42,19 @@ function relativeTime(unixSec: number): string {
 }
 
 export default function ActivityPanel() {
-  const { setInspectorRunId, isStreaming } = useChatStore();
+  const { setInspectorRunId, isStreaming, openWorkflows } = useChatStore();
+  const setSchedulerPrefill = useDraftStore(s => s.setSchedulerPrefill);
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Promote a past run into a reusable scheduled task: prefill the scheduler
+  // form with this run's goal, then jump to the Scheduled section to pick a cadence.
+  const saveAsWorkflow = (r: Run) => {
+    const goal = (r.goal || r.session_title || 'Workflow').trim();
+    setSchedulerPrefill({ name: goal.slice(0, 60), prompt: goal });
+    openWorkflows('scheduled');
+    toast.info('Set a schedule', 'Pick how often this should run, then save.');
+  };
 
   const load = () => window.artha.runs.listRecent(80).then(r => { setRuns(r as Run[]); setLoading(false); });
 
@@ -79,23 +91,35 @@ export default function ActivityPanel() {
               const meta = STATUS_META[r.status];
               const Icon = meta.icon;
               return (
-                <button
+                <div
                   key={r.run_id}
-                  onClick={() => setInspectorRunId(r.run_id)}
-                  className="w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border hover:border-artha-accent/50 transition-colors group"
+                  className="group flex items-center rounded-xl bg-artha-s2 border border-artha-border hover:border-artha-accent/50 transition-colors"
                 >
-                  <Icon size={15} className={`${meta.color} shrink-0 ${r.status === 'running' ? 'animate-spin' : ''}`} />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-artha-text truncate">{r.goal || r.session_title || 'Untitled run'}</p>
-                    <p className="text-[11px] text-artha-muted">
-                      <span className="uppercase tracking-wide">{originLabel(r)}</span>
-                      {' · '}{r.calls} call{r.calls === 1 ? '' : 's'}
-                      {r.mutations > 0 && <span className="text-artha-warn"> · <FileEdit size={9} className="inline -mt-0.5" /> {r.mutations} changed</span>}
-                      {' · '}{relativeTime(r.created_at)}
-                    </p>
-                  </div>
-                  <ChevronRight size={14} className="text-artha-subtle group-hover:text-artha-accent shrink-0 transition-colors" />
-                </button>
+                  <button
+                    onClick={() => setInspectorRunId(r.run_id)}
+                    className="flex-1 min-w-0 text-left flex items-center gap-3 px-4 py-3"
+                  >
+                    <Icon size={15} className={`${meta.color} shrink-0 ${r.status === 'running' ? 'animate-spin' : ''}`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-artha-text truncate">{r.goal || r.session_title || 'Untitled run'}</p>
+                      <p className="text-[11px] text-artha-muted">
+                        <span className="uppercase tracking-wide">{originLabel(r)}</span>
+                        {' · '}{r.calls} call{r.calls === 1 ? '' : 's'}
+                        {r.mutations > 0 && <span className="text-artha-warn"> · <FileEdit size={9} className="inline -mt-0.5" /> {r.mutations} changed</span>}
+                        {' · '}{relativeTime(r.created_at)}
+                      </p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => saveAsWorkflow(r)}
+                    title="Save as a scheduled Workflow"
+                    aria-label="Save as Workflow"
+                    className="shrink-0 p-2 rounded-lg text-artha-muted opacity-0 group-hover:opacity-100 hover:text-artha-accent hover:bg-artha-accent/10 transition-all"
+                  >
+                    <CalendarPlus size={15} />
+                  </button>
+                  <ChevronRight size={14} className="text-artha-subtle group-hover:text-artha-accent shrink-0 mr-3 transition-colors" />
+                </div>
               );
             })}
           </div>

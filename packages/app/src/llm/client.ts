@@ -142,6 +142,14 @@ export class LLMClient {
       messages: this.toOllamaMessages(messages),
       tools: tools && tools.length ? tools : undefined,
       stream: false,
+      // Non-streaming completions are the deterministic aux phases — intent
+      // classification, planning, clarification, tool-arg formatting — which
+      // want a fast, literal answer. Disable thinking so a reasoning model
+      // doesn't burn seconds on a hidden chain-of-thought (we'd discard it
+      // anyway) or leak <think> noise into a one-word classification. `false` is
+      // accepted by non-thinking models too (only `true` 400s), so it's safe
+      // unconditionally.
+      think: false,
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
         num_ctx: this.config.contextWindow ?? 8192,

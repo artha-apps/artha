@@ -6,6 +6,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Clock, Plus, Trash2, Play, Pause, RefreshCw, Calendar, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { useDraftStore } from '../../stores/draft';
 
 interface ScheduledTask {
   task_id: string;
@@ -73,6 +74,17 @@ export default function SchedulerPanel() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // "Save as Workflow" from a past run drops a prefill here — open the form with
+  // its name + prompt populated so the user only has to pick a cadence.
+  const { schedulerPrefill, setSchedulerPrefill } = useDraftStore();
+  useEffect(() => {
+    if (!schedulerPrefill) return;
+    setName(schedulerPrefill.name);
+    setPrompt(schedulerPrefill.prompt);
+    setShowForm(true);
+    setSchedulerPrefill(null);
+  }, [schedulerPrefill, setSchedulerPrefill]);
 
   const resetForm = () => {
     setName(''); setPrompt('');
