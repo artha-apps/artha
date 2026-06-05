@@ -196,6 +196,31 @@ export async function initDatabase(): Promise<void> {
       updated_at         INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- ── Skill runs (per-invocation metrics ledger) ─────────────────────────
+    -- One row each time a skill is actually executed (Chat, Delegate, or an
+    -- invoked capability). Backs the Skills dashboard: run count, success rate,
+    -- avg tool calls / duration, and how the skill was reached (explicit "/slug",
+    -- auto-match, or delegated invoke). Local-only telemetry — never transmitted.
+    -- run_id links to agent_runs so tool_receipts can be counted per invocation.
+    CREATE TABLE IF NOT EXISTS skill_runs (
+      skill_run_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      skill_id     TEXT NOT NULL,
+      slug         TEXT NOT NULL DEFAULT '',
+      run_id       TEXT,            -- mirrors agent_runs.run_id for this invocation
+      session_id   TEXT,
+      goal         TEXT NOT NULL DEFAULT '',
+      status       TEXT NOT NULL DEFAULT 'ok'
+                   CHECK(status IN ('ok','error','cancelled')),
+      matched_via  TEXT NOT NULL DEFAULT 'auto'
+                   CHECK(matched_via IN ('explicit','auto','invoke')),
+      tool_calls   INTEGER NOT NULL DEFAULT 0,
+      tool_errors  INTEGER NOT NULL DEFAULT 0,
+      duration_ms  INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_skill_runs_skill ON skill_runs(skill_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_skill_runs_created ON skill_runs(created_at DESC);
+
     -- Tool invocation audit log
     CREATE TABLE IF NOT EXISTS tool_audit_log (
       id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
