@@ -58,7 +58,7 @@ export default function CodeTab() {
           </p>
           <button
             onClick={() => openWorkspaceSettings('rag')}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-sm font-medium transition-colors shadow-soft"
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-artha-on-accent text-sm font-medium transition-colors shadow-soft"
           >
             <FolderPlus size={14} /> Set up a project
           </button>

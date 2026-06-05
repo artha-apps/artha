@@ -24,6 +24,25 @@ export * from './tasks';
 export { OrchestratorCapabilityExecutor } from './executor';
 export { OPERATOR_PLAYBOOK, buildOperatorSkill } from './operator';
 
+// ── Function-calling governance + provenance + composition ───────────────────
+// Policy-gated tool calls, verified receipts, and composable sub-capabilities.
+export {
+  evaluatePolicy, policyMatches, listPolicies, createPolicy, updatePolicy, deletePolicy,
+} from './policy';
+export type { PolicyTier, PolicyScope, ToolPolicy, PolicyInput, PolicyDecision } from './policy';
+export {
+  hashResult, describeEffect, recordReceipt, listReceiptsByRun, listReceiptRuns,
+  RECEIPT_MUTATION_TOOLS,
+} from './receipts';
+export type { ReceiptStatus, ToolReceipt, ReceiptInput } from './receipts';
+export {
+  isSubcapabilityTool, getSubcapabilityToolSchemas, intersectToolScopes, MAX_CAPABILITY_DEPTH,
+} from './subcapability';
+
+// ── Pre-flight blast-radius (today: agent/blastRadius.ts) ────────────────────
+export { estimateBlastRadius } from '../agent/blastRadius';
+export type { BlastRadius } from '../agent/blastRadius';
+
 // ── Orchestration (today: agent/orchestrator.ts) ─────────────────────────────
 export {
   AgentOrchestrator,
@@ -47,6 +66,25 @@ export {
   invokeMemoryTool,
   getMemoryContext,
 } from '../tools/memory';
+
+// ── Knowledge Graph (engine: bodhi/knowledgeGraph.ts) ────────────────────────
+export {
+  upsertEntity,
+  linkEntities,
+  findEntities,
+  listEntities,
+  listRelations,
+  getNeighborhood,
+  queryGraphDb,
+  projectGraph,
+  queryGraph,
+  formatNeighborhood,
+  parseRelationSpec,
+  normaliseEntityKey,
+  rowToKgEntity,
+  rowToKgRelation,
+} from './knowledgeGraph';
+export type { KgEntity, KgRelation, KgNeighborhood, KgEdge, RelationSpec } from './knowledgeGraph';
 
 // ── Model router (today: router/benchmark.ts). TaskType is re-exported from the
 //    LLM client below to avoid a duplicate-symbol clash (both declare it). ─────

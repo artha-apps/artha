@@ -26,6 +26,7 @@ function makeSkill(over: Partial<Skill> = {}): Skill {
     icon: '🔎',
     is_enabled: 1,
     is_builtin: 1,
+    kind: 'skill',
     created_at: 0,
     updated_at: 0,
     ...over,
@@ -55,11 +56,23 @@ describe('skillToCapability', () => {
     const cap = skillToCapability(makeSkill({ allowed_tools_json: '["fs_", 42, null]' }));
     expect(cap.tools).toEqual(['fs_']);
   });
+
+  it('surfaces kind="agent" when the row is a promoted agent', () => {
+    // The agent seam: a skill row flagged kind='agent' projects to an agent
+    // capability — "promote a skill to an agent" is a flag, not a rewrite.
+    const cap = skillToCapability(makeSkill({ slug: 'crm', name: 'CRM Agent', kind: 'agent' }));
+    expect(cap.kind).toBe('agent');
+  });
+
+  it('defaults an unknown kind to "skill"', () => {
+    const cap = skillToCapability(makeSkill({ kind: 'something-else' }));
+    expect(cap.kind).toBe('skill');
+  });
 });
 
 describe('activeSkillToCapability', () => {
   it('projects a resolved ActiveSkill into a capability', () => {
-    const active: ActiveSkill = { slug: 'organize', name: 'File Organizer', icon: '🗂️', instructions: '…', allowedTools: ['fs_'] };
+    const active: ActiveSkill = { slug: 'organize', name: 'File Organizer', icon: '🗂️', instructions: '…', allowedTools: ['fs_'], kind: 'skill' };
     const cap = activeSkillToCapability(active);
     expect(cap.id).toBe('organize');
     expect(cap.kind).toBe('skill');
@@ -97,7 +110,7 @@ describe('CapabilityRegistry', () => {
   });
 
   it('selects a capability by routing through the skill resolver', async () => {
-    const active: ActiveSkill = { slug: 'research', name: 'Web Research', icon: '🔎', instructions: '…', allowedTools: ['web_'] };
+    const active: ActiveSkill = { slug: 'research', name: 'Web Research', icon: '🔎', instructions: '…', allowedTools: ['web_'], kind: 'skill' };
     const reg = new CapabilityRegistry(fakeSource([makeSkill()], { skill: active, goal: 'research llms' }));
     const cap = await reg.select('research the best llms');
     expect(cap?.id).toBe('research');

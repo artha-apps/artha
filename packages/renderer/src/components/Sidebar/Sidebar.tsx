@@ -143,7 +143,7 @@ export default function Sidebar() {
       <div className="px-3 mb-3">
         <button
           onClick={newChat}
-          className="no-drag flex items-center gap-2 w-full px-3 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-white text-sm font-medium transition-colors shadow-soft"
+          className="no-drag flex items-center gap-2 w-full px-3 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-artha-on-accent text-sm font-medium transition-colors shadow-soft"
         >
           <Plus size={15} /> New Chat
         </button>
@@ -198,7 +198,7 @@ export default function Sidebar() {
                       onClick={(e) => deleteProject(e, p.project_id)}
                       aria-label="Delete project"
                       title="Delete project (chats are kept, moved to General)"
-                      className="shrink-0 p-1 -mr-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-red-400 hover:bg-red-500/20 transition-all"
+                      className="shrink-0 p-1 -mr-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-artha-danger hover:bg-artha-danger/20 transition-all"
                     >
                       <Trash2 size={11} />
                     </button>
@@ -254,7 +254,7 @@ export default function Sidebar() {
                     onClick={(e) => deleteChat(e, s.session_id)}
                     aria-label="Delete chat"
                     title="Delete chat"
-                    className="shrink-0 p-1 -mr-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-red-400 hover:bg-red-500/20 transition-all"
+                    className="shrink-0 p-1 -mr-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-artha-subtle hover:text-artha-danger hover:bg-artha-danger/20 transition-all"
                   >
                     <Trash2 size={11} />
                   </button>

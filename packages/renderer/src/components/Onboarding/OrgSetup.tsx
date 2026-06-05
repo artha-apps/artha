@@ -151,11 +151,11 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
               rows={3}
               className="w-full font-mono text-xs px-3 py-2 rounded-lg bg-artha-surface border border-artha-border focus:border-artha-accent focus:outline-none text-artha-text resize-none"
             />
-            {licenseError && <p className="text-xs text-red-400 mt-2">{licenseError}</p>}
+            {licenseError && <p className="text-xs text-artha-danger mt-2">{licenseError}</p>}
             <button
               onClick={applyLicense}
               disabled={licenseBusy || !licenseDraft.trim()}
-              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-white transition-colors disabled:opacity-40"
+              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-artha-on-accent transition-colors disabled:opacity-40"
             >
               <KeyRound size={12} /> Apply license
             </button>
@@ -173,11 +173,11 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
       >
         {licenseReady && !hubReady && (
           <>
-            {hubError && <p className="text-xs text-red-400 mb-2">{hubError}</p>}
+            {hubError && <p className="text-xs text-artha-danger mb-2">{hubError}</p>}
             <button
               onClick={startHub}
               disabled={hubBusy}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-white transition-colors disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-artha-on-accent transition-colors disabled:opacity-40"
             >
               <Wifi size={12} /> Start hub
             </button>
@@ -226,12 +226,12 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
               <button
                 onClick={addSeat}
                 disabled={seatBusy || !seatDraftName.trim() || !ents || seats.length >= ents.seats}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-white transition-colors disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-xs font-medium text-artha-on-accent transition-colors disabled:opacity-40"
               >
                 <Plus size={12} /> Add
               </button>
             </div>
-            {seatError && <p className="text-xs text-red-400 mb-2">{seatError}</p>}
+            {seatError && <p className="text-xs text-artha-danger mb-2">{seatError}</p>}
 
             {seats.length > 0 && (
               <div className="space-y-2">
@@ -261,7 +261,7 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
         <button
           onClick={finish}
           disabled={!licenseReady || !hubReady}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-white transition-colors disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 text-sm font-medium text-artha-on-accent transition-colors disabled:opacity-40"
         >
           Finish <ArrowRight size={14} />
         </button>
@@ -282,7 +282,7 @@ function Section({
         : 'bg-artha-surface border-artha-border'}`}>
       <div className="flex items-start gap-3 mb-3">
         <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold ${
-          done ? 'bg-artha-accent text-white' : 'bg-artha-s2 text-artha-muted border border-artha-border'}`}>
+          done ? 'bg-artha-accent text-artha-on-accent' : 'bg-artha-s2 text-artha-muted border border-artha-border'}`}>
           {done ? <Check size={13} /> : n}
         </div>
         <div className="flex-1">
@@ -291,7 +291,13 @@ function Section({
         </div>
         {done && <ShieldCheck size={14} className="text-artha-accent" />}
       </div>
-      {!disabled && !done && children}
+      {/* Render children for every reachable step — including completed ones.
+          A "done" step must keep showing its content: step 2 keeps the hub-URL
+          copy button, and step 3 keeps the ConnectionCards whose bearer keys are
+          shown exactly ONCE (hiding them on completion would lose the keys for
+          good). Each child block self-gates on its own state, so completed steps
+          collapse their inputs without help from this guard. */}
+      {!disabled && children}
     </div>
   );
 }
@@ -321,7 +327,7 @@ Quick test (any machine on your network):
           <button onClick={() => onCopy(card)} className="inline-flex items-center gap-1 text-xs text-artha-muted hover:text-artha-text transition-colors">
             <ClipboardCopy size={11} /> copy card
           </button>
-          <button onClick={onRemove} className="text-xs text-artha-muted hover:text-red-400 transition-colors ml-2">
+          <button onClick={onRemove} className="text-xs text-artha-muted hover:text-artha-danger transition-colors ml-2">
             <Trash2 size={11} />
           </button>
         </div>

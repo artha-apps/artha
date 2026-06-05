@@ -171,7 +171,7 @@ export default function RAGPanel() {
             </div>
           </div>
 
-          {error && <p className="text-xs text-red-400 flex items-center gap-1"><X size={11} /> {error}</p>}
+          {error && <p className="text-xs text-artha-danger flex items-center gap-1"><X size={11} /> {error}</p>}
 
           <div className="flex gap-2">
             <button onClick={create} disabled={building}
@@ -220,7 +220,7 @@ export default function RAGPanel() {
                 <RefreshCw size={14} className={rebuilding === idx.index_id ? 'animate-spin' : ''} />
               </button>
               <button onClick={() => remove(idx)} title="Delete"
-                className="p-1.5 text-artha-muted hover:text-red-400 hover:bg-artha-text/5 rounded-lg transition-colors">
+                className="p-1.5 text-artha-muted hover:text-artha-danger hover:bg-artha-text/5 rounded-lg transition-colors">
                 <Trash2 size={14} />
               </button>
             </div>

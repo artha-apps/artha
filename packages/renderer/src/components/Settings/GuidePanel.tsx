@@ -5,7 +5,7 @@
  * and an example prompt. Written for first-time, non-technical users.
  */
 import { useState } from 'react';
-import { MessageSquare, FolderCog, FileText, Search, Cpu, ShieldCheck } from 'lucide-react';
+import { MessageSquare, FolderCog, FileText, Search, Cpu, ShieldCheck, ShieldAlert, ListChecks, ReceiptText, Workflow } from 'lucide-react';
 
 interface Feature {
   icon: typeof MessageSquare;
@@ -79,6 +79,49 @@ const FEATURES: Feature[] = [
       'Artha can only read or change what you’ve attached.',
       'Nothing is sent to any server — zero telemetry.',
     ],
+  },
+  {
+    icon: ShieldAlert,
+    title: 'Control each action with policies',
+    blurb: 'Decide what happens before the agent runs a tool: let it run, ask you first, preview only, or block it — per tool.',
+    steps: [
+      'Open Settings → Tool Policies.',
+      'Add a rule: a tool name (e.g. fs_delete_file), a prefix (browser_), or * for all.',
+      'Pick a tier — Auto, Confirm, Dry run, or Forbid. “Confirm” pops up before that call runs so you can approve or deny it.',
+    ],
+    example: 'By default, Artha asks before deleting any file.',
+  },
+  {
+    icon: ListChecks,
+    title: 'See the impact before you approve',
+    blurb: 'When a task needs approval, the plan card shows an estimate of what it will touch — deletions, moves, web access, reversibility, and rough cost.',
+    steps: [
+      'Ask Artha to do something that changes files.',
+      'Read the “Estimated impact” chips on the approval card.',
+      'Approve once you’re happy — or cancel if it looks bigger than expected.',
+    ],
+    example: 'Organise my Downloads folder by file type.',
+  },
+  {
+    icon: ReceiptText,
+    title: 'Proof of what the agent did',
+    blurb: 'Every tool call is recorded as a verifiable receipt — what it did, a content hash, and whether a policy blocked it.',
+    steps: [
+      'After a task, open Settings → Receipts.',
+      'Pick the run to see each action with its real effect.',
+      'Blocked and preview-only calls are logged too, so the trail is complete.',
+    ],
+  },
+  {
+    icon: Workflow,
+    title: 'Let skills call other skills',
+    blurb: 'Complex jobs can hand a sub-task to a trusted capability (like Web Research or CRM) — which can never do more than the agent that called it.',
+    steps: [
+      'Just ask for the whole job in plain English.',
+      'Artha delegates parts to the right capability automatically.',
+      'Each hand-off shows up in Receipts, with permissions that can only narrow — never widen.',
+    ],
+    example: 'Research our top 3 competitors and add each as a company in my CRM.',
   },
 ];
 

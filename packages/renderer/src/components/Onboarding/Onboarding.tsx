@@ -240,10 +240,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                 placeholder="Paste your Pro license token"
                 className="w-full font-mono text-xs px-3 py-2 rounded-lg bg-artha-s2 border border-artha-border focus:border-artha-accent focus:outline-none text-artha-text"
               />
-              {indivLicenseStatus === 'applied' && <p className="text-xs text-green-400">License applied. Team features unlocked.</p>}
-              {indivLicenseStatus === 'error' && <p className="text-xs text-red-400">{indivLicenseError}</p>}
+              {indivLicenseStatus === 'applied' && <p className="text-xs text-artha-success">License applied. Team features unlocked.</p>}
+              {indivLicenseStatus === 'error' && <p className="text-xs text-artha-danger">{indivLicenseError}</p>}
               <button onClick={applyIndivLicense} disabled={!indivLicense.trim()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-xs font-medium text-white transition-all duration-200 active:scale-95 disabled:opacity-40">
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-xs font-medium text-artha-on-accent transition-all duration-200 active:scale-95 disabled:opacity-40">
                 Apply
               </button>
             </div>
@@ -276,10 +276,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               )}
               <div className="flex gap-2">
                 <button onClick={refresh} disabled={checking}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-sm font-medium text-white transition-all duration-200 active:scale-95 disabled:opacity-40">
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-sm font-medium text-artha-on-accent transition-all duration-200 active:scale-95 disabled:opacity-40">
                   <RefreshCw size={13} className={checking ? 'animate-spin' : ''} /> Recheck
                 </button>
-                <button onClick={skipToByom} className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-artha-text hover:bg-white/5 transition-colors">
+                <button onClick={skipToByom} className="px-4 py-2 rounded-lg text-sm text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors">
                   Skip for now
                 </button>
               </div>
@@ -322,7 +322,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                       {models.slice(0, 4).map(m => (
                         <button key={m.name} onClick={() => finishWith(m.name)}
                           className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent/40 hover:bg-artha-accent/5 transition-all text-left">
-                          <CheckCircle2 size={15} className="text-green-400 shrink-0" />
+                          <CheckCircle2 size={15} className="text-artha-success shrink-0" />
                           <span className="text-sm text-artha-text flex-1 truncate">{m.name}</span>
                           <ArrowRight size={14} className="text-artha-muted shrink-0" />
                         </button>
@@ -345,7 +345,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                     </button>
                   </div>
 
-                  {error && <p className="text-xs text-red-400">{error}</p>}
+                  {error && <p className="text-xs text-artha-danger">{error}</p>}
 
                   <button onClick={skipToByom} className="w-full text-center text-xs text-artha-muted hover:text-artha-text transition-colors pt-1">
                     Skip — I'll set this up later

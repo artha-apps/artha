@@ -53,6 +53,15 @@ describe('parseAndVerify', () => {
     expect(result?.org).toBe('Acme');
   });
 
+  it('rejects a revoked token even though signature + expiry are valid', () => {
+    const token = mint(goodPayload);
+    const revokedIds = new Set([goodPayload.id]);
+    // Sanity: same token verifies when not revoked.
+    expect(parseAndVerify(token, { now, publicKeyPem: PUB_PEM })).not.toBeNull();
+    // Revoked → null, so the caller falls back to FREE_ENTITLEMENTS.
+    expect(parseAndVerify(token, { now, publicKeyPem: PUB_PEM, revokedIds })).toBeNull();
+  });
+
   it('rejects a tampered payload (signature no longer matches)', () => {
     const token = mint(goodPayload);
     const [head, sig] = token.split('.');

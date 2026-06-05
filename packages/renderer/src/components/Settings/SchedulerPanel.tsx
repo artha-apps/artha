@@ -235,12 +235,12 @@ export default function SchedulerPanel() {
       ) : (
         <div className="space-y-3">
           {tasks.map(task => (
-            <div key={task.task_id} className={`rounded-xl border p-4 transition-colors ${task.is_enabled ? 'border-artha-border bg-artha-text/5' : 'border-white/5 bg-white/2 opacity-60'}`}>
+            <div key={task.task_id} className={`rounded-xl border p-4 transition-colors ${task.is_enabled ? 'border-artha-border bg-artha-text/5' : 'border-artha-border bg-artha-text/5 opacity-60'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    {task.last_status === 'ok' && <CheckCircle2 size={13} className="text-green-400 shrink-0" />}
-                    {task.last_status === 'error' && <AlertCircle size={13} className="text-red-400 shrink-0" />}
+                    {task.last_status === 'ok' && <CheckCircle2 size={13} className="text-artha-success shrink-0" />}
+                    {task.last_status === 'error' && <AlertCircle size={13} className="text-artha-danger shrink-0" />}
                     {task.last_status === 'running' && <RefreshCw size={13} className="text-yellow-400 animate-spin shrink-0" />}
                     <span className="text-sm font-medium text-artha-text truncate">{task.name}</span>
                   </div>
@@ -266,7 +266,7 @@ export default function SchedulerPanel() {
                   <button
                     onClick={() => handleDelete(task.task_id)}
                     title="Delete"
-                    className="p-1.5 rounded-lg hover:bg-red-500/20 text-artha-muted hover:text-red-400 transition-colors"
+                    className="p-1.5 rounded-lg hover:bg-artha-danger/20 text-artha-muted hover:text-artha-danger transition-colors"
                   >
                     <Trash2 size={14} />
                   </button>

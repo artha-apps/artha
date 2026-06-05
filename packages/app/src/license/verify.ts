@@ -47,11 +47,24 @@ function b64urlDecode(s: string): Buffer {
 
 const VALID_TIERS: ReadonlySet<Tier> = new Set<Tier>(['free', 'pro', 'enterprise']);
 
+/**
+ * Revoked license ids (the `id` field minted by scripts/sign-license.mjs).
+ *
+ * A signed key is otherwise valid until it expires, so a leaked or charged-back
+ * Enterprise key would keep working. Listing its id here kills it on the next
+ * app update — no public-key rotation (which would invalidate EVERY customer's
+ * key) required. Add the offending UUID, ship a release. Keep this list small;
+ * for routine churn, prefer short `--days` so keys lapse on their own.
+ */
+export const REVOKED_LICENSE_IDS: ReadonlySet<string> = new Set<string>([
+  // 'd1f0...': revoked 2026-06-04, refunded — example, no live revocations yet
+]);
+
 /** Verify signature + shape + expiry. Returns the payload or null on any
  *  failure. Catches every error so a malformed token can't crash boot. */
 export function parseAndVerify(
   key: string,
-  opts: { now?: number; publicKeyPem?: string } = {},
+  opts: { now?: number; publicKeyPem?: string; revokedIds?: ReadonlySet<string> } = {},
 ): LicensePayload | null {
   try {
     if (typeof key !== 'string' || !key.includes('.')) return null;
@@ -76,6 +89,9 @@ export function parseAndVerify(
 
     const now = opts.now ?? Math.floor(Date.now() / 1000);
     if (payload.exp < now) return null;
+
+    // Revocation: a validly-signed, unexpired key can still be killed by id.
+    if ((opts.revokedIds ?? REVOKED_LICENSE_IDS).has(payload.id)) return null;
 
     return payload as LicensePayload;
   } catch {
