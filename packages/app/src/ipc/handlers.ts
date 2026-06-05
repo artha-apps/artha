@@ -42,6 +42,7 @@ import { runWithContext } from '../agent/runContext';
 import { listUndoable, revert } from '../agent/undo';
 import { globalSearch } from '../search/global';
 import { getBriefing, markBriefingSeen } from '../briefing/briefing';
+import { spawnEnv } from '../system/nodePath';
 import { MCPRegistry } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
@@ -577,8 +578,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const { promisify } = await import('util');
     const execFileAsync = promisify(execFile);
     const finder = process.platform === 'win32' ? 'where' : 'which';
+    // Search the SAME augmented PATH the MCP server spawn uses, so the banner
+    // never claims Node is missing when a connector would actually launch fine.
+    const env = spawnEnv();
     const has = async (cmd: string) => {
-      try { const { stdout } = await execFileAsync(finder, [cmd]); return !!stdout.trim(); }
+      try { const { stdout } = await execFileAsync(finder, [cmd], { env }); return !!stdout.trim(); }
       catch { return false; }
     };
     return { node: await has('node'), npx: await has('npx') };

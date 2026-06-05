@@ -5,6 +5,8 @@
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { spawnEnv } from '../system/nodePath';
+import { parseServerUri } from './serverUri';
 import { getDb } from '../db/schema';
 import OpenAI from 'openai';
 import { FILESYSTEM_TOOL_SCHEMAS, invokeFilesystemTool, isFilesystemTool } from '../tools/filesystem';
@@ -81,8 +83,14 @@ export class MCPRegistry {
    * Overwrites any previous connection for the same `id` (hot-reload safe).
    */
   async connectServer(id: string, name: string, serverUri: string): Promise<void> {
-    const [cmd, ...args] = serverUri.split(' ');
-    const transport = new StdioClientTransport({ command: cmd, args });
+    // Peel leading `ENV:KEY=VALUE` credential tokens off the front (see
+    // serverUri.ts) so they're applied as env vars, not mistaken for the command.
+    const { credEnv, command: cmd, args } = parseServerUri(serverUri);
+    if (!cmd) throw new Error(`Invalid MCP server command: "${serverUri}"`);
+
+    // Spawn with an augmented PATH so npx/node resolve even in a Finder-launched
+    // packaged app (minimal macOS GUI PATH), plus any credential env vars.
+    const transport = new StdioClientTransport({ command: cmd, args, env: spawnEnv(credEnv) });
     const client = new Client({ name: 'artha', version: '0.1.0' }, { capabilities: {} });
 
     await client.connect(transport);
