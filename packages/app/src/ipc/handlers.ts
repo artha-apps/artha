@@ -569,6 +569,21 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     }
   });
 
+  // Most marketplace connectors launch via `npx`, which needs Node.js on PATH.
+  // The Marketplace uses this to warn (with a fix) before an install fails with
+  // a cryptic spawn error.
+  ipcMain.handle('system:checkRuntime', async () => {
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+    const finder = process.platform === 'win32' ? 'where' : 'which';
+    const has = async (cmd: string) => {
+      try { const { stdout } = await execFileAsync(finder, [cmd]); return !!stdout.trim(); }
+      catch { return false; }
+    };
+    return { node: await has('node'), npx: await has('npx') };
+  });
+
   // Update the DB *before* signalling the orchestrator so that even if the
   // ReAct loop hasn't yet observed the cancel flag, the persisted state is
   // already correct for any UI re-render.

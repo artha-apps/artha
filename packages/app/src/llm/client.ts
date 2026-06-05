@@ -264,9 +264,11 @@ export class LLMClient {
       // Reasoning models on OpenAI-compatible endpoints stream their
       // chain-of-thought in a separate `reasoning_content` (or `reasoning`)
       // field that the SDK doesn't type. Surface it so the wait feels alive.
+      // Some providers send `reasoning` as an object — only forward strings so
+      // we never append "[object Object]" to the disclosure.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reasoning = (delta as any).reasoning_content ?? (delta as any).reasoning;
-      if (reasoning && onReasoning) onReasoning(reasoning);
+      if (typeof reasoning === 'string' && reasoning && onReasoning) onReasoning(reasoning);
       if (delta.content) {
         content += delta.content;
         onToken(delta.content);
@@ -310,7 +312,13 @@ export class LLMClient {
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
         num_ctx: this.config.contextWindow ?? 8192,
-        num_predict: this.config.maxTokens ?? 2048,
+        // When thinking is on, the reasoning tokens and the answer tokens share
+        // one num_predict budget — a fixed cap (e.g. 2048) gets eaten by a long
+        // chain-of-thought, truncating or emptying the actual answer
+        // (done_reason=length). Use -1 ("until natural stop") so the model can
+        // finish thinking AND answering; num_ctx remains the real ceiling. The
+        // fixed cap still applies to non-thinking generations.
+        num_predict: think ? -1 : (this.config.maxTokens ?? 2048),
         temperature: this.config.temperature ?? 0.3,
       },
     });
