@@ -827,6 +827,25 @@ export function runMigrations(): void {
     console.warn('[Artha] skills pinned_model migration skipped:', err);
   }
 
+  // Cleanup: drop orphan skill_runs whose skill_id has no skills row. These were
+  // written by early builds for the synthetic Delegate operator (slug
+  // 'delegate-operator', never a real skill) — they never surface in the
+  // dashboard (it joins FROM skills) and would otherwise just accumulate. Safe +
+  // idempotent: skills is always seeded before migrations run, and the dashboard
+  // ignores these rows, so this only removes invisible dead data. After the
+  // forward fix (recordSkillInvocation skips non-DB skills) no new ones appear,
+  // so this deletes the backlog once and finds nothing thereafter.
+  try {
+    const hasSkillRuns = db.prepare(
+      `SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_runs'`
+    ).get();
+    if (hasSkillRuns) {
+      db.exec(`DELETE FROM skill_runs WHERE skill_id NOT IN (SELECT skill_id FROM skills)`);
+    }
+  } catch (err) {
+    console.warn('[Artha] orphan skill_runs cleanup skipped:', err);
+  }
+
   // Migration v12→v13: actor on tool_audit_log — records WHO initiated each tool
   // call ('local' = the desktop user; a team-member name/id for LAN requests).
   // Required for the B2B compliance story ("which teammate ran what tool").

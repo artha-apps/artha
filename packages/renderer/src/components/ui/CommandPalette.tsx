@@ -14,7 +14,7 @@ import {
   Search, MessageSquarePlus, SunMoon, Cpu, FolderOpen, MessagesSquare,
   Settings as SettingsIcon, ArrowRight, LayoutGrid, Undo2, Brain, FileText,
 } from 'lucide-react';
-import { useChatStore, type ActiveView, type ActiveTab } from '../../stores/chat';
+import { useChatStore, type ActiveView, type ActiveTab, type WorkflowsSection } from '../../stores/chat';
 import { useThemeStore } from '../../stores/theme';
 import { toast } from '../../stores/toast';
 
@@ -32,20 +32,29 @@ interface Command {
 
 type SearchHit = { type: 'chat' | 'memory' | 'artifact'; id: string; title: string; snippet: string; ts: number; filePath?: string };
 
-/** Friendly labels for the settings panels reachable from the palette. */
+/** Friendly labels for the settings panels reachable from the palette. NOTE:
+ *  the operational surfaces (Runs/Scheduled/Artifacts/Receipts/Provenance/Time
+ *  Travel) moved OUT of Settings into the Workflows hub — they live in
+ *  WORKFLOWS_SECTIONS below and route via openWorkflows, not here. */
 const PANELS: { view: Exclude<ActiveView, 'chat'>; label: string }[] = [
   { view: 'models', label: 'Models' }, { view: 'skills', label: 'Skills' },
   { view: 'mcp', label: 'MCP Tools' }, { view: 'policies', label: 'Tool Policies' },
   { view: 'web', label: 'Web' }, { view: 'router', label: 'Router' },
   { view: 'memory', label: 'Memory' }, { view: 'crm', label: 'CRM' },
   { view: 'rag', label: 'RAG Index' }, { view: 'bundles', label: 'Bundles' },
-  { view: 'artifacts', label: 'Artifacts' }, { view: 'cloud', label: 'Cloud Integrations' },
+  { view: 'cloud', label: 'Cloud Integrations' },
   { view: 'lan', label: 'LAN Server' }, { view: 'ide', label: 'IDE Integration' },
   { view: 'desktop', label: 'Desktop Control' }, { view: 'marketplace', label: 'Marketplace' },
   { view: 'team', label: 'Team' }, { view: 'license', label: 'License' },
-  { view: 'scheduler', label: 'Scheduled Tasks' }, { view: 'timetravel', label: 'Time Travel' },
-  { view: 'receipts', label: 'Receipts' }, { view: 'provenance', label: 'Provenance' },
   { view: 'settings', label: 'General Settings' }, { view: 'about', label: 'About' },
+];
+
+/** The operational sections of the Workflows hub, reachable from the palette.
+ *  Routed via openWorkflows so they land in the tab (not the Settings modal). */
+const WORKFLOWS_SECTIONS: { section: WorkflowsSection; label: string }[] = [
+  { section: 'runs', label: 'Runs' }, { section: 'scheduled', label: 'Scheduled Tasks' },
+  { section: 'artifacts', label: 'Artifacts' }, { section: 'receipts', label: 'Receipts' },
+  { section: 'provenance', label: 'Provenance' }, { section: 'timetravel', label: 'Time Travel' },
 ];
 
 const TABS: { tab: ActiveTab; label: string }[] = [
@@ -147,6 +156,10 @@ export default function CommandPalette() {
     // Settings panels
     for (const p of PANELS) {
       cmds.push({ id: `panel-${p.view}`, group: 'Settings', label: p.label, icon: SettingsIcon, keywords: 'settings open ' + p.view, run: () => store.openWorkspaceSettings(p.view) });
+    }
+    // Workflows hub sections (relocated out of Settings)
+    for (const w of WORKFLOWS_SECTIONS) {
+      cmds.push({ id: `wf-${w.section}`, group: 'Workflows', label: w.label, icon: LayoutGrid, keywords: 'workflows runs activity audit ' + w.section, run: () => store.openWorkflows(w.section) });
     }
     // Models
     for (const m of models) {

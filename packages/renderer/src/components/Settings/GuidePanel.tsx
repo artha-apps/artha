@@ -107,8 +107,8 @@ const FEATURES: Feature[] = [
     title: 'Proof of what the agent did',
     blurb: 'Every tool call is recorded as a verifiable receipt — what it did, a content hash, and whether a policy blocked it.',
     steps: [
-      'After a task, open Settings → Receipts.',
-      'Pick the run to see each action with its real effect.',
+      'In a chat, click “Run details” in the header to see that run’s receipts.',
+      'Or open the Workflows tab → Runs to browse every recent run, then pick one.',
       'Blocked and preview-only calls are logged too, so the trail is complete.',
     ],
   },
