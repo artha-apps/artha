@@ -206,9 +206,9 @@ function familyColor(family: string): string {
     Mistral: 'text-violet-400 bg-violet-400/10',
     Gemma: 'text-teal-400 bg-teal-400/10',
     Phi: 'text-pink-400 bg-pink-400/10',
-    DeepSeek: 'text-cyan-400 bg-cyan-400/10',
+    DeepSeek: 'text-artha-accent bg-artha-accent/10',
     CodeLlama: 'text-yellow-400 bg-yellow-400/10',
-    Nomic: 'text-green-400 bg-green-400/10',
+    Nomic: 'text-artha-success bg-artha-success/10',
   };
   return map[family] ?? 'text-artha-muted bg-artha-text/5';
 }
@@ -476,20 +476,20 @@ export default function ModelsPanel() {
 
       {/* Ollama offline warning */}
       {!ollamaOnline && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-sm text-red-400">
+        <div className="bg-artha-danger/10 border border-artha-danger/20 rounded-xl p-4 mb-6 text-sm text-artha-danger">
           Ollama is not running. Start it with{' '}
-          <code className="bg-red-500/10 px-1.5 py-0.5 rounded font-mono text-xs">ollama serve</code>{' '}
+          <code className="bg-artha-danger/10 px-1.5 py-0.5 rounded font-mono text-xs">ollama serve</code>{' '}
           then refresh. Or use a cloud model below.
         </div>
       )}
 
       {/* Active model badge + context window */}
       {activeModel && (
-        <div className="mb-5 rounded-xl border border-artha-border bg-white/3 p-4 space-y-3">
+        <div className="mb-5 rounded-xl border border-artha-border bg-artha-text/5 p-4 space-y-3">
           <div className="flex items-center gap-2">
-            <CheckCircle2 size={14} className="text-green-400 shrink-0" />
+            <CheckCircle2 size={14} className="text-artha-success shrink-0" />
             <span className="text-xs text-artha-muted">Active model: </span>
-            <code className="text-xs text-green-400 font-mono truncate">{activeModel}</code>
+            <code className="text-xs text-artha-success font-mono truncate">{activeModel}</code>
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -621,7 +621,7 @@ export default function ModelsPanel() {
                       onClick={() => { setDeleteError(null); setConfirmDelete(model.name); }}
                       disabled={isDeleting || !!switching}
                       title="Uninstall model"
-                      className="shrink-0 p-1.5 rounded-lg text-artha-muted hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+                      className="shrink-0 p-1.5 rounded-lg text-artha-muted hover:text-artha-danger hover:bg-artha-danger/10 transition-colors disabled:opacity-40"
                     >
                       {isDeleting
                         ? <RefreshCw size={13} className="animate-spin" />
@@ -631,7 +631,7 @@ export default function ModelsPanel() {
 
                   {/* Inline confirm — deleting frees disk space and can't be undone. */}
                   {isConfirming && (
-                    <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-artha-border bg-red-500/5 rounded-b-xl">
+                    <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-artha-border bg-artha-danger/5 rounded-b-xl">
                       <p className="text-xs text-artha-muted">
                         Uninstall <span className="text-artha-text font-medium">{model.name}</span> and free {formatSize(model.size)}? You can re-pull it any time.
                       </p>
@@ -646,7 +646,7 @@ export default function ModelsPanel() {
                         <button
                           onClick={() => deleteModel(model.name)}
                           disabled={isDeleting}
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium transition-colors disabled:opacity-40"
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-artha-danger/15 hover:bg-artha-danger/25 text-artha-danger text-xs font-medium transition-colors disabled:opacity-40"
                         >
                           {isDeleting && <RefreshCw size={11} className="animate-spin" />}
                           Uninstall
@@ -657,7 +657,7 @@ export default function ModelsPanel() {
 
                   {/* Delete failure — shown beneath the row that failed. */}
                   {deleteError && confirmDelete === model.name && (
-                    <p className="px-4 pb-2.5 text-xs text-red-400">{deleteError}</p>
+                    <p className="px-4 pb-2.5 text-xs text-artha-danger">{deleteError}</p>
                   )}
                 </div>
               );
@@ -754,12 +754,12 @@ export default function ModelsPanel() {
                     ) : progress?.status === 'error' ? (
                       <button
                         onClick={() => pullModel(entry.tag)}
-                        className="px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs font-medium transition-colors"
+                        className="px-3 py-1.5 rounded-lg border border-artha-danger/30 text-artha-danger hover:bg-artha-danger/10 text-xs font-medium transition-colors"
                       >
                         Retry
                       </button>
                     ) : progress?.status === 'success' ? (
-                      <span className="flex items-center gap-1 text-xs text-green-400">
+                      <span className="flex items-center gap-1 text-xs text-artha-success">
                         <CheckCircle2 size={13} /> Installed
                       </span>
                     ) : (
@@ -776,7 +776,7 @@ export default function ModelsPanel() {
 
                 {/* Error message */}
                 {progress?.status === 'error' && progress.error && (
-                  <p className="mt-2 text-xs text-red-400 pl-14">{progress.error}</p>
+                  <p className="mt-2 text-xs text-artha-danger pl-14">{progress.error}</p>
                 )}
               </div>
             );
@@ -833,7 +833,7 @@ export default function ModelsPanel() {
                     </button>
                   )}
                   <button onClick={() => removeCloud(m)} title="Remove"
-                    className="text-artha-muted hover:text-red-400 transition-colors">
+                    className="text-artha-muted hover:text-artha-danger transition-colors">
                     <Trash2 size={13} />
                   </button>
                 </div>
@@ -883,7 +883,7 @@ export default function ModelsPanel() {
                 className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
             </div>
 
-            {cloudError && <p className="text-xs text-red-400">{cloudError}</p>}
+            {cloudError && <p className="text-xs text-artha-danger">{cloudError}</p>}
 
             <div className="flex gap-2">
               <button onClick={saveCloudModel} disabled={savingCloud}

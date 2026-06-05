@@ -657,7 +657,7 @@ export default function ChatWindow() {
               )}
               <div className={`text-sm leading-relaxed rounded-2xl px-4 py-3
                 ${msg.senderType === 'user'
-                  ? 'max-w-[65%] bg-artha-accent text-white rounded-br-sm shadow-soft'
+                  ? 'max-w-[65%] bg-artha-accent text-artha-on-accent rounded-br-sm shadow-soft'
                   : 'max-w-[80%] bg-artha-surface border border-artha-border text-artha-text rounded-bl-sm shadow-soft'}`}>
                 {msg.senderType === 'agent' ? (
                   <>
@@ -941,7 +941,7 @@ export default function ChatWindow() {
             ) : (
               <Tooltip content="Send message (⌘↩)">
                 <button onClick={() => send()} disabled={!input.trim()}
-                  className="p-2 rounded-xl bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-white disabled:opacity-25 disabled:cursor-not-allowed transition-all duration-200 active:scale-95 shrink-0">
+                  className="p-2 rounded-xl bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-artha-on-accent disabled:opacity-25 disabled:cursor-not-allowed transition-all duration-200 active:scale-95 shrink-0">
                   <Send size={14} />
                 </button>
               </Tooltip>

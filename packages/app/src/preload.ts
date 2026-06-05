@@ -28,6 +28,30 @@ export interface MemoryImportEntry {
   date?: string | null;
 }
 
+/** A Knowledge Graph node as sent to the renderer (props parsed). Mirrors
+ *  `KgEntity` in `bodhi/knowledgeGraph.ts`. */
+export interface KgNodeDTO {
+  entity_id: string;
+  kind: string;
+  name: string;
+  external_id: string | null;
+  source: string;
+  props: Record<string, unknown>;
+  project_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** A Knowledge Graph edge as sent to the renderer. Mirrors `KgRelation`. */
+export interface KgEdgeDTO {
+  relation_id: string;
+  src_id: string;
+  dst_id: string;
+  rel_type: string;
+  props: Record<string, unknown>;
+  created_at: number;
+}
+
 /** A folder or file attached to a single chat (see `session_scopes`). */
 export interface SessionScope {
   scope_id: string;
@@ -110,6 +134,14 @@ const api = {
     },
     clarifyRespond: (workflowId: string, answers: string[] | null) =>
       ipcRenderer.invoke('agent:clarifyRespond', workflowId, answers),
+    // Per-tool-call approval (policy `confirm` tier). The orchestrator pauses a
+    // specific function call until the user approves or denies it here.
+    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string }) => void) => {
+      ipcRenderer.on('agent:toolApprovalRequest', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:toolApprovalRequest');
+    },
+    respondToolApproval: (approvalId: string, approved: boolean) =>
+      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved),
     // Decompose a goal into sub-tasks and run them concurrently.
     runParallel: (sessionId: string, goal: string, subTasks: string[]) =>
       ipcRenderer.invoke('agent:runParallel', { sessionId, goal, subTasks }) as Promise<string[]>,
@@ -432,6 +464,32 @@ const api = {
     export: () => ipcRenderer.invoke('memory:export') as Promise<string>,
   },
 
+  // ── CRM ────────────────────────────────────────────────────────────────────
+  // Local CRM the CRM Agent maintains. The panel reads/writes the same tables
+  // the crm_* agent tools do; writes also project into the Knowledge Graph.
+  crm: {
+    listContacts: () => ipcRenderer.invoke('crm:listContacts') as Promise<{
+      contact_id: string; name: string; email: string | null; company: string | null;
+      title: string | null; last_interaction_at: number | null; created_at: number;
+    }[]>,
+    addContact: (input: { name: string; company?: string; email?: string; title?: string }) =>
+      ipcRenderer.invoke('crm:addContact', input) as Promise<{ contact_id: string }>,
+    listInteractions: (contactId: string) => ipcRenderer.invoke('crm:listInteractions', contactId) as Promise<{
+      interaction_id: string; contact_id: string | null; kind: string; summary: string; occurred_at: number;
+    }[]>,
+    logInteraction: (input: { contactId: string; kind: string; summary: string }) =>
+      ipcRenderer.invoke('crm:logInteraction', input) as Promise<{ interaction_id: string }>,
+    deleteContact: (contactId: string) => ipcRenderer.invoke('crm:deleteContact', contactId) as Promise<boolean>,
+  },
+
+  // ── Knowledge Graph ────────────────────────────────────────────────────────
+  // Read views over the general KG engine (entities + typed relations).
+  kg: {
+    listNodes: (filter?: { kind?: string }) => ipcRenderer.invoke('kg:listNodes', filter) as Promise<KgNodeDTO[]>,
+    listEdges: (nodeId?: string) => ipcRenderer.invoke('kg:listEdges', nodeId) as Promise<KgEdgeDTO[]>,
+    query: (q: string) => ipcRenderer.invoke('kg:query', q) as Promise<{ nodes: KgNodeDTO[]; edges: KgEdgeDTO[] }>,
+  },
+
   // ── IDE Integration ───────────────────────────────────────────────────────
   // Generate MCP config files (.vscode/mcp.json or .cursor/mcp.json) so the
   // user can connect VS Code / Cursor to Artha's local tool server.
@@ -489,6 +547,35 @@ const api = {
     listDocs: () => ipcRenderer.invoke('provenance:listDocs'),
     listAnchors: (docId: string) => ipcRenderer.invoke('provenance:listAnchors', docId),
     getReceipt: (docId: string) => ipcRenderer.invoke('provenance:getReceipt', docId),
+  },
+
+  // ── Tool-call policies (governance for function calling) ──────────────────
+  // Per-tool trust tiers (auto / confirm / dry_run / forbid) evaluated before
+  // every function call. CRUD here drives the Tool Policies settings panel.
+  policies: {
+    list: () => ipcRenderer.invoke('policies:list') as Promise<{
+      policy_id: string; pattern: string; tier: 'auto' | 'confirm' | 'dry_run' | 'forbid';
+      scope: 'always' | 'outside_roots'; note: string; is_enabled: number; created_at: number;
+    }[]>,
+    create: (input: { pattern: string; tier: string; scope?: string; note?: string; isEnabled?: boolean }) =>
+      ipcRenderer.invoke('policies:create', input),
+    update: (policyId: string, patch: { pattern?: string; tier?: string; scope?: string; note?: string; isEnabled?: boolean }) =>
+      ipcRenderer.invoke('policies:update', policyId, patch),
+    delete: (policyId: string) => ipcRenderer.invoke('policies:delete', policyId) as Promise<boolean>,
+  },
+
+  // ── Verified tool receipts (provenance for function calls) ────────────────
+  // Read-only audit trail: every tool call (incl. blocked / dry-run) with a
+  // plain-English effect, a content hash, and the governing policy tier.
+  receipts: {
+    listRuns: (limit?: number) => ipcRenderer.invoke('receipts:listRuns', limit) as Promise<{
+      run_id: string; goal: string; session_id: string; calls: number; mutations: number; ts: number;
+    }[]>,
+    listByRun: (runId: string) => ipcRenderer.invoke('receipts:listByRun', runId) as Promise<{
+      receipt_id: string; run_id: string | null; tool_name: string; args_json: string;
+      effect: string; result_hash: string; status: 'ok' | 'error' | 'blocked' | 'skipped';
+      tier: 'auto' | 'confirm' | 'dry_run' | 'forbid'; is_mutation: number; duration_ms: number; ts: number;
+    }[]>,
   },
 
   // ── Time travel ──────────────────────────────────────────────────────────

@@ -59,12 +59,38 @@ export interface ToolCallEvent {
   step?: unknown;
 }
 
+/** Pre-flight estimate of what executing a plan will touch. Mirrors the main
+ *  process `BlastRadius` (agent/blastRadius.ts). */
+export interface BlastRadius {
+  deletions: number;
+  moves: number;
+  writes: number;
+  touchesWeb: boolean;
+  delegates: boolean;
+  reversible: boolean;
+  estTokens: number;
+  summary: string;
+}
+
 /** A plan the orchestrator paused on — drives the PlanApproval modal. */
 export interface AgentPlan {
   workflowId: string;
   goal: string;
   steps: { index: number; description: string; toolName?: string }[];
   requiresApproval: boolean;
+  /** Pre-flight blast-radius estimate, rendered as the approval card header. */
+  blastRadius?: BlastRadius;
+}
+
+/** A per-tool-call approval the orchestrator paused on (policy `confirm` tier)
+ *  — drives the ToolApprovalModal. */
+export interface ToolApprovalRequest {
+  approvalId: string;
+  workflowId: string;
+  sessionId: string;
+  toolName: string;
+  argsPreview: string;
+  note: string;
 }
 
 /** A clarification request the orchestrator paused on — drives the ClarificationModal. */
@@ -99,7 +125,7 @@ export interface SessionScope {
  *  the Workspace Settings modal scoped to that panel. Keeping the union lets
  *  legacy call-sites (`setActiveView('models')`) deep-link into the modal
  *  without changing their signature. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license' | 'guide' | 'about';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'crm' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license' | 'guide' | 'about' | 'policies' | 'receipts';
 
 /** Top-level rooms inside the Chat view. Tab selection persists in
  *  localStorage so reloads land where you left off.
@@ -138,6 +164,7 @@ interface ChatState {
   executionLog: ToolCallEvent[];
   pendingPlan: AgentPlan | null;
   pendingClarify: ClarifyRequest | null;
+  pendingToolApproval: ToolApprovalRequest | null;
   pendingToolEvents: ToolCallEvent[];
   pendingCitations: Citation[];
   /** Live chain-of-thought for the in-flight run (from the `agent:reasoning`
@@ -184,6 +211,7 @@ interface ChatState {
   setLiveReasoning: (steps: ReasoningStep[], show: boolean) => void;
   setPendingPlan: (plan: AgentPlan | null) => void;
   setPendingClarify: (req: ClarifyRequest | null) => void;
+  setPendingToolApproval: (req: ToolApprovalRequest | null) => void;
   setActiveView: (view: ActiveView) => void;
   setActiveTab: (tab: ActiveTab) => void;
   /** Open the Workspace Settings modal, optionally scrolled to a section. */
@@ -271,6 +299,7 @@ export const useChatStore = create<ChatState>((set) => ({
   executionLog: [],
   pendingPlan: null,
   pendingClarify: null,
+  pendingToolApproval: null,
   pendingToolEvents: [],
   pendingCitations: [],
   liveReasoning: null,
@@ -381,6 +410,7 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
   setPendingClarify: (req) => set({ pendingClarify: req }),
+  setPendingToolApproval: (req) => set({ pendingToolApproval: req }),
   // Legacy view setter. 'chat' returns to the tabbed canvas; anything else is
   // a settings panel id and routes to the Workspace Settings modal so old
   // call-sites keep working without refactor.

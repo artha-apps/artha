@@ -11,7 +11,7 @@
  * internal-UI rework. Search filters the left nav by section/panel name.
  */
 import { useEffect, useMemo, useState, type ComponentType } from 'react';
-import { Search, X, Cpu, Sparkles, Wrench, Globe, Route, Brain, FolderSearch, Package, Archive, Link, Wifi, Code2, Monitor, Store, Users, Clock, History, ShieldCheck, Settings as SettingsIcon, KeyRound, BookOpen, Info, type LucideIcon } from 'lucide-react';
+import { Search, X, Cpu, Sparkles, Wrench, Globe, Route, Brain, FolderSearch, Package, Archive, Contact2, Link, Wifi, Code2, Monitor, Store, Users, Clock, History, ShieldCheck, ShieldAlert, ReceiptText, Settings as SettingsIcon, KeyRound, BookOpen, Info, type LucideIcon } from 'lucide-react';
 import { useChatStore, type ActiveView } from '../../stores/chat';
 import ModelsPanel from '../Settings/ModelsPanel';
 import SkillsPanel from '../Settings/SkillsPanel';
@@ -19,6 +19,7 @@ import MCPToolsPanel from '../Settings/MCPToolsPanel';
 import WebPanel from '../Settings/WebPanel';
 import RouterPanel from '../Settings/RouterPanel';
 import MemoryPanel from '../Settings/MemoryPanel';
+import CrmPanel from '../Settings/CrmPanel';
 import RAGPanel from '../Settings/RAGPanel';
 import BundlesPanel from '../Settings/BundlesPanel';
 import ArtifactsPanel from '../Settings/ArtifactsPanel';
@@ -32,6 +33,8 @@ import LicensePanel from '../Settings/LicensePanel';
 import SchedulerPanel from '../Settings/SchedulerPanel';
 import TimeTravelPanel from '../Settings/TimeTravelPanel';
 import ProvenancePanel from '../Settings/ProvenancePanel';
+import PoliciesPanel from '../Settings/PoliciesPanel';
+import ReceiptsPanel from '../Settings/ReceiptsPanel';
 import SettingsPanel from '../Settings/SettingsPanel';
 import GuidePanel from '../Settings/GuidePanel';
 import AboutPanel from '../Settings/AboutPanel';
@@ -62,6 +65,7 @@ const SECTIONS: NavSection[] = [
       { id: 'models',    label: 'Models',     icon: Cpu,         Panel: ModelsPanel },
       { id: 'skills',    label: 'Skills',     icon: Sparkles,    Panel: SkillsPanel },
       { id: 'mcp',       label: 'MCP Tools',  icon: Wrench,      Panel: MCPToolsPanel },
+      { id: 'policies',  label: 'Tool Policies', icon: ShieldAlert, Panel: PoliciesPanel },
       { id: 'web',       label: 'Web',        icon: Globe,       Panel: WebPanel },
       { id: 'router',    label: 'Router',     icon: Route,       Panel: RouterPanel },
     ],
@@ -71,6 +75,7 @@ const SECTIONS: NavSection[] = [
     label: 'Knowledge',
     entries: [
       { id: 'memory',    label: 'Memory',     icon: Brain,       Panel: MemoryPanel },
+      { id: 'crm',       label: 'CRM',        icon: Contact2,    Panel: CrmPanel },
       { id: 'rag',       label: 'RAG Index',  icon: FolderSearch, Panel: RAGPanel },
       { id: 'bundles',   label: 'Bundles',    icon: Package,     Panel: BundlesPanel },
       { id: 'artifacts', label: 'Artifacts',  icon: Archive,     Panel: ArtifactsPanel },
@@ -101,6 +106,7 @@ const SECTIONS: NavSection[] = [
     entries: [
       { id: 'scheduler',  label: 'Scheduled',  icon: Clock,       Panel: SchedulerPanel },
       { id: 'timetravel', label: 'Time travel', icon: History,    Panel: TimeTravelPanel },
+      { id: 'receipts',   label: 'Receipts',   icon: ReceiptText, Panel: ReceiptsPanel },
       { id: 'provenance', label: 'Provenance', icon: ShieldCheck, Panel: ProvenancePanel },
     ],
   },

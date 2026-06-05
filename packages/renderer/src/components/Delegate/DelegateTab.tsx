@@ -58,8 +58,8 @@ export default function DelegateTab() {
 
         {/* Failure state */}
         {status === 'failed' && (
-          <div className="flex items-start gap-2 p-3 rounded-xl border border-red-500/30 bg-red-500/5">
-            <AlertTriangle size={15} className="text-red-400 mt-0.5 shrink-0" />
+          <div className="flex items-start gap-2 p-3 rounded-xl border border-artha-danger/30 bg-artha-danger/5">
+            <AlertTriangle size={15} className="text-artha-danger mt-0.5 shrink-0" />
             <div className="text-sm text-artha-text">
               Something went wrong while running this task.
               {error && <span className="block text-xs text-artha-muted mt-0.5">{error}</span>}

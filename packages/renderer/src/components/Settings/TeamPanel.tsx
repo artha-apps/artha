@@ -87,17 +87,17 @@ function MembersTab() {
         <div className="flex gap-2">
           <input value={name} onChange={e => setName(e.target.value)}
             placeholder="Display name *"
-            className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
+            className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-artha-accent/50" />
           <input value={email} onChange={e => setEmail(e.target.value)}
             placeholder="Email (optional)"
-            className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
+            className="flex-1 px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-artha-accent/50" />
           <select value={role} onChange={e => setRole(e.target.value as 'admin' | 'member')}
             className="px-3 py-2 rounded-lg bg-artha-surface border border-artha-border text-sm text-artha-text focus:outline-none">
             <option value="member">Member</option>
             <option value="admin">Admin</option>
           </select>
           <button onClick={add} disabled={busy || !name.trim()}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-artha-text text-sm font-medium transition-colors">
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover disabled:opacity-40 text-artha-on-accent text-sm font-medium transition-colors">
             {busy ? <Loader size={13} className="animate-spin" /> : <Plus size={13} />} Add
           </button>
         </div>
@@ -111,8 +111,8 @@ function MembersTab() {
           {members.map(m => (
             <div key={m.member_id}
               className="flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
-              <div className={`p-1.5 rounded-lg ${m.role === 'admin' ? 'bg-purple-500/20' : 'bg-cyan-500/10'}`}>
-                {m.role === 'admin' ? <Shield size={14} className="text-purple-400" /> : <User size={14} className="text-cyan-400" />}
+              <div className={`p-1.5 rounded-lg ${m.role === 'admin' ? 'bg-purple-500/20' : 'bg-artha-accent/10'}`}>
+                {m.role === 'admin' ? <Shield size={14} className="text-purple-400" /> : <User size={14} className="text-artha-accent" />}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-artha-text truncate">{m.display_name}</p>
@@ -122,12 +122,12 @@ function MembersTab() {
                 className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
                   m.role === 'admin'
                     ? 'bg-purple-500/15 text-purple-300 hover:bg-purple-500/25'
-                    : 'bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20'
+                    : 'bg-artha-accent/10 text-artha-accent hover:bg-artha-accent/20'
                 }`}>
                 {m.role}
               </button>
               <button onClick={() => remove(m.member_id)}
-                className="p-1.5 rounded-lg text-artha-muted hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                className="p-1.5 rounded-lg text-artha-muted hover:text-artha-danger hover:bg-artha-danger/10 transition-colors">
                 <Trash2 size={13} />
               </button>
             </div>
@@ -191,21 +191,21 @@ function ApiKeysTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start gap-3 p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-sm text-yellow-300">
+      <div className="flex items-start gap-3 p-3 rounded-xl bg-artha-warn/10 border border-artha-warn/30 text-sm text-artha-warn">
         <AlertTriangle size={15} className="shrink-0 mt-0.5" />
         <span>When no keys exist the LAN server is open. Add at least one key to require authentication.</span>
       </div>
 
       {/* New key reveal */}
       {newKey && (
-        <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/30 space-y-2">
-          <p className="text-xs font-semibold text-green-400">Copy this key now — it will not be shown again.</p>
+        <div className="p-4 rounded-xl bg-artha-success/10 border border-artha-success/30 space-y-2">
+          <p className="text-xs font-semibold text-artha-success">Copy this key now — it will not be shown again.</p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 font-mono text-xs text-green-300 break-all bg-black/30 px-3 py-2 rounded-lg">
+            <code className="flex-1 font-mono text-xs text-artha-success break-all bg-black/30 px-3 py-2 rounded-lg">
               {newKey.plaintext}
             </code>
             <button onClick={() => copyKey(newKey.plaintext)}
-              className="p-2 rounded-lg bg-green-500/20 hover:bg-green-500/30 text-green-400 transition-colors shrink-0">
+              className="p-2 rounded-lg bg-artha-success/20 hover:bg-artha-success/30 text-artha-success transition-colors shrink-0">
               {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
           </div>
@@ -217,9 +217,9 @@ function ApiKeysTab() {
       <div className="flex gap-2">
         <input value={keyName} onChange={e => setKeyName(e.target.value)}
           placeholder="Key name (e.g. Alice's laptop)"
-          className="flex-1 px-3 py-2 rounded-lg bg-artha-s2 border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-cyan-500/50" />
+          className="flex-1 px-3 py-2 rounded-lg bg-artha-s2 border border-artha-border text-sm text-artha-text placeholder-artha-muted focus:outline-none focus:border-artha-accent/50" />
         <button onClick={create} disabled={busy}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-artha-text text-sm font-medium transition-colors">
+          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover disabled:opacity-40 text-artha-on-accent text-sm font-medium transition-colors">
           {busy ? <Loader size={13} className="animate-spin" /> : <Plus size={13} />} Generate
         </button>
       </div>
@@ -232,7 +232,7 @@ function ApiKeysTab() {
           {keys.map(k => (
             <div key={k.key_id}
               className="flex items-center gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
-              <Key size={14} className={k.is_enabled ? 'text-cyan-400' : 'text-artha-muted'} />
+              <Key size={14} className={k.is_enabled ? 'text-artha-accent' : 'text-artha-muted'} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-artha-text truncate">{k.name}</p>
                 <p className="text-xs text-artha-muted">
@@ -245,7 +245,7 @@ function ApiKeysTab() {
                 {k.is_enabled ? <Eye size={13} /> : <EyeOff size={13} />}
               </button>
               <button onClick={() => revoke(k.key_id)}
-                className="p-1.5 rounded-lg text-artha-muted hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                className="p-1.5 rounded-lg text-artha-muted hover:text-artha-danger hover:bg-artha-danger/10 transition-colors">
                 <Trash2 size={13} />
               </button>
             </div>
@@ -299,7 +299,7 @@ function SharedMemoryTab() {
           {memories.map(m => (
             <div key={m.entity_id}
               className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
-              <Brain size={14} className={`mt-0.5 shrink-0 ${m.is_shared ? 'text-cyan-400' : 'text-artha-muted'}`} />
+              <Brain size={14} className={`mt-0.5 shrink-0 ${m.is_shared ? 'text-artha-accent' : 'text-artha-muted'}`} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-artha-text truncate">{m.name}</p>
                 <p className="text-xs text-artha-muted line-clamp-2">{m.content}</p>
@@ -308,7 +308,7 @@ function SharedMemoryTab() {
                 onClick={() => toggle(m)}
                 disabled={busy === m.entity_id}
                 className={`shrink-0 relative w-10 h-5.5 rounded-full transition-colors disabled:opacity-50 ${
-                  m.is_shared ? 'bg-cyan-500' : 'bg-white/15'
+                  m.is_shared ? 'bg-artha-accent' : 'bg-artha-text/15'
                 }`}
                 role="switch"
                 aria-checked={m.is_shared === 1}
@@ -346,7 +346,7 @@ export default function TeamPanel() {
       <div className="max-w-3xl mx-auto">
         {/* Header */}
         <div className="flex items-center gap-3 mb-6">
-          <Users size={22} className="text-cyan-400" />
+          <Users size={22} className="text-artha-accent" />
           <div>
             <h2 className="text-lg font-semibold text-artha-text">Team</h2>
             <p className="text-sm text-artha-muted">

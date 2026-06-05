@@ -23,11 +23,13 @@ import { SkillRegistry, type ActiveSkill } from '../skills/registry';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
+import { getRunContext } from './runContext';
 import OpenAI from 'openai';
 import {
   startCitationCollection,
   drainCitations,
   setActiveCitationToken,
+  getActiveCitationToken,
 } from '../tools/web';
 import {
   MEMORY_TOOL_SCHEMAS,
@@ -43,6 +45,16 @@ import {
 import { gatherContext } from './contextGather';
 import { shouldNudgeToAct, compactStaleDomDumps } from './actGuard';
 import { noteDesktopControlActive } from '../controlOverlay';
+import { estimateBlastRadius, type BlastRadius } from './blastRadius';
+import { evaluatePolicy } from '../bodhi/policy';
+import { recordReceipt, RECEIPT_MUTATION_TOOLS, type ReceiptStatus } from '../bodhi/receipts';
+import {
+  isSubcapabilityTool,
+  getSubcapabilityToolSchemas,
+  intersectToolScopes,
+  MAX_CAPABILITY_DEPTH,
+} from '../bodhi/subcapability';
+import { filterToolsByAllowlist } from '../skills/util';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -53,7 +65,10 @@ void MAX_RETRIES;
  *  "Thinking" disclosure. `context_score` records how strongly the assembled
  *  local context (memories + history + scopes) influenced this step (0-1). */
 export interface ReasoningStep {
-  phase: 'context' | 'think';
+  // 'reasoning' is the model's own live chain-of-thought streamed from the LLM
+  // (Ollama `thinking` / OpenAI `reasoning_content`); 'context'/'think' are the
+  // orchestrator's pre-flight phases.
+  phase: 'context' | 'think' | 'reasoning';
   content: string;
   context_score: number;
 }
@@ -99,6 +114,24 @@ export interface AgentPlan {
   /** Images/files attached to the triggering user message. Threaded through to
    *  the first LLM turn in vision format so the model can see them. */
   attachments?: Attachment[];
+  /** Pre-flight estimate of what executing this plan will touch (deletes/moves/
+   *  writes/web/reversibility/token cost). Shown in the approval card so the user
+   *  approves with the consequences in view, not on faith. */
+  blastRadius?: BlastRadius;
+}
+
+/** A per-tool-call approval the orchestrator paused on because a policy assigned
+ *  the call the `confirm` tier. The renderer shows a modal and answers via
+ *  `respondToolApproval(approvalId, approved)`. */
+export interface ToolApprovalRequest {
+  approvalId: string;
+  workflowId: string;
+  sessionId: string;
+  toolName: string;
+  /** Pretty-printed (truncated) arguments for the user to inspect. */
+  argsPreview: string;
+  /** Note from the policy rule that triggered this prompt. */
+  note: string;
 }
 
 // ── Anti-hallucination tracker ───────────────────────────────────────────────
@@ -146,6 +179,10 @@ export class AgentOrchestrator {
   private cancelledWorkflows = new Set<string>();
   /** Pending clarification requests, keyed by workflowId. */
   private clarifyResolvers = new Map<string, (answers: string[] | null) => void>();
+  /** Pending per-tool-call approvals (policy `confirm` tier), keyed by approvalId.
+   *  The workflowId is kept so cancelWorkflow() can promptly deny any approval
+   *  the user is mid-decision on when they hit Stop. */
+  private toolApprovalResolvers = new Map<string, { workflowId: string; resolve: (approved: boolean) => void }>();
 
   constructor(window: BrowserWindow) {
     this.window = window;
@@ -177,6 +214,22 @@ export class AgentOrchestrator {
       INSERT INTO agent_states (workflow_id, session_id, status, context_json)
       VALUES (?, ?, 'pending', ?)
     `).run(workflowId, sessionId, JSON.stringify({ goal, skill: skill?.slug ?? null }));
+
+    // ── Intent gate ──────────────────────────────────────────────────────────
+    // A casual greeting or general question must NOT be forced through the
+    // file-task planner + tool-forcing ReAct loop — that's what makes local
+    // models refuse with "I cannot perform this task ... beyond the given
+    // functions". Route conversational messages to a plain reply with no tools
+    // attached. An explicit/auto-matched skill always implies action, so it
+    // skips the gate.
+    if (!skill) {
+      const intent = await this.classifyIntent(goal);
+      if (intent === 'chat') {
+        await this.handleConversational(workflowId, sessionId, goal, attachments);
+        return;
+      }
+    }
+    // ── End intent gate ──────────────────────────────────────────────────────
 
     // ── Clarification check ──────────────────────────────────────────────────
     // Ask the LLM whether the goal needs clarification before planning.
@@ -234,11 +287,192 @@ export class AgentOrchestrator {
     await this.executePlan(plan);
   }
 
+  /** Decide whether a message is casual conversation / a general question
+   *  ("chat") or an actionable task that should go through the planner + tool
+   *  loop ("task"). A rule-based fast-path resolves the obvious cases with zero
+   *  LLM cost; only the ambiguous middle costs one cheap classification call on
+   *  the smallest local model. Defaults to "task" on any error so real work is
+   *  never silently swallowed into a chit-chat reply. */
+  private async classifyIntent(goal: string): Promise<'chat' | 'task'> {
+    const text = goal.trim();
+    if (!text) return 'chat';
+
+    // Fast-path 1: short greetings / acknowledgements / identity questions.
+    const GREETING = /^(hi+|hello+|hey+|yo|sup|howdy|greetings|thanks|thank you|thx|ty|ok|okay|cool|nice|great|bye|goodbye|good (morning|afternoon|evening|night)|how are you|who are you|what('?s| is) your name|what can you do)\b[\s!.?]*$/i;
+    if (GREETING.test(text)) return 'chat';
+
+    // Fast-path 2: an explicit action verb almost always means a real task —
+    // skip the classifier round-trip and go straight to the planner.
+    const ACTION = /\b(move|moving|rename|delete|remove|create|make|organi[sz]e|copy|open|find|search|download|fetch|read|write|summari[sz]e|generate|build|convert|list|sort|clean|email|send|browse|navigate|click|screenshot|install|run|edit|update|fix|deploy)\b/i;
+    if (ACTION.test(text)) return 'task';
+
+    // Ambiguous middle: ask the model to label it. Use the SAME model that will
+    // answer a conversational reply ('synthesis' → active model) rather than the
+    // small 'plan' model: on local Ollama, classifying on 'plan' and then
+    // answering on the active model means two back-to-back model loads before
+    // the first token. Reusing the active model keeps it warm so a plain chat
+    // question streams its answer after a single load. The classification is one
+    // token, so the larger model costs almost nothing here.
+    try {
+      const llm = getActiveLLMClient(undefined, 'synthesis');
+      const resp = await llm.complete([
+        {
+          role: 'system',
+          content: `Classify the user's message as exactly one word: "chat" or "task".
+- "chat": greetings, small talk, opinions, or general-knowledge questions answerable in plain conversation WITHOUT touching the user's files, the web, the browser, or the desktop.
+- "task": a request to act on files, the web, documents, or the computer.
+Reply with ONLY the single word "chat" or "task" — nothing else.`,
+        },
+        { role: 'user', content: text },
+      ]);
+      const answer = (resp.choices[0]?.message?.content ?? '').toLowerCase();
+      // Bias toward "chat" only when the model clearly didn't say "task": this
+      // branch already saw no action verb, so a false "task" just falls back to
+      // the (working) planner path, while a false "chat" is harmless.
+      return answer.includes('task') ? 'task' : 'chat';
+    } catch {
+      return 'task';
+    }
+  }
+
+  /** Plain conversational reply path — no planner, no tools, no ReAct loop.
+   *  Used for greetings and general questions so local models never refuse for
+   *  lack of a matching tool. Mirrors runParallel's persist + emit lifecycle so
+   *  the chat UI behaves exactly like a normal agent turn. */
+  private async handleConversational(
+    workflowId: string,
+    sessionId: string,
+    goal: string,
+    attachments?: Attachment[]
+  ): Promise<void> {
+    const db = getDb();
+    const runId = crypto.randomUUID();
+
+    db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`).run(workflowId);
+    db.prepare(
+      `INSERT INTO agent_runs (run_id, session_id, workflow_id, goal, model, status) VALUES (?,?,?,?,?, 'running')`
+    ).run(runId, sessionId, workflowId, goal, this.activeModelName());
+
+    this.emit('agent:workflowStart', workflowId);
+
+    const projectId = this.getSessionProjectId(sessionId);
+    const memoryBlock = getMemoryContext(projectId);
+    const projectBlock = this.getSessionScopeBlock(sessionId);
+    const envBlock = this.buildEnvironmentContext();
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      {
+        role: 'system',
+        content: `You are Artha, a friendly local-first AI assistant on the user's Mac. You can chat normally, and when asked you can act on their files, the web, documents, and desktop using real tools.
+
+Right now you're just talking. Answer naturally and concisely in plain English — you do NOT need a tool for everything, and you must NEVER refuse merely because no tool fits. If the user wants you to actually DO something on their computer (organise files, fetch a page, make a document), invite them to ask and you'll take it from there.
+
+${memoryBlock}${projectBlock}
+
+${envBlock}`,
+      },
+      ...this.getSessionHistory(sessionId),
+      { role: 'user', content: this.buildUserContent(goal, attachments) },
+    ];
+
+    let finalText = '';
+    // Stream the model's own chain-of-thought to the chat bubble so the user
+    // sees *what* Artha is thinking during the (often long) reasoning phase that
+    // precedes the first answer token, rather than a blank spinner. Throttled to
+    // avoid flooding IPC on fast token streams.
+    const showReasoning = this.showReasoningEnabled();
+    let reasoningText = '';
+    let lastReasonEmit = 0;
+    const onReasoning = (chunk: string) => {
+      reasoningText += chunk;
+      const now = Date.now();
+      if (now - lastReasonEmit < 100) return;
+      lastReasonEmit = now;
+      this.emit('agent:reasoning', {
+        steps: [{ phase: 'reasoning', content: reasoningText, context_score: 0 }],
+        showReasoning,
+      });
+    };
+    try {
+      const llm = getActiveLLMClient(undefined, 'synthesis');
+      const result = await llm.streamComplete(
+        messages,
+        undefined, // no tools → tool_choice dropped → no tool-constrained refusal
+        (tok) => { finalText += tok; this.emit('agent:token', tok); },
+        () => this.cancelledWorkflows.has(workflowId),
+        onReasoning,
+      );
+      // Flush any reasoning buffered since the last throttled emit so the final
+      // thinking text is complete before the answer takes over the bubble.
+      if (reasoningText) {
+        this.emit('agent:reasoning', {
+          steps: [{ phase: 'reasoning', content: reasoningText, context_score: 0 }],
+          showReasoning,
+        });
+      }
+      // Some models return the whole answer in the final message instead of
+      // streaming token-by-token — surface that if nothing streamed.
+      if (!finalText && result.content) {
+        finalText = result.content;
+        this.emit('agent:token', finalText);
+      }
+    } catch (err) {
+      finalText = `⚠️ Error: ${err instanceof Error ? err.message : String(err)}`;
+      this.emit('agent:token', `\n\n${finalText}`);
+    }
+
+    if (!finalText.trim()) finalText = 'Hi! How can I help?';
+
+    try {
+      db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'agent', ?)`)
+        .run(sessionId, finalText);
+    } catch (err) {
+      console.warn('[Artha] persisting conversational reply failed:', err);
+    }
+
+    db.prepare(`UPDATE agent_runs SET status='completed' WHERE run_id=?`).run(runId);
+    db.prepare(`UPDATE agent_states SET status='completed' WHERE workflow_id=?`).run(workflowId);
+    this.emit('agent:streamEnd');
+  }
+
   /** Called by the IPC handler when the user submits clarification answers.
    *  `answers` is a parallel array to the emitted `questions`. Pass null to skip. */
   clarifyRespond(workflowId: string, answers: string[] | null): void {
     const resolve = this.clarifyResolvers.get(workflowId);
     if (resolve) resolve(answers);
+  }
+
+  /** Called by the IPC handler when the user approves or denies a policy-gated
+   *  tool call (the `confirm` tier). Resolves the awaiting ReAct loop. */
+  respondToolApproval(approvalId: string, approved: boolean): void {
+    const entry = this.toolApprovalResolvers.get(approvalId);
+    if (entry) entry.resolve(approved);
+  }
+
+  /** Emit a tool-approval request to the renderer and block until the user
+   *  answers (or a safety timeout denies it). Used when a policy assigns a tool
+   *  call the `confirm` tier. Defaults to DENY on timeout — a governance gate
+   *  must fail closed. */
+  private requestToolApproval(req: {
+    workflowId: string;
+    sessionId: string;
+    toolName: string;
+    args: Record<string, unknown>;
+    note: string;
+  }): Promise<boolean> {
+    const approvalId = crypto.randomUUID();
+    this.emit('agent:toolApprovalRequest', {
+      approvalId,
+      workflowId: req.workflowId,
+      sessionId: req.sessionId,
+      toolName: req.toolName,
+      argsPreview: JSON.stringify(req.args, null, 2).slice(0, 800),
+      note: req.note,
+    } satisfies ToolApprovalRequest);
+    return Promise.race([
+      new Promise<boolean>(resolve => { this.toolApprovalResolvers.set(approvalId, { workflowId: req.workflowId, resolve }); }),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(false), 120_000)),
+    ]).finally(() => this.toolApprovalResolvers.delete(approvalId));
   }
 
   /** Ask the LLM whether a goal needs clarification.
@@ -327,6 +561,12 @@ or
   /** Called when user hits the Stop button in the UI. */
   cancelWorkflow(workflowId: string): void {
     this.cancelledWorkflows.add(workflowId);
+    // If the user is mid-decision on a tool-approval modal for this workflow,
+    // deny it immediately so the loop unblocks now instead of after the 120s
+    // timeout — otherwise Stop feels broken while an approval is pending.
+    for (const [, entry] of this.toolApprovalResolvers) {
+      if (entry.workflowId === workflowId) entry.resolve(false);
+    }
   }
 
   /** Decompose a goal into independent sub-tasks and run them concurrently.
@@ -544,14 +784,18 @@ Rules:
       ? parsed.subTasks.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
       : [];
 
+    const steps = parsed.steps.map((s, i) => ({ ...s, index: i, status: 'pending' as const }));
     return {
       workflowId,
       sessionId,
       goal,
-      steps: parsed.steps.map((s, i) => ({ ...s, index: i, status: 'pending' as const })),
+      steps,
       requiresApproval: parsed.requiresApproval,
       requiresParallel: !!parsed.requiresParallel && subTasks.length > 1,
       subTasks,
+      // Pre-flight blast-radius estimate, surfaced in the approval card so the
+      // user sees the consequences before approving.
+      blastRadius: estimateBlastRadius(steps, goal),
     };
   }
 
@@ -632,7 +876,7 @@ RULES — follow exactly, no exceptions:
 12. When the user asks about THEIR OWN files, notes, or documents, call rag_search to retrieve relevant passages from their indexed files, then answer from those passages and cite the source filenames. Do not fabricate file contents.
 13. Use memory_store to persist important facts about the user or their work for future sessions (preferences, project names, contacts, decisions). Use memory_recall before answering questions about things the user has told you before. Use memory_forget if a memory is outdated.
 14. Tool errors: if a tool result reports a failure (it starts with "Error:" or contains an "error" field), read the message, correct the arguments, and retry THAT call AT MOST once more. NEVER re-issue a byte-identical call that just failed — change something or stop. If the same operation fails twice, leave it, note it as failed, and continue with the rest of the task; do not loop on it.
-15. Tool availability: only call tools that have been made available to you. Never invent a tool name, and never pass a parameter that isn't in that tool's schema. If no available tool can do what's needed, say so plainly — do not pretend an action happened.`,
+15. Tool availability: only call tools that have been made available to you. Never invent a tool name, and never pass a parameter that isn't in that tool's schema. If no available tool can do what's needed, say so plainly — do not pretend an action happened. But if the user is just greeting you or asking a general question that needs no tool at all, simply answer in plain English — NEVER refuse for lack of a matching tool.`,
       },
       ...history,
       { role: 'user', content: this.buildUserContent(plan.goal, plan.attachments) },
@@ -751,6 +995,19 @@ RULES — follow exactly, no exceptions:
      *  on a fast small model (the router's pick / smallest installed) rather than
      *  the heavy active model — keeping Chat on the active model untouched. */
     taskType?: TaskType;
+    /** Composable sub-capabilities: how deeply nested this loop is. A top-level
+     *  Chat/Delegate run is 0; a capability it invokes runs at 1, and so on up to
+     *  MAX_CAPABILITY_DEPTH. Used to bound recursion and withhold the delegation
+     *  tool at the cap. */
+    depth?: number;
+    /** The tool scope the PARENT loop was actually running with. The child's
+     *  effective scope is the intersection of this and its own skill's allowlist,
+     *  guaranteeing a child can never exceed its parent (permission monotonicity). */
+    parentAllowedTools?: string[];
+    /** The parent run's workflowId. A child loop also honours the parent's Stop
+     *  so cancelling a top-level run promptly unwinds any sub-capability it's
+     *  blocked inside (rather than waiting for the child to run to completion). */
+    parentWorkflowId?: string;
   }): Promise<void> {
     const db = getDb();
     const llm = getActiveLLMClient(args.modelOverride, args.taskType);
@@ -758,12 +1015,32 @@ RULES — follow exactly, no exceptions:
     const emit = (channel: string, data?: unknown): void => {
       if (!args.silent) this.emit(channel, data);
     };
+
+    const depth = args.depth ?? 0;
+    // Effective tool scope for THIS loop = parent's scope ∩ this skill's allowlist
+    // (empty allowlist = all tools). This is what enforces permission monotonicity
+    // for composed sub-capabilities; a top-level run has no parent so it's just
+    // the skill's own allowlist.
+    const ownAllowed = args.skill?.allowedTools ?? [];
+    const effectiveAllowed = args.parentAllowedTools
+      ? intersectToolScopes(args.parentAllowedTools, ownAllowed)
+      : ownAllowed;
+    // Delegation is only offered when we're below the depth cap AND the current
+    // scope actually permits it (an unrestricted run, or one that explicitly
+    // allows invoke_capability) — so a tightly-scoped skill can't escape its box
+    // by delegating.
+    const mayDelegate =
+      depth < MAX_CAPABILITY_DEPTH &&
+      (effectiveAllowed.length === 0 || effectiveAllowed.includes('invoke_capability'));
     const tools = [
-      ...this.skills.filterTools(this.registry.getToolSchemas(), args.skill ?? null),
+      ...filterToolsByAllowlist(this.registry.getToolSchemas(), effectiveAllowed),
       ...MEMORY_TOOL_SCHEMAS,
       // Desktop control (mouse/keyboard/screenshot) is opt-in and dangerous, so
       // it's only offered to the model when the user has enabled it in Settings.
       ...(this.desktopControlEnabled() ? DESKTOP_TOOL_SCHEMAS : []),
+      // Composable sub-capabilities — let this run delegate a self-contained
+      // step to a trusted, pre-scoped capability (bounded by depth + scope).
+      ...(mayDelegate ? getSubcapabilityToolSchemas() : []),
     ];
 
     const messages = args.messages;
@@ -774,6 +1051,9 @@ RULES — follow exactly, no exceptions:
 
     // Begin collecting citations for any web_fetch / web_search calls the
     // model makes inside this loop. Drained + emitted at the final response.
+    // Capture the previously-active token so a NESTED loop (a sub-capability)
+    // restores the parent's token on exit instead of clobbering it to null.
+    const prevCitationToken = getActiveCitationToken();
     startCitationCollection(args.workflowId);
     setActiveCitationToken(args.workflowId);
 
@@ -840,6 +1120,8 @@ RULES — follow exactly, no exceptions:
       allowedRoots,
       primaryDir: getSessionPrimaryFolder(args.sessionId),
       ragIndexIds: getSessionRagIndexIds(args.sessionId),
+      // Scope CRM/KG writes to the session's project, like memory.
+      projectId: this.getSessionProjectId(args.sessionId),
     };
 
     let finalEmitted = false;
@@ -858,10 +1140,17 @@ RULES — follow exactly, no exceptions:
     // latest DOM dump in context and stub the rest (see compactStaleDomDumps).
     const readDomCallIds = new Set<string>();
 
+    // A run is cancelled if its own workflow was stopped, OR (for a child
+    // sub-capability loop) if the parent run was stopped — so Stop on a
+    // top-level run unwinds the nested capability it's blocked inside.
+    const isCancelled = (): boolean =>
+      this.cancelledWorkflows.has(args.workflowId) ||
+      (!!args.parentWorkflowId && this.cancelledWorkflows.has(args.parentWorkflowId));
+
     while (iterations < MAX_ITERATIONS) {
       iterations++;
 
-      if (this.cancelledWorkflows.has(args.workflowId)) {
+      if (isCancelled()) {
         this.cancelledWorkflows.delete(args.workflowId);
         emit('agent:token', '_Task stopped by user._');
         recordStep(stepIdx++, 'final', { reason: 'cancelled' });
@@ -879,12 +1168,28 @@ RULES — follow exactly, no exceptions:
       // emit `agent:streamReset` to clear the live preamble.
       let msg: StreamedMessage;
       let streamedLive = false;
+      // Stream this turn's model reasoning into the live disclosure, appended
+      // after the pre-flight context/think steps so the user follows the model's
+      // thinking as it decides which tool to use.
+      let turnReasoning = '';
+      let lastReasonEmit = 0;
+      const onReasoning = (chunk: string) => {
+        turnReasoning += chunk;
+        const now = Date.now();
+        if (now - lastReasonEmit < 100) return;
+        lastReasonEmit = now;
+        emit('agent:reasoning', {
+          steps: [...reasoningSteps, { phase: 'reasoning', content: turnReasoning, context_score: 0 }],
+          showReasoning: this.showReasoningEnabled(),
+        });
+      };
       try {
         msg = await llm.streamComplete(
           messages,
           tools,
           (tok) => { emit('agent:token', tok); streamedLive = true; },
-          () => this.cancelledWorkflows.has(args.workflowId),
+          () => isCancelled(),
+          onReasoning,
         );
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
@@ -895,7 +1200,7 @@ RULES — follow exactly, no exceptions:
       }
 
       // Aborted mid-stream — bounce to the top so the cancel handler finalises.
-      if (this.cancelledWorkflows.has(args.workflowId)) continue;
+      if (isCancelled()) continue;
 
       messages.push({
         role: 'assistant',
@@ -924,12 +1229,50 @@ RULES — follow exactly, no exceptions:
             id: toolCall.id,
           });
 
-          let toolResult: string;
+          let toolResult = '';
           const toolStart = Date.now();
           let toolStatus: 'ok' | 'error' = 'ok';
           let parsedArgs: Record<string, unknown> = {};
           try { parsedArgs = JSON.parse(toolCall.function.arguments); } catch { /* ignore */ }
 
+          // ── Policy gate ────────────────────────────────────────────────
+          // Evaluate THIS specific call (tool name + arguments) against the
+          // user's tool policies before it runs. forbid blocks it; dry_run
+          // describes it without executing; confirm pauses for explicit
+          // approval; auto runs silently. Local-first — rules never leave the
+          // device. (See bodhi/policy.ts.)
+          const decision = evaluatePolicy(toolCall.function.name, parsedArgs, { allowedRoots });
+          let receiptStatus: ReceiptStatus = 'ok';
+          let policyHandled = false;
+          if (decision.tier === 'forbid') {
+            toolResult = `Error: Blocked by your tool policy${decision.matchedPattern ? ` (rule "${decision.matchedPattern}")` : ''} — this call was not executed.${decision.note ? ` ${decision.note}` : ''}`;
+            toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
+          } else if (decision.tier === 'dry_run') {
+            toolResult = `Dry run (policy): would call ${toolCall.function.name} with ${JSON.stringify(parsedArgs)}. It was NOT executed — describe this to the user as a preview of what would happen.`;
+            receiptStatus = 'skipped'; policyHandled = true;
+          } else if (decision.tier === 'confirm') {
+            // Confirm only works when a desktop user is watching. Silent runs
+            // (Delegate / sub-capability), LAN requests, and scheduled tasks have
+            // nobody to approve, so they fail closed instead of hanging a modal.
+            const rc = getRunContext();
+            const unattended = args.silent || !!rc?.lan || !!rc?.unattended;
+            if (unattended) {
+              toolResult = `Error: ${toolCall.function.name} needs interactive approval (policy rule "${decision.matchedPattern}") but this run is unattended, so it was blocked.`;
+              toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
+            } else {
+              const approved = await this.requestToolApproval({
+                workflowId: args.workflowId, sessionId: args.sessionId,
+                toolName: toolCall.function.name, args: parsedArgs, note: decision.note,
+              });
+              if (!approved) {
+                toolResult = `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
+                toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
+              }
+              // approved → fall through to normal execution below.
+            }
+          }
+
+          if (!policyHandled) {
           try {
             if (isMemoryTool(toolCall.function.name)) {
               toolResult = invokeMemoryTool(toolCall.function.name, parsedArgs, args.sessionId);
@@ -939,6 +1282,17 @@ RULES — follow exactly, no exceptions:
               // obvious. Auto-hides shortly after the last desktop action.
               noteDesktopControlActive();
               toolResult = await invokeDesktopTool(toolCall.function.name, parsedArgs);
+            } else if (isSubcapabilityTool(toolCall.function.name)) {
+              // Composable sub-capability: delegate a self-contained step to a
+              // trusted capability whose tool scope is clamped to this loop's own
+              // (permission monotonicity). Bounded by depth in invokeSubcapability.
+              toolResult = await this.invokeSubcapability(parsedArgs, {
+                sessionId: args.sessionId,
+                workflowId: args.workflowId,
+                parentRunId: args.runId,
+                parentEffectiveAllowed: effectiveAllowed,
+                depth,
+              });
             } else {
               toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs, fsCtx);
             }
@@ -978,27 +1332,49 @@ RULES — follow exactly, no exceptions:
             toolResult = `Error: ${err instanceof Error ? err.message : String(err)}`;
             toolStatus = 'error';
           }
+          }
 
+          // Anti-hallucination: only count a mutation as having happened when it
+          // actually executed AND succeeded — a blocked or dry-run call must
+          // never be reported as done.
           if (MUTATION_TOOLS.has(toolCall.function.name)) {
             mutations.push({
               tool: toolCall.function.name,
               args: parsedArgs,
               result: toolResult,
-              success: toolStatus === 'ok' && !toolResult.startsWith('Error:'),
+              success: receiptStatus === 'ok' && toolStatus === 'ok' && !toolResult.startsWith('Error:'),
             });
           }
+
+          // Verified receipt: a user-facing, hashed record of this call — auto,
+          // confirmed, blocked, or dry-run alike. This is the audit trail behind
+          // "agents that prove what they did". (See bodhi/receipts.ts.)
+          recordReceipt({
+            runId: args.runId,
+            sessionId: args.sessionId,
+            workflowId: args.workflowId,
+            idx: stepIdx,
+            toolName: toolCall.function.name,
+            args: parsedArgs,
+            result: toolResult,
+            status: receiptStatus === 'ok' ? (toolStatus === 'error' ? 'error' : 'ok') : receiptStatus,
+            tier: decision.tier,
+            isMutation: RECEIPT_MUTATION_TOOLS.has(toolCall.function.name),
+            durationMs: Date.now() - toolStart,
+          });
 
           try {
             db.prepare(`
               INSERT INTO tool_audit_log
-                (session_id, workflow_id, tool_name, args_json, result, duration_ms, status)
-              VALUES (?,?,?,?,?,?,?)
+                (session_id, workflow_id, tool_name, args_json, result, duration_ms, status, actor)
+              VALUES (?,?,?,?,?,?,?,?)
             `).run(
               args.sessionId, args.workflowId,
               toolCall.function.name, toolCall.function.arguments,
               toolResult.slice(0, 500),
               Date.now() - toolStart,
-              toolStatus
+              toolStatus,
+              getRunContext()?.actor ?? 'local'
             );
           } catch { /* non-critical */ }
 
@@ -1126,7 +1502,10 @@ RULES — follow exactly, no exceptions:
       db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
     }
 
-    setActiveCitationToken(null);
+    // Restore the parent loop's citation token (null at the top level). A bare
+    // setActiveCitationToken(null) here would silence the parent's web/browser
+    // citation collection after it delegated to a sub-capability.
+    setActiveCitationToken(prevCitationToken);
 
     // Fire a native notification when a long-running task finishes (> 10 s)
     // so the user knows the agent is done even if they switched apps.
@@ -1137,6 +1516,127 @@ RULES — follow exactly, no exceptions:
     }
 
     emit('agent:streamEnd');
+  }
+
+  /** Dispatch the `invoke_capability` tool: resolve the named capability, run it
+   *  as a child Task with a tool scope clamped to the caller's, and return its
+   *  final output as the tool result. Depth-bounded; never throws (errors come
+   *  back as a tool-result string the model can react to). */
+  private async invokeSubcapability(
+    parsedArgs: Record<string, unknown>,
+    ctx: {
+      sessionId: string;
+      workflowId: string;
+      parentRunId: string;
+      /** The tool scope the calling loop was actually running with. */
+      parentEffectiveAllowed: string[];
+      depth: number;
+    },
+  ): Promise<string> {
+    const capId = typeof parsedArgs.capability_id === 'string' ? parsedArgs.capability_id.trim() : '';
+    const input = typeof parsedArgs.input === 'string' ? parsedArgs.input.trim() : '';
+    if (!capId || !input) return 'Error: invoke_capability requires both "capability_id" and "input".';
+    if (ctx.depth >= MAX_CAPABILITY_DEPTH) {
+      return 'Error: capability nesting limit reached — perform this step directly instead of delegating further.';
+    }
+    const row = this.skills.getBySlug(capId);
+    if (!row || !row.is_enabled) {
+      return `Error: no enabled capability with id "${capId}". Pick one from the listed capabilities or do the step yourself.`;
+    }
+
+    let allowedTools: string[] = [];
+    try {
+      const parsed = JSON.parse(row.allowed_tools_json);
+      if (Array.isArray(parsed)) allowedTools = parsed.filter((x): x is string => typeof x === 'string');
+    } catch { /* empty allowlist = all tools */ }
+    const childSkill: ActiveSkill = {
+      slug: row.slug, name: row.name, icon: row.icon,
+      instructions: row.instructions, allowedTools,
+      kind: row.kind === 'agent' ? 'agent' : 'skill',
+    };
+
+    try {
+      return await this.runChildCapability({
+        skill: childSkill,
+        input,
+        parentRunId: ctx.parentRunId,
+        parentWorkflowId: ctx.workflowId,
+        parentEffectiveAllowed: ctx.parentEffectiveAllowed,
+        depth: ctx.depth,
+      });
+    } catch (err) {
+      return `Error running capability "${capId}": ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /** Run one capability as a silent child Task and return its final message.
+   *  The child loop runs at depth+1 and receives the parent's effective tool
+   *  scope, so its own scope is intersected down — it can never exceed the
+   *  caller. Lineage is preserved via `parent_run_id`; the throwaway child
+   *  session is dropped after the result is read (the run + its receipts stay). */
+  private async runChildCapability(args: {
+    skill: ActiveSkill;
+    input: string;
+    parentRunId: string;
+    parentWorkflowId: string;
+    parentEffectiveAllowed: string[];
+    depth: number;
+  }): Promise<string> {
+    const db = getDb();
+    const childSessionId = crypto.randomUUID();
+    const runId = crypto.randomUUID();
+    const workflowId = crypto.randomUUID();
+
+    db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'delegate')`)
+      .run(childSessionId, `Sub: ${args.skill.name}`.slice(0, 60));
+    db.prepare(`
+      INSERT INTO agent_runs (run_id, session_id, workflow_id, parent_run_id, goal, model, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'running')
+    `).run(runId, childSessionId, workflowId, args.parentRunId, args.input, this.activeModelName());
+
+    const envBlock = this.buildEnvironmentContext();
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      {
+        role: 'system',
+        content: `You are Artha, running as the "${args.skill.name}" capability invoked by another agent to handle ONE self-contained sub-task. You have real tools.
+
+ACTIVE CAPABILITY PLAYBOOK — follow it:
+${args.skill.instructions}
+
+${envBlock}
+
+Rules:
+- Do exactly the sub-task you were given — do not expand scope.
+- ACT with tools; never just describe steps. Never fabricate a result — every claim must come from a real tool call.
+- Some tools may be unavailable to you because the calling agent's permissions are narrower than yours; if a needed tool is missing, say so plainly rather than pretending.
+- End with a short, factual summary of what you actually did and found — that summary is returned to the agent that called you.`,
+      },
+      { role: 'user', content: args.input },
+    ];
+
+    try {
+      await this.runReactLoop({
+        workflowId,
+        runId,
+        sessionId: childSessionId,
+        goal: args.input,
+        messages,
+        skill: args.skill,
+        silent: true,
+        taskType: 'tool_args',
+        depth: args.depth + 1,
+        parentAllowedTools: args.parentEffectiveAllowed,
+        parentWorkflowId: args.parentWorkflowId,
+      });
+      const row = db.prepare(
+        `SELECT content FROM messages WHERE session_id=? AND sender_type='agent' ORDER BY rowid DESC LIMIT 1`
+      ).get(childSessionId) as { content: string } | undefined;
+      return row?.content?.trim() || '(the capability finished but produced no summary)';
+    } finally {
+      // Drop the throwaway session (cascades its messages); the agent_run row and
+      // its receipts persist so the sub-task stays auditable and in lineage.
+      try { db.prepare(`DELETE FROM chat_sessions WHERE session_id=?`).run(childSessionId); } catch { /* ignore */ }
+    }
   }
 
   /** Build a 2-3 sentence summary anchored to the verified mutation list.

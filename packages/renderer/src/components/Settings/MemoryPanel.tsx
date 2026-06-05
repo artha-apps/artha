@@ -24,10 +24,10 @@ interface MemoryEntity {
 const TYPE_COLOURS: Record<string, string> = {
   fact:       'bg-blue-500/20 text-blue-300',
   preference: 'bg-purple-500/20 text-purple-300',
-  person:     'bg-green-500/20 text-green-300',
+  person:     'bg-artha-success/20 text-artha-success',
   project:    'bg-orange-500/20 text-orange-300',
   decision:   'bg-yellow-500/20 text-yellow-300',
-  other:      'bg-gray-500/20 text-gray-300',
+  other:      'bg-artha-muted/20 text-artha-muted',
 };
 
 function fmtDate(epochSecs: number): string {
@@ -116,7 +116,7 @@ export default function MemoryPanel() {
           <Brain size={22} className="text-purple-400" />
           <div>
             <h2 className="text-lg font-semibold text-artha-text">Agent Memory</h2>
-            <p className="text-sm text-gray-400">
+            <p className="text-sm text-artha-muted">
               {entities.length} {entities.length === 1 ? 'memory' : 'memories'} stored
             </p>
           </div>
@@ -132,15 +132,15 @@ export default function MemoryPanel() {
           {entities.length > 0 && (
             <button
               onClick={handleExport}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-artha-text border border-artha-border hover:bg-artha-text/8 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-artha-muted hover:text-artha-text border border-artha-border hover:bg-artha-text/8 transition-colors"
               title="Copy all memories in portable format"
             >
-              {exported ? <><Check size={14} className="text-green-400" /> Copied</> : <><Download size={14} /> Export</>}
+              {exported ? <><Check size={14} className="text-artha-success" /> Copied</> : <><Download size={14} /> Export</>}
             </button>
           )}
           <button
             onClick={load}
-            className="p-2 rounded-lg hover:bg-artha-text/8 text-gray-400 hover:text-artha-text transition-colors"
+            className="p-2 rounded-lg hover:bg-artha-text/8 text-artha-muted hover:text-artha-text transition-colors"
             title="Refresh"
           >
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
@@ -148,23 +148,23 @@ export default function MemoryPanel() {
           {entities.length > 0 && !confirmClear && (
             <button
               onClick={() => setConfirmClear(true)}
-              className="px-3 py-1.5 rounded-lg text-sm text-red-400 hover:bg-red-500/10 border border-red-500/20 transition-colors"
+              className="px-3 py-1.5 rounded-lg text-sm text-artha-danger hover:bg-artha-danger/10 border border-artha-danger/20 transition-colors"
             >
               Clear all
             </button>
           )}
           {confirmClear && (
             <div className="flex items-center gap-2">
-              <span className="text-sm text-red-400">Delete all memories?</span>
+              <span className="text-sm text-artha-danger">Delete all memories?</span>
               <button
                 onClick={handleClear}
-                className="px-3 py-1 rounded text-sm bg-red-500 hover:bg-red-600 text-artha-text transition-colors"
+                className="px-3 py-1 rounded text-sm bg-artha-danger hover:bg-artha-danger text-artha-text transition-colors"
               >
                 Yes, clear
               </button>
               <button
                 onClick={() => setConfirmClear(false)}
-                className="px-3 py-1 rounded text-sm hover:bg-artha-text/8 text-gray-400 transition-colors"
+                className="px-3 py-1 rounded text-sm hover:bg-artha-text/8 text-artha-muted transition-colors"
               >
                 Cancel
               </button>
@@ -185,9 +185,9 @@ export default function MemoryPanel() {
       {/* Empty state */}
       {!loading && entities.length === 0 && (
         <div className="flex-1 flex flex-col items-center justify-center text-center gap-3">
-          <Brain size={40} className="text-gray-600" />
-          <p className="text-gray-400 text-sm">No memories stored yet.</p>
-          <p className="text-gray-500 text-xs max-w-xs">
+          <Brain size={40} className="text-artha-subtle" />
+          <p className="text-artha-muted text-sm">No memories stored yet.</p>
+          <p className="text-artha-subtle text-xs max-w-xs">
             As you work with the agent, it will automatically remember useful facts about you and your projects.
           </p>
         </div>
@@ -206,7 +206,7 @@ export default function MemoryPanel() {
             return (
               <div
                 key={entity.entity_id}
-                className="group flex items-start gap-3 p-4 rounded-xl bg-artha-text/5 hover:bg-white/8 border border-white/5 transition-colors"
+                className="group flex items-start gap-3 p-4 rounded-xl bg-artha-text/5 hover:bg-artha-text/8 border border-artha-border transition-colors"
               >
                 {/* Type + provenance badges */}
                 <div className="flex-shrink-0 flex flex-col items-start gap-1">
@@ -223,23 +223,23 @@ export default function MemoryPanel() {
                 {/* Content */}
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-artha-text truncate">{entity.name}</p>
-                  <p className="text-sm text-gray-300 mt-0.5 line-clamp-2">{entity.content}</p>
+                  <p className="text-sm text-artha-muted mt-0.5 line-clamp-2">{entity.content}</p>
                   {tags.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
                       {tags.map(tag => (
-                        <span key={tag} className="px-1.5 py-0.5 rounded text-xs bg-artha-text/8 text-gray-400">
+                        <span key={tag} className="px-1.5 py-0.5 rounded text-xs bg-artha-text/8 text-artha-muted">
                           #{tag}
                         </span>
                       ))}
                     </div>
                   )}
-                  <p className="text-xs text-gray-500 mt-1.5">Updated {fmtDate(entity.updated_at)}</p>
+                  <p className="text-xs text-artha-subtle mt-1.5">Updated {fmtDate(entity.updated_at)}</p>
                 </div>
 
                 {/* Delete button */}
                 <button
                   onClick={() => handleDelete(entity.entity_id)}
-                  className="flex-shrink-0 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-all"
+                  className="flex-shrink-0 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-artha-danger/20 text-artha-subtle hover:text-artha-danger transition-all"
                   title="Delete this memory"
                 >
                   <Trash2 size={14} />

@@ -71,7 +71,7 @@ const reader = res.body.getReader();`;
       <div className="max-w-3xl mx-auto">
         {/* Header */}
         <div className="flex items-center gap-3 mb-6">
-          <Wifi size={22} className="text-cyan-400" />
+          <Wifi size={22} className="text-artha-accent" />
           <div>
             <h2 className="text-lg font-semibold text-artha-text">LAN Server</h2>
             <p className="text-sm text-artha-muted">Expose Artha’s agent over your local network so teammates can use it</p>
@@ -79,7 +79,7 @@ const reader = res.body.getReader();`;
         </div>
 
         {/* Security notice */}
-        <div className="flex items-start gap-3 p-3 mb-6 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-sm text-yellow-300">
+        <div className="flex items-start gap-3 p-3 mb-6 rounded-xl bg-artha-warn/10 border border-artha-warn/30 text-sm text-artha-warn">
           <AlertTriangle size={16} className="shrink-0 mt-0.5" />
           <span>Anyone on your local network can send messages to your agent while this is on.</span>
         </div>
@@ -87,7 +87,7 @@ const reader = res.body.getReader();`;
         {/* Toggle */}
         <div className="flex items-center justify-between px-4 py-4 mb-6 rounded-xl bg-artha-s2 border border-artha-border">
           <div className="flex items-center gap-3">
-            <span className={`w-2.5 h-2.5 rounded-full ${status.running ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-gray-500'}`} />
+            <span className={`w-2.5 h-2.5 rounded-full ${status.running ? 'bg-artha-success shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-artha-muted'}`} />
             <div>
               <p className="text-sm font-semibold text-artha-text">Server {status.running ? 'running' : 'stopped'}</p>
               <p className="text-xs text-artha-muted mt-0.5">Listens on port 7842 across your local network.</p>
@@ -98,7 +98,7 @@ const reader = res.body.getReader();`;
             disabled={busy}
             role="switch"
             aria-checked={status.running}
-            className={`relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-50 ${status.running ? 'bg-cyan-500' : 'bg-white/15'}`}
+            className={`relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-50 ${status.running ? 'bg-artha-accent' : 'bg-artha-text/15'}`}
           >
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${status.running ? 'translate-x-5' : ''}`} />
           </button>
@@ -118,17 +118,17 @@ const reader = res.body.getReader();`;
                 <p className="text-xs text-artha-muted mb-1.5">Reachable at</p>
                 <button
                   onClick={copyUrl}
-                  className="group flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-artha-s2 border border-artha-border hover:border-cyan-500/40 transition-colors"
+                  className="group flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-artha-s2 border border-artha-border hover:border-artha-accent/40 transition-colors"
                 >
-                  <code className="flex-1 text-left text-sm text-cyan-300 font-mono truncate">{url}</code>
-                  {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} className="text-artha-muted group-hover:text-artha-text" />}
+                  <code className="flex-1 text-left text-sm text-artha-accent font-mono truncate">{url}</code>
+                  {copied ? <Check size={14} className="text-artha-success" /> : <Copy size={14} className="text-artha-muted group-hover:text-artha-text" />}
                 </button>
                 <p className="text-xs text-artha-muted/70 mt-2">Scan the QR or share the URL with anyone on the same Wi-Fi.</p>
               </div>
             </div>
 
             {/* Usage examples */}
-            <h3 className="text-sm font-semibold text-gray-300 mb-2">Usage</h3>
+            <h3 className="text-sm font-semibold text-artha-muted mb-2">Usage</h3>
             <div className="space-y-3">
               {[
                 { label: 'Health check', code: curlHealth },
@@ -137,7 +137,7 @@ const reader = res.body.getReader();`;
               ].map(ex => (
                 <div key={ex.label}>
                   <p className="text-xs text-artha-muted mb-1">{ex.label}</p>
-                  <pre className="p-3 rounded-xl bg-black/40 border border-artha-border text-xs text-green-300/90 font-mono overflow-x-auto whitespace-pre-wrap">
+                  <pre className="p-3 rounded-xl bg-black/40 border border-artha-border text-xs text-artha-success/90 font-mono overflow-x-auto whitespace-pre-wrap">
                     {ex.code}
                   </pre>
                 </div>
@@ -152,7 +152,7 @@ const reader = res.body.getReader();`;
             type="checkbox"
             checked={autostart}
             onChange={toggleAutostart}
-            className="w-4 h-4 accent-cyan-500"
+            className="w-4 h-4 accent-artha-accent"
           />
           <span className="text-sm text-artha-text">Start the LAN server automatically when Artha launches</span>
         </label>

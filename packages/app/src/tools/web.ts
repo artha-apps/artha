@@ -130,6 +130,14 @@ export function setActiveCitationToken(token: string | null): void {
   activeToken = token;
 }
 
+/** The currently-active citation token (or null). Lets a nested ReAct loop (a
+ *  sub-capability) save the parent's token before it runs and RESTORE it after,
+ *  instead of clobbering it to null — otherwise the parent's later web/browser
+ *  calls would stop being attributed. */
+export function getActiveCitationToken(): string | null {
+  return activeToken;
+}
+
 function record(citation: Citation): void {
   if (!activeToken) return;
   const list = pendingCitations.get(activeToken);

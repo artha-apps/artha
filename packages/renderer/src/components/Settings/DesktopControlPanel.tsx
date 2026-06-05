@@ -68,7 +68,7 @@ export default function DesktopControlPanel() {
       <div className="max-w-3xl mx-auto">
         {/* Header */}
         <div className="flex items-center gap-3 mb-6">
-          <Monitor size={22} className="text-cyan-400" />
+          <Monitor size={22} className="text-artha-accent" />
           <div>
             <h2 className="text-lg font-semibold text-artha-text">Desktop Control</h2>
             <p className="text-sm text-artha-muted">Let Artha control native apps via keyboard, mouse, and screen capture</p>
@@ -76,7 +76,7 @@ export default function DesktopControlPanel() {
         </div>
 
         {/* Warning */}
-        <div className="flex items-start gap-3 p-3 mb-6 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-sm text-yellow-300">
+        <div className="flex items-start gap-3 p-3 mb-6 rounded-xl bg-artha-warn/10 border border-artha-warn/30 text-sm text-artha-warn">
           <AlertTriangle size={16} className="shrink-0 mt-0.5" />
           <span>When enabled, Artha can move your mouse, type text, and take screenshots. Only enable when you trust the task.</span>
         </div>
@@ -91,7 +91,7 @@ export default function DesktopControlPanel() {
             onClick={toggle}
             role="switch"
             aria-checked={enabled}
-            className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${enabled ? 'bg-cyan-500' : 'bg-white/15'}`}
+            className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${enabled ? 'bg-artha-accent' : 'bg-artha-text/15'}`}
           >
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${enabled ? 'translate-x-5' : ''}`} />
           </button>
@@ -102,13 +102,13 @@ export default function DesktopControlPanel() {
           <button
             onClick={testScreenshot}
             disabled={busy}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed text-artha-text text-sm font-medium transition-colors"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-artha-accent hover:bg-artha-accent-hover disabled:opacity-40 disabled:cursor-not-allowed text-artha-on-accent text-sm font-medium transition-colors"
           >
             {busy ? <Loader size={15} className="animate-spin" /> : <Camera size={15} />}
             Test Screenshot
           </button>
           {error && (
-            <div className="mt-3 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-sm text-red-400">{error}</div>
+            <div className="mt-3 px-4 py-3 rounded-xl bg-artha-danger/10 border border-artha-danger/30 text-sm text-artha-danger">{error}</div>
           )}
           {shot && (
             <img src={shot} alt="Screen capture" className="mt-3 rounded-xl border border-artha-border max-w-full" />
@@ -116,11 +116,11 @@ export default function DesktopControlPanel() {
         </div>
 
         {/* Tool list */}
-        <h3 className="text-sm font-semibold text-gray-300 mb-3">Available tools</h3>
+        <h3 className="text-sm font-semibold text-artha-muted mb-3">Available tools</h3>
         <div className="space-y-2">
           {TOOLS.map(t => (
             <div key={t.name} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
-              <code className="text-xs text-cyan-400 font-mono shrink-0 mt-0.5">{t.name}</code>
+              <code className="text-xs text-artha-accent font-mono shrink-0 mt-0.5">{t.name}</code>
               <span className="text-xs text-artha-muted">{t.desc}</span>
             </div>
           ))}

@@ -155,7 +155,7 @@ export default function MarketplacePanel() {
 
         {/* Error banner */}
         {error && (
-          <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-sm text-red-400">
+          <div className="mb-4 px-4 py-3 rounded-xl bg-artha-danger/10 border border-artha-danger/30 text-sm text-artha-danger">
             {error}
           </div>
         )}
@@ -213,7 +213,7 @@ export default function MarketplacePanel() {
                     <button
                       onClick={() => setActiveView('cloud')}
                       title="Connect in the Cloud tab"
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-cyan-600/80 hover:bg-cyan-500 text-artha-text transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-artha-accent/90 hover:bg-artha-accent-hover text-artha-on-accent transition-colors"
                     >
                       <LinkIcon size={11} /> Cloud tab
                     </button>
@@ -224,7 +224,7 @@ export default function MarketplacePanel() {
                       title={isDone ? 'Installed' : 'Install'}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-not-allowed ${
                         isDone
-                          ? 'bg-green-500/15 border border-green-500/30 text-green-400'
+                          ? 'bg-artha-success/15 border border-artha-success/30 text-artha-success'
                           : 'bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-50 text-artha-text'
                       }`}
                     >

@@ -30,6 +30,10 @@ export interface Skill {
   icon: string;
   is_enabled: number;
   is_builtin: number;
+  /** How this capability is realised: 'skill' (playbook) or 'agent' (a skill
+   *  promoted to a first-class agent). Same row shape — the flag is the only
+   *  difference. */
+  kind: string;
   created_at: number;
   updated_at: number;
 }
@@ -41,6 +45,9 @@ export interface ActiveSkill {
   icon: string;
   instructions: string;
   allowedTools: string[];
+  /** 'skill' or 'agent' — carried through so a routed capability reports its
+   *  true kind to the UI. */
+  kind: string;
 }
 
 /** Result of resolving a user message against the skill set. `goal` is the
@@ -266,5 +273,6 @@ function toActive(skill: Skill): ActiveSkill {
     icon: skill.icon,
     instructions: skill.instructions,
     allowedTools,
+    kind: skill.kind === 'agent' ? 'agent' : 'skill',
   };
 }

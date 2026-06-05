@@ -149,7 +149,7 @@ export default function WebPanel() {
         </div>
         <div className="flex items-center gap-3">
           {saved && (
-            <span className="flex items-center gap-1 text-xs text-green-400">
+            <span className="flex items-center gap-1 text-xs text-artha-success">
               <CheckCircle2 size={12} /> Saved
             </span>
           )}
@@ -179,7 +179,7 @@ export default function WebPanel() {
             { label: '3. DuckDuckGo HTML', active: true, note: 'Always available as fallback' },
           ].map(({ label, active, note }) => (
             <div key={label} className="flex items-center gap-2">
-              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${active ? 'bg-green-400' : 'bg-artha-muted/40'}`} />
+              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${active ? 'bg-artha-success' : 'bg-artha-muted/40'}`} />
               <span className={`text-xs ${active ? 'text-artha-text' : 'text-artha-muted'}`}>{label}</span>
               <span className="text-[10px] text-artha-muted ml-auto">{note}</span>
             </div>
@@ -212,7 +212,7 @@ export default function WebPanel() {
           {config.brave_api_key?.trim() && (
             <button
               onClick={() => patch({ brave_api_key: '' })}
-              className="px-3 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs transition-colors"
+              className="px-3 py-2 rounded-lg bg-artha-danger/10 hover:bg-artha-danger/20 text-artha-danger text-xs transition-colors"
               title="Remove API key"
             >
               <Trash2 size={12} />
@@ -236,13 +236,13 @@ export default function WebPanel() {
         </p>
 
         {usingPublicInstance && (
-          <div className="rounded-xl bg-amber-500/5 border border-amber-500/20 p-3 mb-3 flex gap-2">
-            <AlertTriangle size={13} className="text-amber-400 shrink-0 mt-0.5" />
-            <p className="text-xs text-amber-100/80 leading-relaxed">
+          <div className="rounded-xl bg-artha-warn/10 border border-artha-warn/30 p-3 mb-3 flex gap-2">
+            <AlertTriangle size={13} className="text-artha-warn shrink-0 mt-0.5" />
+            <p className="text-xs text-artha-warn leading-relaxed">
               You're using a public SearXNG instance. For true local-first
               browsing, run{' '}
-              <code className="text-amber-200 font-mono">docker run -p 8888:8080 searxng/searxng</code>
-              {' '}and add <code className="text-amber-200 font-mono">http://localhost:8888</code> here.
+              <code className="text-artha-warn font-mono font-semibold">docker run -p 8888:8080 searxng/searxng</code>
+              {' '}and add <code className="text-artha-warn font-mono font-semibold">http://localhost:8888</code> here.
             </p>
           </div>
         )}
@@ -255,14 +255,14 @@ export default function WebPanel() {
               <button
                 onClick={() => removeInstance(url)}
                 title="Remove instance"
-                className="text-artha-muted hover:text-red-400 transition-colors"
+                className="text-artha-muted hover:text-artha-danger transition-colors"
               >
                 <Trash2 size={12} />
               </button>
             </div>
           ))}
           {config.searxng_instances.length === 0 && (
-            <p className="text-xs text-red-400 px-3 py-2 bg-red-500/5 border border-red-500/20 rounded-lg">
+            <p className="text-xs text-artha-danger px-3 py-2 bg-artha-danger/5 border border-artha-danger/20 rounded-lg">
               No instances configured — web_search will fail until you add one.
             </p>
           )}
@@ -295,7 +295,7 @@ export default function WebPanel() {
           </h2>
         </div>
 
-        <label className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border cursor-pointer hover:bg-white/[0.02] transition-colors mb-3">
+        <label className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border cursor-pointer hover:bg-artha-text/5 transition-colors mb-3">
           <input
             type="checkbox"
             checked={config.respect_robots}
@@ -324,7 +324,7 @@ export default function WebPanel() {
                   <code className="text-xs text-artha-text flex-1 font-mono">{host}</code>
                   <button
                     onClick={() => removeOverride(host)}
-                    className="text-artha-muted hover:text-red-400 transition-colors"
+                    className="text-artha-muted hover:text-artha-danger transition-colors"
                   >
                     <Trash2 size={11} />
                   </button>
@@ -399,7 +399,7 @@ export default function WebPanel() {
         <button
           onClick={clearCache}
           disabled={clearing || stats.count === 0}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-artha-border text-artha-muted hover:text-red-400 hover:border-red-400/40 text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-artha-border text-artha-muted hover:text-artha-danger hover:border-artha-danger/40 text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {clearing
             ? <><RefreshCw size={11} className="animate-spin" /> Clearing…</>

@@ -20,9 +20,9 @@ interface Artifact {
 
 function fileIcon(type: string) {
   if (type === 'docx') return <FileText size={16} className="text-blue-400" />;
-  if (type === 'xlsx') return <FileSpreadsheet size={16} className="text-green-400" />;
+  if (type === 'xlsx') return <FileSpreadsheet size={16} className="text-artha-success" />;
   if (type === 'pptx') return <Presentation size={16} className="text-orange-400" />;
-  if (type === 'pdf')  return <FileText size={16} className="text-red-400" />;
+  if (type === 'pdf')  return <FileText size={16} className="text-artha-danger" />;
   return <File size={16} className="text-artha-muted" />;
 }
 
@@ -134,7 +134,7 @@ export default function ArtifactsPanel() {
                   onClick={() => remove(a.artifact_id)}
                   disabled={deleting === a.artifact_id}
                   title="Remove from list"
-                  className="p-1.5 rounded-lg hover:bg-red-500/20 text-artha-muted hover:text-red-400 transition-colors disabled:opacity-40"
+                  className="p-1.5 rounded-lg hover:bg-artha-danger/20 text-artha-muted hover:text-artha-danger transition-colors disabled:opacity-40"
                 >
                   <Trash2 size={14} />
                 </button>
