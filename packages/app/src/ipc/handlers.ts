@@ -45,6 +45,7 @@ import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill,
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
 import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { parseSkillImport } from '../skills/util';
+import { getSkillMetrics } from '../skills/metrics';
 import { getDefaultRagIndexer } from '../rag/indexer';
 import { listContacts, addContact, listInteractions, logInteraction, deleteContact } from '../tools/crm';
 import { listEntities, listRelations, queryGraphDb } from '../bodhi/knowledgeGraph';
@@ -1289,6 +1290,8 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('skills:list', () => skills.list());
   ipcMain.handle('skills:listEnabled', () => skills.listEnabled());
+  // Per-skill usage metrics for the Skills dashboard (runs, success rate, …).
+  ipcMain.handle('skills:metrics', () => getSkillMetrics());
   ipcMain.handle('skills:create', (_e, input: SkillInput) => skills.create(input));
   ipcMain.handle('skills:update', (_e, skillId: string, patch: Partial<SkillInput>) =>
     skills.update(skillId, patch)

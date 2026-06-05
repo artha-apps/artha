@@ -8,10 +8,11 @@
  *
  * Built-in skills can be edited and disabled but not deleted.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Sparkles, Plus, Trash2, Pencil, ToggleLeft, ToggleRight,
   RefreshCw, Save, X, Lock, Wrench, Upload, Download,
+  Activity, Clock, Zap, Gauge,
 } from 'lucide-react';
 import { FeatureGuide } from '../ui/FeatureGuide';
 import { GUIDES } from './guides';
@@ -28,6 +29,55 @@ interface Skill {
   is_builtin: number;
   created_at: number;
   updated_at: number;
+}
+
+/** Per-skill usage metrics (mirrors SkillMetric in app/src/skills/metrics.ts). */
+interface SkillMetric {
+  skillId: string;
+  runs: number;
+  successes: number;
+  errors: number;
+  cancelled: number;
+  successRate: number;
+  avgToolCalls: number;
+  avgDurationMs: number;
+  lastRunAt: number | null;
+  viaExplicit: number;
+  viaAuto: number;
+  viaInvoke: number;
+  estTimeSavedMs: number;
+}
+
+type SortKey = 'usage' | 'name';
+
+/** Compact human duration from milliseconds: "820ms", "4.2s", "3m 5s". */
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s % 60);
+  return `${m}m${rem ? ` ${rem}s` : ''}`;
+}
+
+/** Larger, rounded duration for the "time saved" headline: "2h 5m", "12m". */
+function fmtSavedDuration(ms: number): string {
+  if (ms <= 0) return '0m';
+  const totalMin = Math.round(ms / 60000);
+  if (totalMin < 60) return `${totalMin}m`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h}h${m ? ` ${m}m` : ''}`;
+}
+
+/** Relative "last used" label from a unix-epoch (seconds) timestamp. */
+function fmtRelative(epochSec: number | null): string {
+  if (!epochSec) return 'never';
+  const diff = Date.now() / 1000 - epochSec;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
 /** Editable form state — allowed tools are edited as a comma list, parsed on save. */
@@ -82,17 +132,26 @@ function toDraft(skill: Skill): Draft {
 export default function SkillsPanel() {
   // ── State ──────────────────────────────────────────────────────────────────
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [metrics, setMetrics] = useState<SkillMetric[]>([]);
   const [loading, setLoading] = useState(true);
   // `editing` non-null means the editor view is shown; null = list view.
   const [editing, setEditing] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [sortBy, setSortBy] = useState<SortKey>('usage');
 
   const load = async () => {
     setLoading(true);
     setError('');
     try {
-      setSkills(await window.artha.skills.list() as Skill[]);
+      // Metrics are best-effort decoration — never let a metrics failure block
+      // the skill list, so each is awaited independently.
+      const [list, mx] = await Promise.all([
+        window.artha.skills.list() as Promise<Skill[]>,
+        window.artha.skills.metrics().catch(() => [] as SkillMetric[]),
+      ]);
+      setSkills(list);
+      setMetrics(mx);
     } catch (err) {
       // Surface backend failures (e.g. the SQLite engine failed to load) rather
       // than silently rendering the empty-state, which looks like "no skills".
@@ -104,6 +163,43 @@ export default function SkillsPanel() {
 
   useEffect(() => { load(); }, []);
 
+  // Index metrics by skill id for O(1) lookup while rendering cards.
+  const metricsById = useMemo(() => {
+    const m = new Map<string, SkillMetric>();
+    for (const x of metrics) m.set(x.skillId, x);
+    return m;
+  }, [metrics]);
+
+  // Roll-up across all skills for the summary strip.
+  const totals = useMemo(() => {
+    const runs = metrics.reduce((a, m) => a + m.runs, 0);
+    const successes = metrics.reduce((a, m) => a + m.successes, 0);
+    const savedMs = metrics.reduce((a, m) => a + m.estTimeSavedMs, 0);
+    return {
+      runs,
+      successRate: runs > 0 ? successes / runs : 0,
+      savedMs,
+    };
+  }, [metrics]);
+
+  // List order: most-used first (then A–Z), or pure alphabetical. Built-ins keep
+  // no special pinning here so a heavily-used custom skill can rise to the top.
+  const orderedSkills = useMemo(() => {
+    const copy = [...skills];
+    if (sortBy === 'name') {
+      copy.sort((a, b) => a.name.localeCompare(b.name));
+    } else {
+      copy.sort((a, b) => {
+        const ra = metricsById.get(a.skill_id)?.runs ?? 0;
+        const rb = metricsById.get(b.skill_id)?.runs ?? 0;
+        // Most-used first; ties keep the registry's default (built-ins pinned,
+        // then A–Z) so first-launch order matches the rest of the app.
+        return rb - ra || (b.is_builtin - a.is_builtin) || a.name.localeCompare(b.name);
+      });
+    }
+    return copy;
+  }, [skills, sortBy, metricsById]);
+
   const toggle = async (s: Skill) => {
     const next = !s.is_enabled;
     await window.artha.skills.toggle(s.skill_id, next);
@@ -114,6 +210,9 @@ export default function SkillsPanel() {
     if (s.is_builtin) return;
     await window.artha.skills.remove(s.skill_id);
     setSkills(prev => prev.filter(x => x.skill_id !== s.skill_id));
+    // Drop its metrics too so the summary totals stay accurate without a reload
+    // (the backend also deletes the skill's skill_runs rows on remove).
+    setMetrics(prev => prev.filter(m => m.skillId !== s.skill_id));
   };
 
   const exportSkill = async (s: Skill) => {
@@ -338,6 +437,47 @@ export default function SkillsPanel() {
         </div>
       </div>
 
+      {/* Dashboard summary — only meaningful once skills have actually run. */}
+      {!loading && totals.runs > 0 && (
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <div className="rounded-xl border border-artha-border bg-artha-s2 px-4 py-3">
+            <div className="flex items-center gap-1.5 text-[11px] text-artha-muted mb-1">
+              <Activity size={12} /> Total runs
+            </div>
+            <div className="text-lg font-semibold text-artha-text">{totals.runs}</div>
+          </div>
+          <div className="rounded-xl border border-artha-border bg-artha-s2 px-4 py-3">
+            <div className="flex items-center gap-1.5 text-[11px] text-artha-muted mb-1">
+              <Gauge size={12} /> Success rate
+            </div>
+            <div className="text-lg font-semibold text-artha-text">{Math.round(totals.successRate * 100)}%</div>
+          </div>
+          <div className="rounded-xl border border-artha-border bg-artha-s2 px-4 py-3">
+            <div className="flex items-center gap-1.5 text-[11px] text-artha-muted mb-1">
+              <Clock size={12} /> Est. time saved
+            </div>
+            <div className="text-lg font-semibold text-artha-accent" title="Rough estimate: successful runs × assumed manual effort per task.">
+              {fmtSavedDuration(totals.savedMs)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sort control — only shown when there's usage data worth ordering by. */}
+      {!loading && skills.length > 0 && totals.runs > 0 && (
+        <div className="flex items-center justify-end gap-1.5 mb-2 text-[11px] text-artha-muted">
+          <span>Sort:</span>
+          <button onClick={() => setSortBy('usage')}
+            className={`px-2 py-0.5 rounded-full border transition-colors ${
+              sortBy === 'usage' ? 'border-artha-accent/50 text-artha-accent bg-artha-accent/10' : 'border-artha-border hover:text-artha-text'
+            }`}>Most used</button>
+          <button onClick={() => setSortBy('name')}
+            className={`px-2 py-0.5 rounded-full border transition-colors ${
+              sortBy === 'name' ? 'border-artha-accent/50 text-artha-accent bg-artha-accent/10' : 'border-artha-border hover:text-artha-text'
+            }`}>A–Z</button>
+        </div>
+      )}
+
       {error && (
         <p className="text-xs text-artha-danger flex items-center gap-1 mb-3"><X size={11} /> {error}</p>
       )}
@@ -354,9 +494,10 @@ export default function SkillsPanel() {
         </div>
       ) : (
         <div className="space-y-2">
-          {skills.map(s => {
+          {orderedSkills.map(s => {
             let tools: string[] = [];
             try { const p = JSON.parse(s.allowed_tools_json); if (Array.isArray(p)) tools = p; } catch { /* ok */ }
+            const m = metricsById.get(s.skill_id);
             return (
               <div key={s.skill_id}
                 className={`rounded-xl border px-4 py-3 transition-all ${
@@ -382,6 +523,26 @@ export default function SkillsPanel() {
                         {tools.map(t => (
                           <code key={t} className="text-[10px] text-artha-muted/80 bg-artha-surface border border-artha-border px-1.5 py-0.5 rounded font-mono">{t}</code>
                         ))}
+                      </div>
+                    )}
+                    {/* Usage metrics — a dense stat row when run, a quiet badge when not. */}
+                    {m && m.runs > 0 ? (
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[10px] text-artha-muted">
+                        <span className="flex items-center gap-1"><Activity size={10} /> {m.runs} run{m.runs === 1 ? '' : 's'}</span>
+                        <span
+                          className={`flex items-center gap-1 ${m.successRate < 0.6 ? 'text-artha-danger' : m.successRate >= 0.9 ? 'text-artha-accent' : ''}`}
+                          title={`${m.successes} ok · ${m.errors} error${m.cancelled ? ` · ${m.cancelled} cancelled` : ''}`}
+                        >
+                          <Gauge size={10} /> {Math.round(m.successRate * 100)}%
+                        </span>
+                        <span className="flex items-center gap-1" title="Average tool calls per run"><Wrench size={10} /> {m.avgToolCalls.toFixed(1)} tools</span>
+                        <span className="flex items-center gap-1" title="Average run duration"><Clock size={10} /> {fmtDuration(m.avgDurationMs)}</span>
+                        <span className="flex items-center gap-1 text-artha-accent" title="Rough estimate of manual effort saved across successful runs"><Zap size={10} /> ~{fmtSavedDuration(m.estTimeSavedMs)} saved</span>
+                        <span className="opacity-70">· {fmtRelative(m.lastRunAt)}</span>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-[10px] text-artha-muted/60 flex items-center gap-1">
+                        <Activity size={10} /> Never used
                       </div>
                     )}
                   </div>

@@ -3,6 +3,7 @@
  * and the Electron main process (Node.js). Never expose raw ipcRenderer.
  */
 import { contextBridge, ipcRenderer } from 'electron';
+import type { SkillMetric } from './skills/metrics';
 
 /**
  * The full type of `window.artha` as seen by the renderer. Inferred from the
@@ -323,6 +324,7 @@ const api = {
   skills: {
     list: () => ipcRenderer.invoke('skills:list'),
     listEnabled: () => ipcRenderer.invoke('skills:listEnabled'),
+    metrics: () => ipcRenderer.invoke('skills:metrics') as Promise<SkillMetric[]>,
     create: (input: unknown) => ipcRenderer.invoke('skills:create', input),
     update: (skillId: string, patch: unknown) =>
       ipcRenderer.invoke('skills:update', skillId, patch),

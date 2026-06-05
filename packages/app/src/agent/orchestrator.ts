@@ -54,7 +54,8 @@ import {
   intersectToolScopes,
   MAX_CAPABILITY_DEPTH,
 } from '../bodhi/subcapability';
-import { filterToolsByAllowlist } from '../skills/util';
+import { filterToolsByAllowlist, parseSlashInvocation } from '../skills/util';
+import { recordSkillRun, type SkillMatchedVia, type SkillRunStatus } from '../skills/metrics';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -111,6 +112,10 @@ export interface AgentPlan {
   /** Skill active for this run, if one was matched/invoked. Threaded through
    *  approval so its instructions + tool scope survive a pause-for-approval. */
   skill?: ActiveSkill | null;
+  /** How the active skill was reached — recorded in the skill_runs ledger so the
+   *  dashboard can show explicit-vs-auto-vs-delegated usage. Only meaningful when
+   *  `skill` is set; defaults to 'auto' at record time when absent. */
+  matchedVia?: SkillMatchedVia;
   /** Images/files attached to the triggering user message. Threaded through to
    *  the first LLM turn in vision format so the model can see them. */
   attachments?: Attachment[];
@@ -266,6 +271,12 @@ export class AgentOrchestrator {
 
     const plan = await this.generatePlan(workflowId, sessionId, enrichedGoal, history, skill);
     plan.skill = skill;
+    // Explicit only when the user's own "/slug" resolved to THIS skill; a bare
+    // "/" or a slug that fell through to auto-match counts as 'auto'. Mirrors the
+    // exact condition resolve() used, so the dashboard split is accurate.
+    if (skill) {
+      plan.matchedVia = parseSlashInvocation(userContent)?.slug === skill.slug ? 'explicit' : 'auto';
+    }
     plan.attachments = attachments;
     this.activePlans.set(workflowId, plan);
 
@@ -882,17 +893,28 @@ RULES — follow exactly, no exceptions:
       { role: 'user', content: this.buildUserContent(plan.goal, plan.attachments) },
     ];
 
-    await this.runReactLoop({
-      workflowId: plan.workflowId,
-      runId,
-      sessionId: plan.sessionId,
-      goal: plan.goal,
-      messages,
-      skill,
-      startMs: planStartMs,
-      silent: opts.silent,
-      taskType: opts.taskType,
-    });
+    // Skills dashboard ledger: one row per skill invocation, with its outcome
+    // and the tool work it did. Recorded in a `finally` so a run that THROWS
+    // (rather than returning with a terminal status) is still counted — it reads
+    // the run's status from agent_runs, which a crashed run leaves as 'running',
+    // and maps anything non-terminal to 'error'. The finally never swallows the
+    // original error (recordSkillInvocation is itself best-effort), so callers
+    // see the same throw as before.
+    try {
+      await this.runReactLoop({
+        workflowId: plan.workflowId,
+        runId,
+        sessionId: plan.sessionId,
+        goal: plan.goal,
+        messages,
+        skill,
+        startMs: planStartMs,
+        silent: opts.silent,
+        taskType: opts.taskType,
+      });
+    } finally {
+      if (skill) this.recordSkillInvocation(skill, plan.matchedVia ?? 'auto', runId, plan.sessionId, plan.goal, planStartMs);
+    }
 
     // Phase 3: refresh the project's rolling cross-session memory in the
     // background so a future chat in this project starts already aware of what
@@ -900,6 +922,49 @@ RULES — follow exactly, no exceptions:
     if (projectId) void this.updateProjectSummary(projectId, plan.sessionId);
 
     return runId;
+  }
+
+  /** Write one `skill_runs` row summarising a finished skill invocation. Reads
+   *  the run's terminal status from agent_runs and counts the tool calls/errors
+   *  it logged in tool_receipts, so the dashboard reflects what actually
+   *  happened. Strictly best-effort — never throws into the run path. */
+  private recordSkillInvocation(
+    skill: ActiveSkill,
+    matchedVia: SkillMatchedVia,
+    runId: string,
+    sessionId: string,
+    goal: string,
+    startMs: number
+  ): void {
+    try {
+      const db = getDb();
+      const run = db.prepare(`SELECT status FROM agent_runs WHERE run_id=?`)
+        .get(runId) as { status: string } | undefined;
+      const status: SkillRunStatus =
+        run?.status === 'completed' ? 'ok' :
+        run?.status === 'cancelled' ? 'cancelled' : 'error';
+
+      const tally = db.prepare(
+        `SELECT COUNT(*) AS calls, COALESCE(SUM(status='error'), 0) AS errors
+         FROM tool_receipts WHERE run_id=?`
+      ).get(runId) as { calls: number; errors: number } | undefined;
+
+      const skillId = this.skills.getBySlug(skill.slug)?.skill_id ?? skill.slug;
+      recordSkillRun({
+        skillId,
+        slug: skill.slug,
+        runId,
+        sessionId,
+        goal,
+        status,
+        matchedVia,
+        toolCalls: tally?.calls ?? 0,
+        toolErrors: tally?.errors ?? 0,
+        durationMs: Date.now() - startMs,
+      });
+    } catch (err) {
+      console.warn('[Artha] recordSkillInvocation failed (non-critical):', err);
+    }
   }
 
   /** Invoke one capability (a Skill playbook) against a goal and run it to
@@ -925,6 +990,7 @@ RULES — follow exactly, no exceptions:
       steps: [{ index: 0, description: args.goal, status: 'pending' }],
       requiresApproval: false,
       skill: args.skill ?? null,
+      matchedVia: 'invoke',
     };
     return this.executePlan(plan, { silent: true });
   }
@@ -955,6 +1021,7 @@ RULES — follow exactly, no exceptions:
       steps: [{ index: 0, description: args.goal, status: 'pending' }],
       requiresApproval: false,
       skill: args.skill ?? null,
+      matchedVia: 'invoke',
     };
     // Fire-and-forget; on hard failure mark the Task failed so pollers see it.
     // 'tool_args' routes the loop to the router's fast model (smallest installed
@@ -1614,6 +1681,7 @@ Rules:
       { role: 'user', content: args.input },
     ];
 
+    const startMs = Date.now();
     try {
       await this.runReactLoop({
         workflowId,
@@ -1633,6 +1701,12 @@ Rules:
       ).get(childSessionId) as { content: string } | undefined;
       return row?.content?.trim() || '(the capability finished but produced no summary)';
     } finally {
+      // A composed sub-capability is a real skill execution — record it (tagged
+      // 'invoke') so the dashboard reflects delegated work too. Tool counts use
+      // the CHILD runId, so they never double-count against the parent skill.
+      // Done before the session is dropped, but it reads by run_id, which (with
+      // the agent_run row + receipts) survives the delete below.
+      this.recordSkillInvocation(args.skill, 'invoke', runId, childSessionId, args.input, startMs);
       // Drop the throwaway session (cascades its messages); the agent_run row and
       // its receipts persist so the sub-task stays auditable and in lineage.
       try { db.prepare(`DELETE FROM chat_sessions WHERE session_id=?`).run(childSessionId); } catch { /* ignore */ }

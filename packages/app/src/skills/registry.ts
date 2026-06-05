@@ -162,6 +162,10 @@ export class SkillRegistry {
     const row = db.prepare(`SELECT is_builtin FROM skills WHERE skill_id=?`).get(skillId) as { is_builtin: number } | undefined;
     if (!row || row.is_builtin) return false;
     db.prepare(`DELETE FROM skills WHERE skill_id=?`).run(skillId);
+    // The metrics ledger has no FK cascade (a run's history shouldn't vanish if a
+    // skill is edited), so drop this skill's rows explicitly on delete — they'd
+    // never surface again (the dashboard joins FROM skills) and would just leak.
+    try { db.prepare(`DELETE FROM skill_runs WHERE skill_id=?`).run(skillId); } catch { /* table may predate metrics */ }
     return true;
   }
 
