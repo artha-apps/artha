@@ -192,6 +192,10 @@ export async function initDatabase(): Promise<void> {
       -- scope) or promoted to a first-class 'agent'. Same row shape — the kind
       -- is the only difference, so "promote a skill to an agent" is a flag.
       kind               TEXT NOT NULL DEFAULT 'skill' CHECK(kind IN ('skill','agent')),
+      -- Per-skill model pin (ollama_name). NULL = auto-route via the model
+      -- router; set, it overrides the model for this skill's ReAct loop. Driven
+      -- by the dashboard's empirical "best model for this skill" recommendation.
+      pinned_model       TEXT,
       created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at         INTEGER NOT NULL DEFAULT (unixepoch())
     );
@@ -809,6 +813,18 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] skills kind migration skipped:', err);
+  }
+
+  // Migration v13→v14: pinned_model on skills — lets a skill pin a specific
+  // model (ollama_name) for its ReAct loop, set from the dashboard's empirical
+  // per-skill model recommendation. NULL (the default) keeps auto-routing.
+  try {
+    const skillCols2 = db.prepare(`PRAGMA table_info(skills)`).all() as { name: string }[];
+    if (skillCols2.length && !skillCols2.some(c => c.name === 'pinned_model')) {
+      db.exec(`ALTER TABLE skills ADD COLUMN pinned_model TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] skills pinned_model migration skipped:', err);
   }
 
   // Migration v12→v13: actor on tool_audit_log — records WHO initiated each tool

@@ -34,6 +34,8 @@ export interface Skill {
    *  promoted to a first-class agent). Same row shape — the flag is the only
    *  difference. */
   kind: string;
+  /** Pinned model (ollama_name) for this skill's run loop, or null = auto-route. */
+  pinned_model: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -48,6 +50,8 @@ export interface ActiveSkill {
   /** 'skill' or 'agent' — carried through so a routed capability reports its
    *  true kind to the UI. */
   kind: string;
+  /** Pinned model (ollama_name) to run this skill on, or null = auto-route. */
+  pinnedModel: string | null;
 }
 
 /** Result of resolving a user message against the skill set. `goal` is the
@@ -153,6 +157,13 @@ export class SkillRegistry {
   toggle(skillId: string, enabled: boolean): void {
     getDb().prepare(`UPDATE skills SET is_enabled=?, updated_at=unixepoch() WHERE skill_id=?`)
       .run(enabled ? 1 : 0, skillId);
+  }
+
+  /** Pin (or clear, with null) the model this skill runs on. The model is an
+   *  ollama_name; when set it overrides the router for this skill's ReAct loop. */
+  setPinnedModel(skillId: string, model: string | null): void {
+    getDb().prepare(`UPDATE skills SET pinned_model=?, updated_at=unixepoch() WHERE skill_id=?`)
+      .run(model && model.trim() ? model.trim() : null, skillId);
   }
 
   /** Delete a user-created skill. Built-in skills are protected — toggle them
@@ -278,5 +289,6 @@ function toActive(skill: Skill): ActiveSkill {
     instructions: skill.instructions,
     allowedTools,
     kind: skill.kind === 'agent' ? 'agent' : 'skill',
+    pinnedModel: skill.pinned_model ?? null,
   };
 }

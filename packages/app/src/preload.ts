@@ -3,7 +3,7 @@
  * and the Electron main process (Node.js). Never expose raw ipcRenderer.
  */
 import { contextBridge, ipcRenderer } from 'electron';
-import type { SkillMetric } from './skills/metrics';
+import type { SkillMetric, SkillModelStats, SkillToolUsage, SkillFailure } from './skills/metrics';
 
 /**
  * The full type of `window.artha` as seen by the renderer. Inferred from the
@@ -226,6 +226,8 @@ const api = {
     create: (projectId?: string | null) => ipcRenderer.invoke('sessions:create', projectId),
     /** Permanently delete a chat; cascades to its messages/scopes/agent state. No undo. */
     delete: (id: string) => ipcRenderer.invoke('sessions:delete', id),
+    /** Rename a chat; returns the cleaned title actually stored. */
+    rename: (id: string, title: string) => ipcRenderer.invoke('sessions:rename', id, title) as Promise<string>,
     /** Sessions filtered to one project (or `null` for no-project). */
     listByProject: (projectId: string | null) =>
       ipcRenderer.invoke('sessions:listByProject', projectId),
@@ -325,6 +327,10 @@ const api = {
     list: () => ipcRenderer.invoke('skills:list'),
     listEnabled: () => ipcRenderer.invoke('skills:listEnabled'),
     metrics: () => ipcRenderer.invoke('skills:metrics') as Promise<SkillMetric[]>,
+    modelStats: (skillId: string) => ipcRenderer.invoke('skills:modelStats', skillId) as Promise<SkillModelStats>,
+    toolUsage: (skillId: string) => ipcRenderer.invoke('skills:toolUsage', skillId) as Promise<SkillToolUsage>,
+    failures: (skillId: string, limit?: number) => ipcRenderer.invoke('skills:failures', skillId, limit) as Promise<SkillFailure[]>,
+    pinModel: (skillId: string, model: string | null) => ipcRenderer.invoke('skills:pinModel', skillId, model) as Promise<boolean>,
     create: (input: unknown) => ipcRenderer.invoke('skills:create', input),
     update: (skillId: string, patch: unknown) =>
       ipcRenderer.invoke('skills:update', skillId, patch),
@@ -442,6 +448,23 @@ const api = {
       ipcRenderer.invoke('artifacts:log', entry) as Promise<string | null>,
     delete: (artifactId: string) => ipcRenderer.invoke('artifacts:delete', artifactId) as Promise<boolean>,
     open: (filePath: string) => ipcRenderer.invoke('artifacts:open', filePath) as Promise<boolean>,
+  },
+
+  // ── Undo ───────────────────────────────────────────────────────────────────
+  // Reverse a reversible filesystem action the agent performed. In-memory,
+  // process-lifetime (see agent/undo.ts).
+  undo: {
+    list: () => ipcRenderer.invoke('undo:list') as Promise<{ id: string; kind: string; label: string; ts: number }[]>,
+    revert: (id: string) => ipcRenderer.invoke('undo:revert', id) as Promise<{ ok: boolean; error?: string; label?: string }>,
+  },
+
+  // ── Global search ────────────────────────────────────────────────────────
+  // One query across chats, memory, and artifacts (see search/global.ts).
+  search: {
+    global: (query: string, semantic?: boolean) =>
+      ipcRenderer.invoke('search:global', query, semantic) as Promise<{
+        type: 'chat' | 'memory' | 'artifact'; id: string; title: string; snippet: string; ts: number; filePath?: string;
+      }[]>,
   },
 
   // ── Memory ───────────────────────────────────────────────────────────────
@@ -577,6 +600,18 @@ const api = {
       receipt_id: string; run_id: string | null; tool_name: string; args_json: string;
       effect: string; result_hash: string; status: 'ok' | 'error' | 'blocked' | 'skipped';
       tier: 'auto' | 'confirm' | 'dry_run' | 'forbid'; is_mutation: number; duration_ms: number; ts: number;
+    }[]>,
+  },
+
+  // ── Runs (Activity hub) ───────────────────────────────────────────────────
+  // Recent agent runs across all sessions (Chat / Delegate / Scheduled / forked)
+  // with status + receipt counts. Drives the Workflows ▸ Runs activity list.
+  runs: {
+    listRecent: (limit?: number) => ipcRenderer.invoke('runs:listRecent', limit) as Promise<{
+      run_id: string; session_id: string; workflow_id: string; goal: string;
+      status: 'running' | 'completed' | 'failed' | 'cancelled'; model: string;
+      parent_run_id: string | null; created_at: number;
+      session_title: string; session_origin: string; calls: number; mutations: number;
     }[]>,
   },
 

@@ -3,6 +3,7 @@
  * `requiresApproval=true` (typically because the plan includes destructive
  * filesystem mutations). Renders nothing when there's no pending plan.
  */
+import { useEffect } from 'react';
 import { CheckCircle, XCircle, ListChecks, Trash2, FolderInput, FilePlus2, Globe, Workflow, RotateCcw, AlertTriangle, Coins } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
@@ -23,6 +24,20 @@ function ImpactChip({ icon, label, tone }: { icon: React.ReactNode; label: strin
 
 export default function PlanApproval() {
   const { pendingPlan, setPendingPlan } = useChatStore();
+
+  // Keyboard parity with the other gates: Enter approves, Esc cancels. Hook is
+  // declared before the early return so the order is stable across renders.
+  useEffect(() => {
+    if (!pendingPlan) return;
+    const plan = pendingPlan;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); setPendingPlan(null); window.artha.agent.approvePlan(plan.workflowId, true); }
+      if (e.key === 'Escape') { e.preventDefault(); setPendingPlan(null); window.artha.agent.approvePlan(plan.workflowId, false); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pendingPlan, setPendingPlan]);
+
   if (!pendingPlan) return null;
 
   const br = pendingPlan.blastRadius;

@@ -23,6 +23,8 @@ import ExecutionLog from './components/ExecutionLog/ExecutionLog';
 import PlanApproval from './components/Chat/PlanApproval';
 import ClarificationModal from './components/Chat/ClarificationModal';
 import ToolApprovalModal from './components/Chat/ToolApprovalModal';
+import ChatHeader from './components/Chat/ChatHeader';
+import RunInspector from './components/Chat/RunInspector';
 import BrowserPane from './components/Browser/BrowserPane';
 import BrowserResizer from './components/Browser/BrowserResizer';
 import { useBrowserStore } from './stores/browser';
@@ -32,6 +34,10 @@ import CodeTab from './components/Code/CodeTab';
 import DelegateTab from './components/Delegate/DelegateTab';
 import ProjectHome from './components/ProjectHome/ProjectHome';
 import WorkspaceSettings from './components/WorkspaceSettings/WorkspaceSettings';
+import Toaster from './components/ui/Toaster';
+import ShortcutsOverlay from './components/ui/ShortcutsOverlay';
+import CommandPalette from './components/ui/CommandPalette';
+import UndoAfterRun from './components/UndoAfterRun';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { tabTheme } from './lib/tabTheme';
 
@@ -237,7 +243,14 @@ export default function App() {
           >
           {activeTab === 'chat' && (
             <div className="flex flex-1 overflow-hidden">
-              {showProjectHome ? <ProjectHome /> : <ChatWindow />}
+              {showProjectHome ? <ProjectHome /> : (
+                // Wrap the conversation in a column so the contextual ChatHeader
+                // (breadcrumb · rename · scope · run details) sits above it.
+                <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+                  <ChatHeader />
+                  <ChatWindow />
+                </div>
+              )}
               {/* Execution log / browser pane stays mounted alongside chat;
                   it's a sidekick rail, not a tab — and it's also useful when
                   Project home is showing for inspecting prior tool runs. */}
@@ -266,6 +279,7 @@ export default function App() {
         <PlanApproval />
         <ClarificationModal />
         <ToolApprovalModal />
+        <RunInspector />
 
         {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
 
@@ -275,6 +289,18 @@ export default function App() {
 
         {/* "Artha is working" — window glow + pill while the agent is acting. */}
         <WorkingIndicator />
+
+        {/* Transient notifications (errors, retries, run results) — bottom-right. */}
+        <Toaster />
+
+        {/* Keyboard cheatsheet — toggled with `?`. */}
+        <ShortcutsOverlay />
+
+        {/* Global launcher — ⌘K / Ctrl+K. */}
+        <CommandPalette />
+
+        {/* Proactive "Artha changed N files · Undo" after a run. */}
+        <UndoAfterRun />
 
         {/* Update-available banner — bottom-right, non-blocking. */}
         {updateVersion && (
