@@ -51,6 +51,12 @@ export class LLMClient {
   private client: OpenAI;
   private config: LLMConfig;
 
+  /** Models (by ollama name) that returned 400 "does not support thinking".
+   *  Cached process-wide so we stop sending `think: true` to a non-reasoning
+   *  model after the first rejection, sparing every later turn a doomed
+   *  round-trip + retry. */
+  private static thinkingUnsupported = new Set<string>();
+
   constructor(config: LLMConfig) {
     this.config = config;
     this.client = new OpenAI({
@@ -310,12 +316,17 @@ export class LLMClient {
         signal: controller.signal,
       });
 
-    let res = await post(true);
+    // Skip the thinking request entirely for models already known not to
+    // support it, so repeat turns don't pay the 400 + retry every time.
+    const wantThink = !LLMClient.thinkingUnsupported.has(this.config.model);
+    let res = await post(wantThink);
     // A model that doesn't support thinking returns 400 ("does not support
-    // thinking"). Retry once without `think` so non-reasoning models still work.
-    if (res.status === 400) {
+    // thinking"). Retry once without `think` so non-reasoning models still work,
+    // and remember the model so future turns skip straight to the no-think call.
+    if (wantThink && res.status === 400) {
       const errText = await res.text().catch(() => '');
       if (/think/i.test(errText)) {
+        LLMClient.thinkingUnsupported.add(this.config.model);
         res = await post(false);
       } else {
         throw new Error(`Ollama /api/chat failed: 400 ${errText}`);
