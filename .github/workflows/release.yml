@@ -43,28 +43,61 @@ jobs:
       - name: Build renderer and main
         run: npm run build
 
-      # TODO(windows-signing): the Windows .exe ships UNSIGNED, so users hit a
-      # SmartScreen "unknown publisher" warning (still installable via
-      # "More info -> Run anyway"). Apple's Developer ID cert does NOT work on
-      # Windows — it needs its own Authenticode cert.
-      # ACTION once total installer downloads exceed ~100 (check with:
-      #   gh release view <tag> --repo artha-apps/artha --json assets \
-      #     --jq '[.assets[].downloadCount] | add'  )
-      # get an Authenticode cert — Azure Trusted Signing (~$10/mo, CI-native) is
-      # the cheapest modern option — then add a Windows-only signing step here.
-      # Linux .deb needs no signing; macOS is already signed + notarized.
-      - name: Publish to GitHub Releases
+      # macOS + Linux. macOS is signed + notarized via CSC_*/APPLE_* (electron-builder
+      # reads them automatically); Linux .deb needs no signing. CSC_LINK is the
+      # Apple Developer ID cert and is intentionally NOT passed to the Windows
+      # runner below (Apple certs don't work for Authenticode).
+      - name: Publish to GitHub Releases (macOS / Linux)
+        if: matrix.os != 'windows-latest'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing + notarization. Only consumed on the macOS runner;
-          # ignored (harmless) on Windows/Linux. electron-builder reads these
-          # automatically — CSC_* for the Developer ID cert, APPLE_* for notarytool.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --publish always
+
+      # Windows Authenticode signing. Picks a strategy based on which secrets exist,
+      # so the build never fails when signing isn't configured (just ships unsigned).
+      # See docs/windows-signing.md for setup + the SmartScreen truth.
+      #   1. Azure Trusted Signing (production) — AZURE_* secrets present. Removes the
+      #      "unknown publisher" warning for everyone, no manual trust needed.
+      #   2. .pfx cert (beta) — WIN_CSC_LINK present. electron-builder auto-signs with
+      #      it. A self-signed test cert does NOT clear SmartScreen unless the tester
+      #      manually trusts it; an OV/EV .pfx does.
+      #   3. Neither — UNSIGNED. Installable via "More info -> Run anyway".
+      - name: Publish to GitHub Releases (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Option 1 — Azure Trusted Signing (Entra ID auth + account coordinates)
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
+          AZURE_CODE_SIGNING_ENDPOINT: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
+          AZURE_CODE_SIGNING_ACCOUNT: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT }}
+          AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+          # Option 2 — .pfx cert (electron-builder reads WIN_CSC_* automatically)
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -n "$AZURE_CLIENT_ID" ]; then
+            echo "Signing Windows build via Azure Trusted Signing"
+            npx electron-builder --publish always \
+              --config.win.azureSignOptions.publisherName="$AZURE_PUBLISHER_NAME" \
+              --config.win.azureSignOptions.endpoint="$AZURE_CODE_SIGNING_ENDPOINT" \
+              --config.win.azureSignOptions.codeSigningAccountName="$AZURE_CODE_SIGNING_ACCOUNT" \
+              --config.win.azureSignOptions.certificateProfileName="$AZURE_CERT_PROFILE"
+          elif [ -n "$WIN_CSC_LINK" ]; then
+            echo "Signing Windows build via .pfx certificate (WIN_CSC_LINK)"
+            npx electron-builder --publish always
+          else
+            echo "No Windows signing secrets set — publishing UNSIGNED (SmartScreen 'unknown publisher' expected)"
+            npx electron-builder --publish always
+          fi
 
   # electron-builder uploads to a DRAFT release (its GitHub default) — which is
   # what we want during the build: the 3 matrix runners all append assets to the
