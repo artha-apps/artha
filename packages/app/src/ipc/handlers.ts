@@ -338,9 +338,23 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
         json(429, { error: 'Too many requests. Slow down and retry shortly.' });
         return;
       }
+      // Cap the request body. A /chat payload is just a short text message, so a
+      // 256 KB ceiling is generous — without it an (authenticated) client could
+      // stream an unbounded body and OOM the single-process LAN server.
+      const MAX_CHAT_BODY = 256 * 1024;
       let body = '';
-      req.on('data', (chunk) => { body += chunk; });
+      let bodyAborted = false;
+      req.on('data', (chunk) => {
+        if (bodyAborted) return;
+        body += chunk;
+        if (body.length > MAX_CHAT_BODY) {
+          bodyAborted = true;
+          json(413, { error: 'Request body too large.' });
+          req.destroy();
+        }
+      });
       req.on('end', async () => {
+        if (bodyAborted) return;
         const db = getDb();
         let sid: string;
         try {
