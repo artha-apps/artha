@@ -111,9 +111,32 @@ function startIdeMcpServer(): { running: boolean; url: string } {
     }
 
     if (req.method === 'POST' && req.url === '/mcp') {
-      let body = '';
-      req.on('data', (chunk) => { body += chunk; });
+      // Cap the request body. This bridge binds to 127.0.0.1 (localhost-only), so
+      // the exposure is lower than the LAN /chat route, but an unbounded body
+      // could still OOM the process. Tool-invocation args can legitimately carry
+      // more than a chat message (a path + content for fs_write, a doc body), so
+      // the ceiling is a generous 1 MB rather than 256 KB.
+      // Buffer raw chunks and decode ONCE: `body += chunk` decodes each Buffer to
+      // UTF-8 independently (corrupting a multibyte char split across a chunk
+      // boundary), and `.length` counts UTF-16 units, not bytes.
+      const MAX_MCP_BODY = 1024 * 1024;
+      const bodyChunks: Buffer[] = [];
+      let bodyBytes = 0;
+      let bodyAborted = false;
+      req.on('data', (chunk: Buffer) => {
+        if (bodyAborted) return;
+        bodyBytes += chunk.length;
+        if (bodyBytes > MAX_MCP_BODY) {
+          bodyAborted = true;
+          json(413, { error: 'Request body too large.' });
+          req.destroy();
+          return;
+        }
+        bodyChunks.push(chunk);
+      });
       req.on('end', async () => {
+        if (bodyAborted) return;
+        const body = Buffer.concat(bodyChunks).toString('utf8');
         try {
           const { tool, args } = JSON.parse(body || '{}') as {
             tool?: string; args?: Record<string, unknown>;
