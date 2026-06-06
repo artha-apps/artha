@@ -234,6 +234,11 @@ async function isAllowedByRobots(targetUrl: URL): Promise<boolean> {
     const robotsUrl = `${origin}/robots.txt`;
     const res = await fetch(robotsUrl, {
       headers: { 'User-Agent': USER_AGENT },
+      // `manual`: a public origin's /robots.txt could 30x-redirect to an internal
+      // target (169.254.169.254, localhost:11434). Following it here — before the
+      // page fetch's own guard — would be a blind SSRF hop. We never follow a
+      // robots redirect; a 3xx falls through to "allowed" like a missing file.
+      redirect: 'manual',
       signal: AbortSignal.timeout(5_000),
     });
     if (res.ok) {
@@ -241,7 +246,8 @@ async function isAllowedByRobots(targetUrl: URL): Promise<boolean> {
       const parser = robotsParser(robotsUrl, body);
       allowedFn = (u: string) => parser.isAllowed(u, USER_AGENT) ?? true;
     } else {
-      // No robots.txt or unreachable — treat as fully allowed (standard practice)
+      // No robots.txt, a redirect we refuse to follow, or unreachable — treat as
+      // fully allowed (standard practice for an absent/!200 robots.txt).
       allowedFn = () => true;
     }
   } catch {
@@ -331,6 +337,10 @@ async function webFetchImpl(args: { url: string; mode?: string; max_chars?: numb
   const MAX_REDIRECTS = 5;
   let currentUrl = url;
   let res: Awaited<ReturnType<typeof fetch>>;
+  // One deadline for the WHOLE redirect chain, not per-hop — otherwise a server
+  // could chain N slow redirects, each taking ~timeout_ms, and stretch the fetch
+  // to (N+1)×timeout. A single shared signal keeps the configured budget honest.
+  const deadline = AbortSignal.timeout(config.timeout_ms);
   for (let hop = 0; ; hop++) {
     res = await fetch(currentUrl, {
       headers: {
@@ -338,7 +348,7 @@ async function webFetchImpl(args: { url: string; mode?: string; max_chars?: numb
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
       },
       redirect: 'manual',
-      signal: AbortSignal.timeout(config.timeout_ms),
+      signal: deadline,
     });
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
