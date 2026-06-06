@@ -16,7 +16,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { decideCrashAction, recoveryTarget } from './recovery';
-import { isPrivateUrlSync } from '../net/ssrfGuard';
+import { isPrivateUrlSync, assertPublicURL } from '../net/ssrfGuard';
 import { allowedLocalHosts } from '../tools/web';
 
 /** Pixel rect (in renderer-window coordinates) where the BrowserView should
@@ -192,6 +192,24 @@ export class BrowserController extends EventEmitter {
     };
     wc.on('will-redirect', (e, navUrl) => blockIfPrivate(e, navUrl));
     wc.on('will-navigate', (e, navUrl) => blockIfPrivate(e, navUrl));
+
+    // The sync guard above can't classify a DNS hostname (it can't resolve), so a
+    // page that redirects/opens to an internal NAME (e.g. intranet.corp -> 10.x)
+    // would slip through. Close that with an async DNS-resolving re-check as the
+    // navigation STARTS: assertPublicURL (the same authority the tools use) does
+    // the lookup; if it resolves to a private/internal IP we abort the load and
+    // blank the tab before the page can render or be read. Defense-in-depth on
+    // top of the sync block, not a replacement for it.
+    wc.on('did-start-navigation', (_e, navUrl: string, _isInPlace: boolean, isMainFrame: boolean) => {
+      if (!isMainFrame || !/^https?:/i.test(navUrl)) return;
+      if (isPrivateUrlSync(navUrl, allowedLocalHosts())) return; // already blocked synchronously
+      assertPublicURL(navUrl, allowedLocalHosts()).catch(() => {
+        console.warn('[Artha] blocked agent-browser navigation to private host (async DNS):', navUrl);
+        try { wc.stop(); } catch { /* nav already gone */ }
+        void wc.loadURL(ABOUT_BLANK);
+        this.emitState();
+      });
+    });
 
     // Block window.open from spinning up new Electron BrowserWindows; force
     // them into the agent's view so the screenshot/state model stays sane —
