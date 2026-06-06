@@ -8,7 +8,6 @@
 |------|---------|
 | `package.json` | Root monorepo manifest — workspaces, electron-builder config, dev scripts |
 | `package-lock.json` | Lockfile |
-| `REQUIREMENTS.md` | Living product spec / implementation log |
 | `SITEMAP.md` | This file |
 | `README.md` | Public-facing overview (install, usage, contributing) |
 | `Dockerfile.hub` | Interim container build for the org hub — wraps the Electron app in `xvfb` so the LAN server runs headlessly until the Phase 2 native-headless service ships |
@@ -17,9 +16,6 @@
 | `.github/workflows/ci.yml` | CI: typecheck + lint + test on push/PR |
 | `.github/workflows/release.yml` | Release: build DMG/EXE/DEB, code-sign + notarize macOS (via `CSC_*`/`APPLE_*` secrets), and publish to `artha-apps/artha` GitHub Releases on tag push |
 | `docs/deploy/org-hub.md` | Runbook for standing up the Enterprise org hub — dedicated-host (Option A, recommended) + interim Docker (Option B), sizing, network, updates, backups, license issuance, member quick-connect |
-| `docs/gtm/onboarding/single-client.md` | SOP for B2C / single-customer onboarding — persona=Individual, optional Pro license, upgrade triggers |
-| `docs/gtm/onboarding/institution.md` | SOP for B2B / large-institution onboarding — mint org license, customer-operated hub deploy, seat provisioning, renewals |
-| `docs/roadmap/phase-2-deferred.md` | The four items Phase 1 deliberately deferred — headless server extraction, SQLite→Postgres, SSO/SAML/OIDC + SCIM, in-app thin-client mode. For each: why deferred, what unblocks it, Phase 2 scope, and which Phase 1 decisions already align so no rework is needed |
 
 ---
 
