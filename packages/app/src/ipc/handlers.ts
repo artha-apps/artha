@@ -340,21 +340,29 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
       }
       // Cap the request body. A /chat payload is just a short text message, so a
       // 256 KB ceiling is generous — without it an (authenticated) client could
-      // stream an unbounded body and OOM the single-process LAN server.
+      // stream an unbounded body and OOM the single-process LAN server. Buffer
+      // the raw chunks and decode ONCE at the end: `body += chunk` would decode
+      // each Buffer to UTF-8 independently and corrupt any multibyte character
+      // split across a chunk boundary, and `.length` would measure UTF-16 units
+      // rather than bytes (under-counting CJK/emoji payloads against the cap).
       const MAX_CHAT_BODY = 256 * 1024;
-      let body = '';
+      const bodyChunks: Buffer[] = [];
+      let bodyBytes = 0;
       let bodyAborted = false;
-      req.on('data', (chunk) => {
+      req.on('data', (chunk: Buffer) => {
         if (bodyAborted) return;
-        body += chunk;
-        if (body.length > MAX_CHAT_BODY) {
+        bodyBytes += chunk.length;
+        if (bodyBytes > MAX_CHAT_BODY) {
           bodyAborted = true;
           json(413, { error: 'Request body too large.' });
           req.destroy();
+          return;
         }
+        bodyChunks.push(chunk);
       });
       req.on('end', async () => {
         if (bodyAborted) return;
+        const body = Buffer.concat(bodyChunks).toString('utf8');
         const db = getDb();
         let sid: string;
         try {
