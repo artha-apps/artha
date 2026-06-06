@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { assertPublicURL, isPrivateIp } from './ssrfGuard';
+import { assertPublicURL, isPrivateIp, isPrivateUrlSync } from './ssrfGuard';
 
 describe('isPrivateIp', () => {
   it('flags loopback, private, link-local and metadata ranges', () => {
@@ -45,5 +45,37 @@ describe('assertPublicURL', () => {
   it('honours the allowlist for a deliberately-permitted internal host', async () => {
     const u = await assertPublicURL('http://localhost:3000/dev', ['localhost']);
     expect(u.port).toBe('3000');
+  });
+});
+
+describe('isPrivateUrlSync (redirect / window-open guard)', () => {
+  it('blocks literal private/loopback/metadata IPs and internal hostnames', () => {
+    for (const u of [
+      'http://127.0.0.1:6379',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://192.168.0.1/admin',
+      'https://localhost:11434/api/tags',
+      'http://printer.local',
+      'http://metadata.google.internal/',
+      'file:///etc/passwd',
+      'not a url',
+    ]) {
+      expect(isPrivateUrlSync(u)).toBe(true);
+    }
+  });
+
+  it('allows public http(s) and the agent-browser data:/about: pages', () => {
+    for (const u of ['https://example.com', 'http://1.1.1.1/', 'about:blank', 'data:text/html,hi']) {
+      expect(isPrivateUrlSync(u)).toBe(false);
+    }
+  });
+
+  it('does not block a host the user explicitly allowlisted', () => {
+    expect(isPrivateUrlSync('http://localhost:3000', ['localhost'])).toBe(false);
+  });
+
+  it('lets DNS hostnames through (the async guard owns those)', () => {
+    // We cannot resolve synchronously, so a plain name is not blocked here.
+    expect(isPrivateUrlSync('http://intranet.example.com')).toBe(false);
   });
 });

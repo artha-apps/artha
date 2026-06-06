@@ -323,15 +323,37 @@ async function webFetchImpl(args: { url: string; mode?: string; max_chars?: numb
     }
   }
 
-  // Network fetch
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(config.timeout_ms),
-  });
+  // Network fetch. Redirects are followed MANUALLY so every hop is re-checked
+  // by the SSRF guard — with `redirect: 'follow'` a public URL could 30x-redirect
+  // to a private/loopback target (169.254.169.254, localhost:11434, an internal
+  // admin panel) and bypass the guard entirely, since only the *initial* URL was
+  // validated above.
+  const MAX_REDIRECTS = 5;
+  let currentUrl = url;
+  let res: Awaited<ReturnType<typeof fetch>>;
+  for (let hop = 0; ; hop++) {
+    res = await fetch(currentUrl, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+      },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(config.timeout_ms),
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      if (!location) break; // 3xx without a Location — nothing to follow; treat as final
+      if (hop >= MAX_REDIRECTS) {
+        throw new Error(`web_fetch: too many redirects (>${MAX_REDIRECTS}) for ${url}`);
+      }
+      const next = new URL(location, currentUrl).toString();
+      // Re-run the full (DNS-resolving) guard on each redirect target.
+      await assertPublicURL(next, config.allow_local_hosts ?? []);
+      currentUrl = next;
+      continue;
+    }
+    break;
+  }
 
   if (!res.ok) {
     throw new Error(`web_fetch: ${url} returned HTTP ${res.status}`);

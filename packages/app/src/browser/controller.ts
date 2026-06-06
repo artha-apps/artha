@@ -16,6 +16,8 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { decideCrashAction, recoveryTarget } from './recovery';
+import { isPrivateUrlSync } from '../net/ssrfGuard';
+import { allowedLocalHosts } from '../tools/web';
 
 /** Pixel rect (in renderer-window coordinates) where the BrowserView should
  *  be positioned. The renderer measures its pane and pushes these via IPC. */
@@ -175,10 +177,28 @@ export class BrowserController extends EventEmitter {
       this.emitState();
     });
 
+    // SSRF defence-in-depth: the agent's `browser_navigate` tool pre-validates
+    // its target, but two paths bypass that — server-side redirects during a
+    // load, and page-initiated navigations (`window.open`, link clicks,
+    // `location =`). A malicious / prompt-injected page could use either to
+    // steer the agent's tab onto an internal service it can then read. Block the
+    // obvious private targets synchronously here (DNS-name resolution stays with
+    // the async tool guard); user-allowlisted local hosts pass through.
+    const blockIfPrivate = (e: { preventDefault: () => void }, navUrl: string): void => {
+      if (isPrivateUrlSync(navUrl, allowedLocalHosts())) {
+        e.preventDefault();
+        console.warn('[Artha] blocked agent-browser navigation to private/internal target:', navUrl);
+      }
+    };
+    wc.on('will-redirect', (e, navUrl) => blockIfPrivate(e, navUrl));
+    wc.on('will-navigate', (e, navUrl) => blockIfPrivate(e, navUrl));
+
     // Block window.open from spinning up new Electron BrowserWindows; force
-    // them into the agent's view so the screenshot/state model stays sane.
+    // them into the agent's view so the screenshot/state model stays sane —
+    // unless the popup target is a private/internal host (SSRF), in which case
+    // it's dropped entirely.
     wc.setWindowOpenHandler(({ url }) => {
-      void wc.loadURL(url);
+      if (!isPrivateUrlSync(url, allowedLocalHosts())) void wc.loadURL(url);
       return { action: 'deny' };
     });
 

@@ -22,7 +22,7 @@ import { promises as dns } from 'dns';
 import net from 'net';
 
 /** Hostnames that are always internal regardless of DNS. */
-function isBlockedHostname(host: string): boolean {
+export function isBlockedHostname(host: string): boolean {
   const h = host.toLowerCase().replace(/\.$/, '');
   return (
     h === 'localhost' ||
@@ -67,6 +67,34 @@ function isPrivateIPv4(ip: string): boolean {
     (a === 169 && b === 254) ||             // link-local + cloud metadata
     (a === 100 && b >= 64 && b <= 127)      // CGNAT 100.64/10
   );
+}
+
+/**
+ * Synchronous best-effort SSRF check for contexts that CANNOT await DNS — the
+ * Electron `will-redirect` / `will-navigate` / window-open handlers, whose
+ * `preventDefault()` must run synchronously. Returns true when `rawUrl` should
+ * be blocked: a `file:` URL, an internal hostname, or a literal private/
+ * loopback/metadata IP. `data:`/`about:`/`blob:` are allowed (the agent
+ * browser's own home + recovery pages use `data:`). A DNS hostname that needs
+ * resolution to classify is NOT blocked here — the async {@link assertPublicURL}
+ * remains the authority for tool entrypoints; this only closes the redirect /
+ * popup bypass for the obvious private targets (localhost, 127.x, 169.254.x …).
+ * Hosts in `allowHosts` are always permitted.
+ */
+export function isPrivateUrlSync(rawUrl: string, allowHosts: string[] = []): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return true; // unparseable → treat as unsafe
+  }
+  if (parsed.protocol === 'file:') return true; // never let the agent browser read local files
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false; // data:/about:/blob: are fine
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (allowHosts.map(h => h.toLowerCase()).includes(host.toLowerCase())) return false;
+  if (isBlockedHostname(host)) return true;
+  if (net.isIP(host)) return isPrivateIp(host);
+  return false; // a DNS name we can't resolve synchronously — the async guard owns these
 }
 
 /**
