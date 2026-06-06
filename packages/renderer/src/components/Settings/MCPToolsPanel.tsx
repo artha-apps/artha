@@ -485,6 +485,16 @@ export default function MCPToolsPanel() {
     window.artha.system.checkRuntime().then(r => setNpxMissing(!r.npx)).catch(() => { /* ignore */ });
   }, []);
 
+  // Whether the OS keychain encrypts connector secrets at rest on this machine.
+  // Default true so we never flash a warning before the check resolves; flips to
+  // false only on a box without a secret-service/keyring (rare — e.g. some Linux
+  // setups), where credentials fall back to base64-at-rest and the user deserves
+  // to know before pasting an API key.
+  const [credEncAvailable, setCredEncAvailable] = useState(true);
+  useEffect(() => {
+    window.artha.mcp.credentialEncryptionAvailable().then(setCredEncAvailable).catch(() => { /* assume available */ });
+  }, []);
+
   // ── Data loading ───────────────────────────────────────────────────────────
 
   /** Fetch both tools and audit log in parallel so the count badge in the tab
@@ -743,6 +753,20 @@ export default function MCPToolsPanel() {
             {/* Manual add server */}
             <div className="mt-4 space-y-2">
               <p className="text-xs font-medium text-artha-muted uppercase tracking-wide">Add custom server</p>
+              {/* Secrets are normally sealed by the OS keychain. When that's
+                  unavailable they fall back to base64-at-rest — not encryption —
+                  so warn before the user pastes an ENV:KEY=… token. */}
+              {!credEncAvailable && (
+                <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-sm">
+                  <AlertCircle size={15} className="text-amber-500 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-artha-text font-medium">Secrets aren’t encrypted at rest on this machine</p>
+                    <p className="text-xs text-artha-muted leading-snug mt-0.5">
+                      No OS keychain (secret-service/keyring) was found, so any API keys you add to a connector are stored only base64-encoded, not encrypted. Avoid entering high-value credentials until a keyring is available.
+                    </p>
+                  </div>
+                </div>
+              )}
               <div className="flex gap-2">
                 <input
                   value={addUri}
