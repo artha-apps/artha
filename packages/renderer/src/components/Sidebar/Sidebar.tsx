@@ -241,12 +241,7 @@ export default function Sidebar() {
           draggable={false}
           className="rounded-lg shadow-soft ring-1 ring-artha-border-strong/50 select-none"
         />
-        <div className="leading-none">
-          <BrandWordmark height={16} />
-          <div className="mt-1.5 text-[9.5px] font-medium uppercase tracking-[0.16em] text-artha-subtle">
-            Local AI Agent
-          </div>
-        </div>
+        <BrandWordmark size={15} />
       </div>
 
       {/* ── Project switcher ─────────────────────────────────────────── */}

@@ -169,7 +169,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               className="rounded-2xl shadow-lifted ring-1 ring-artha-border-strong/50 select-none mb-3"
             />
             <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-artha-subtle mb-1.5">Welcome to</p>
-            <BrandWordmark height={30} />
+            <BrandWordmark size={26} />
             <p className="text-sm text-artha-muted mt-2">How are you using Artha?</p>
           </div>
 

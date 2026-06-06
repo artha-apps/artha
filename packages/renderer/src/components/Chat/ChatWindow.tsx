@@ -682,7 +682,7 @@ export default function ChatWindow() {
             draggable={false}
             className="rounded-2xl shadow-lifted ring-1 ring-artha-border-strong/50 select-none mb-4"
           />
-          <BrandWordmark height={34} className="mb-2" />
+          <BrandWordmark size={28} className="mb-2" />
           <p className="text-artha-muted text-sm">Your local AI agent. Fully private, runs on your Mac.</p>
         </div>
         <div className="grid grid-cols-2 gap-2 w-full max-w-md">

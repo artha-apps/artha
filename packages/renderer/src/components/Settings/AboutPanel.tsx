@@ -43,7 +43,7 @@ export default function AboutPanel() {
       <div className="flex items-center gap-3 mb-6">
         <img src="./logo-mark.png" alt="" width={44} height={44} className="rounded-lg" onError={(e) => { (e.currentTarget.style.display = 'none'); }} />
         <div>
-          <BrandWordmark height={18} />
+          <BrandWordmark size={16} showRule={false} tagline={false} />
           <div className="mt-1 text-sm text-artha-muted">
             {info ? `Version ${info.version}` : 'Loading…'}
           </div>
