@@ -130,6 +130,19 @@ export async function initDatabase(): Promise<void> {
       description    TEXT NOT NULL DEFAULT '',
       schema_json    TEXT NOT NULL DEFAULT '{}',
       mcp_server_uri TEXT,  -- e.g. npx @modelcontextprotocol/server-filesystem
+      -- Encrypted connector credentials (API keys / tokens / connection strings).
+      -- Opaque blob produced by security/secrets.ts (safeStorage-backed); NULL
+      -- when the connector needs no auth. Handed to the server's child process
+      -- as env vars / args at spawn time, never logged or exposed to the model.
+      credentials_enc TEXT,
+      -- Last connection outcome for this MCP server, so the UI can show honest
+      -- state instead of implying every installed row is live. NULL = never
+      -- attempted; 'connected' = handshake ok; 'error' = spawn/handshake failed
+      -- (conn_error holds the message); 'disabled' = turned off by the user.
+      -- The row is kept on failure (credentials persist + auto-retry on next
+      -- launch); status is what lets the panel offer a Retry instead of lying.
+      conn_status    TEXT,
+      conn_error     TEXT,
       permissions_json TEXT NOT NULL DEFAULT '{"fs":[],"network":[]}',
       is_enabled     INTEGER NOT NULL DEFAULT 1,
       installed_at   INTEGER NOT NULL DEFAULT (unixepoch())
@@ -857,6 +870,33 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] tool_audit_log actor migration skipped:', err);
+  }
+
+  // Migration v13→v14: credentials_enc on tools — encrypted per-connector
+  // secrets (API keys/tokens/connection strings) for MCP servers that need
+  // auth. NULL for no-auth connectors and for servers installed before this
+  // column existed (they keep working; user re-enters keys to enable auth).
+  try {
+    const toolCols = db.prepare(`PRAGMA table_info(tools)`).all() as { name: string }[];
+    if (toolCols.length && !toolCols.some(c => c.name === 'credentials_enc')) {
+      db.exec(`ALTER TABLE tools ADD COLUMN credentials_enc TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] tools credentials_enc migration skipped:', err);
+  }
+
+  // Migration v14→v15: conn_status + conn_error on tools — per-server connection
+  // health so the UI can distinguish "installed and live" from "installed but
+  // failed to connect" (and offer Retry) instead of showing every row as
+  // connected. Both nullable; existing rows reconcile on the next connect.
+  try {
+    const toolCols = db.prepare(`PRAGMA table_info(tools)`).all() as { name: string }[];
+    if (toolCols.length) {
+      if (!toolCols.some(c => c.name === 'conn_status')) db.exec(`ALTER TABLE tools ADD COLUMN conn_status TEXT`);
+      if (!toolCols.some(c => c.name === 'conn_error')) db.exec(`ALTER TABLE tools ADD COLUMN conn_error TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] tools conn_status/conn_error migration skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

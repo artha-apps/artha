@@ -25,6 +25,14 @@ interface MCPTool {
   mcp_server_uri: string | null;
   is_enabled: number;
   installed_at: number;
+  /** Last connection outcome (from the `conn_status`/`conn_error` columns) so the
+   *  row shows honest state — connected, failed (+ Retry), or disabled — instead
+   *  of implying every installed server is live. Absent on built-in shim rows. */
+  conn_status?: 'connected' | 'error' | 'disabled' | null;
+  conn_error?: string | null;
+  /** 1 when the server has encrypted credentials stored (derived server-side as
+   *  `credentials_enc IS NOT NULL`; the secret itself is never sent to the UI). */
+  has_credentials?: number;
 }
 
 /** Row from `tool_audit_log`. `result` is already truncated to 500 chars by
@@ -506,6 +514,23 @@ export default function MCPToolsPanel() {
     ));
   };
 
+  // Per-server "retrying…" state so the Retry button can spin and disable while
+  // the reconnect IPC is in flight (npx cold-starts can take a few seconds).
+  const [retrying, setRetrying] = useState<Set<string>>(new Set());
+
+  /** Retry a failed/disabled connection without re-entering the API key — the
+   *  stored (encrypted) credentials are reused server-side. Reflects the new
+   *  conn_status by reloading so the badge updates. */
+  const reconnect = async (tool: MCPTool) => {
+    setRetrying(prev => new Set(prev).add(tool.tool_id));
+    try {
+      await window.artha.mcp.reconnect(tool.tool_id);
+      await load();
+    } finally {
+      setRetrying(prev => { const n = new Set(prev); n.delete(tool.tool_id); return n; });
+    }
+  };
+
   const remove = async (tool: MCPTool) => {
     await window.artha.mcp.removeServer(tool.tool_id);
     setTools(prev => prev.filter(t => t.tool_id !== tool.tool_id));
@@ -672,7 +697,30 @@ export default function MCPToolsPanel() {
                           {tool.mcp_server_uri.replace(/ENV:[^\s]+ /g, '')}
                         </code>
                       )}
+                      {/* Honest per-server status: a failed connect keeps the row
+                          (credentials persist) but says so + offers Retry. */}
+                      {tool.is_enabled && tool.conn_status === 'error' && (
+                        <span className="mt-0.5 inline-flex items-center gap-1 text-xs text-artha-danger"
+                          title={tool.conn_error ?? undefined}>
+                          <XCircle size={11} className="shrink-0" />
+                          <span className="truncate">Not connected{tool.conn_error ? ` — ${tool.conn_error}` : ''}</span>
+                        </span>
+                      )}
+                      {tool.is_enabled && tool.conn_status === 'connected' && (
+                        <span className="mt-0.5 inline-flex items-center gap-1 text-xs text-artha-success">
+                          <CheckCircle2 size={11} className="shrink-0" /> Connected
+                        </span>
+                      )}
                     </div>
+
+                    {/* Retry — only for a server that failed to connect; reuses
+                        the stored key (no re-entry). */}
+                    {tool.is_enabled && tool.conn_status === 'error' && (
+                      <button onClick={() => reconnect(tool)} disabled={retrying.has(tool.tool_id)}
+                        title="Retry connection" className="text-artha-muted hover:text-artha-text transition-colors disabled:opacity-50">
+                        <RefreshCw size={14} className={retrying.has(tool.tool_id) ? 'animate-spin' : ''} />
+                      </button>
+                    )}
 
                     {/* Toggle */}
                     <button onClick={() => toggle(tool)} title={tool.is_enabled ? 'Disable' : 'Enable'}
