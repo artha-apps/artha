@@ -71,26 +71,45 @@ export class MCPRegistry {
    *  on launch with their keys injected. */
   async loadFromDatabase(): Promise<void> {
     const db = getDb();
+
+    // One-time plaintext scrub across ALL rows — enabled AND disabled. Older
+    // installs stored secrets as inline ENV: tokens in mcp_server_uri (also
+    // leaked via listTools / bundle export). Move them into the encrypted column
+    // and rewrite a clean URI so no plaintext secret survives at rest. Runs over
+    // every row, because the connect loop below only visits enabled ones — a
+    // disabled legacy connector would otherwise keep its key in cleartext.
+    const plaintextRows = db.prepare(
+      `SELECT tool_id, mcp_server_uri, credentials_enc FROM tools WHERE mcp_server_uri LIKE '%ENV:%'`
+    ).all() as { tool_id: string; mcp_server_uri: string; credentials_enc: string | null }[];
+    for (const row of plaintextRows) {
+      try {
+        const { cleanUri, env } = parseEnvTokens(row.mcp_server_uri);
+        const existing = openCredentials(row.credentials_enc);
+        const merged = { env: { ...env, ...(existing.env ?? {}) }, args: existing.args };
+        db.prepare(`UPDATE tools SET mcp_server_uri=?, credentials_enc=? WHERE tool_id=?`)
+          .run(cleanUri, sealCredentials(merged), row.tool_id);
+      } catch (err) {
+        console.warn(`[MCP] plaintext scrub skipped for ${row.tool_id}:`, err);
+      }
+    }
+
     const rows = db.prepare(`SELECT * FROM tools WHERE is_enabled = 1 AND mcp_server_uri IS NOT NULL`).all() as {
       tool_id: string; name: string; mcp_server_uri: string; credentials_enc: string | null;
     }[];
-
     for (const row of rows) {
+      let creds: StoredCredentials;
       try {
-        let uri = row.mcp_server_uri;
-        let creds = openCredentials(row.credentials_enc);
-        // Legacy hygiene: older installs stored secrets as plaintext ENV: tokens
-        // inside the URI (also leaked via listTools and bundle export). Migrate
-        // them into the encrypted store and rewrite the row with a clean URI —
-        // one time, transparently — so no plaintext secret survives at rest.
-        if (uri.includes('ENV:')) {
-          const { cleanUri, env } = parseEnvTokens(uri);
-          creds = { env: { ...env, ...(creds.env ?? {}) }, args: creds.args };
-          db.prepare(`UPDATE tools SET mcp_server_uri=?, credentials_enc=? WHERE tool_id=?`)
-            .run(cleanUri, sealCredentials(creds), row.tool_id);
-          uri = cleanUri;
-        }
-        await this.connectServer(row.tool_id, row.name, uri, creds);
+        creds = openCredentials(row.credentials_enc);
+      } catch (err) {
+        // Credentials can't be decrypted (OS keychain reset, or the DB was copied
+        // to another machine). Record the failure so the panel shows "not
+        // connected" + Retry instead of a stale green "connected" badge.
+        this.recordStatus(row.tool_id, 'error', 'Stored credentials could not be decrypted on this machine.');
+        console.error(`[MCP] cannot decrypt credentials for ${row.name}:`, err);
+        continue;
+      }
+      try {
+        await this.connectServer(row.tool_id, row.name, row.mcp_server_uri, creds);
       } catch (err) {
         console.error(`Failed to connect MCP server ${row.name}:`, err);
       }

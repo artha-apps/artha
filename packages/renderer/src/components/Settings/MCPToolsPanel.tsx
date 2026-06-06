@@ -518,10 +518,16 @@ export default function MCPToolsPanel() {
 
   const toggle = async (tool: MCPTool) => {
     const next = !tool.is_enabled;
-    await window.artha.mcp.toggleTool(tool.tool_id, next);
+    // Optimistic flip for snappy UI...
     setTools(prev => prev.map(t =>
       t.tool_id === tool.tool_id ? { ...t, is_enabled: next ? 1 : 0 } : t
     ));
+    await window.artha.mcp.toggleTool(tool.tool_id, next);
+    // ...then reconcile from the DB. Enabling a server can fail to connect
+    // (bad key / npx cold-start); the handler records conn_status='error' but
+    // returns true, so without this reload the row would look healthy. load()
+    // pulls the real conn_status/conn_error so the badge + Retry reflect reality.
+    await load();
   };
 
   // Per-server "retrying…" state so the Retry button can spin and disable while
