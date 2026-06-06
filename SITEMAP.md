@@ -60,8 +60,9 @@
 | `src/llm/ollamaRuntime.ts` | Ollama lifecycle — `ensureModelReady()` (auto-start the server if down + pre-warm the active model at matching num_ctx on launch, emitting `model:status`), `unloadActiveModel()` (keep_alive 0 on quit), `stopOllamaIfStarted()` (only a server WE spawned). Never instructs the user to run terminal commands; only stops what it started |
 | `src/llm/streamMerge.ts` | Merges streamed tool-call deltas (id+name on first chunk, args appended after) into complete tool calls |
 | **mcp/** | |
-| `src/mcp/registry.ts` | `MCPRegistry` — manages MCP server processes, tool schemas, invocations |
-| `src/mcp/registry-catalog.ts` | 22 curated MCP marketplace entries (filesystem, web, productivity, …) |
+| `src/mcp/registry.ts` | `MCPRegistry` — manages MCP server processes, tool schemas, invocations; injects per-connector credentials (env vars + args) into each server's child process at spawn |
+| `src/mcp/registry-catalog.ts` | 22 curated MCP marketplace entries (filesystem, web, productivity, …); each declares any required credentials (API keys/tokens/connection strings) |
+| `src/mcp/envTokens.ts` | `parseEnvTokens()` — dependency-free parser for the legacy `ENV:KEY=value` install convention; strips tokens from a server URI into an env map at spawn time |
 | **tools/** | |
 | `src/tools/filesystem.ts` | Built-in fs tools (list/search/read/move/copy/delete) — hard sandbox confines reads/writes to the chat's attached scopes when present |
 | `src/tools/web.ts` | `webSearchImpl` — three-tier search chain (Brave → SearXNG → DuckDuckGo) + citation collection |
@@ -83,6 +84,8 @@
 | **net/** | |
 | `src/net/ssrfGuard.ts` | `assertPublicURL()` — SSRF guard for agent-driven fetch/navigate; http(s)-only + rejects private/loopback/link-local/metadata IPs (resolves DNS, catches rebinding), with a user allowlist for local dev hosts |
 | `src/net/rateLimiter.ts` | `createRateLimiter()` — tiny in-memory token-bucket limiter (lazy refill), used to throttle the LAN `/chat` route per client IP |
+| **security/** | |
+| `src/security/secrets.ts` | `sealCredentials`/`openCredentials` — encrypts MCP connector secrets at rest via Electron `safeStorage` (OS keychain), with a base64 fallback when unavailable |
 | **rag/** | |
 | `src/rag/indexer.ts` | `RagIndexer` — walks a folder, extracts + chunks + embeds files, persists the index |
 | `src/rag/extract.ts` | Text extraction from files (txt, pdf via pdf-parse, docx via mammoth) for indexing |

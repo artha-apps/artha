@@ -38,7 +38,7 @@ import * as http from 'http';
 import * as os from 'os';
 import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
-import { MCPRegistry } from '../mcp/registry';
+import { MCPRegistry, parseEnvTokens } from '../mcp/registry';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { parseSkillImport } from '../skills/util';
@@ -58,6 +58,7 @@ import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
 import { createRateLimiter } from '../net/rateLimiter';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
+import { sealCredentials, openCredentials, isAtRestEncryptionAvailable, type StoredCredentials } from '../security/secrets';
 
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
 // IPC channel shares the same ReAct loop and in-flight workflow map.
@@ -321,9 +322,23 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
         json(429, { error: 'Too many requests. Slow down and retry shortly.' });
         return;
       }
+      // Cap the request body. A /chat payload is just a short text message, so a
+      // 256 KB ceiling is generous — without it an (authenticated) client could
+      // stream an unbounded body and OOM the single-process LAN server.
+      const MAX_CHAT_BODY = 256 * 1024;
       let body = '';
-      req.on('data', (chunk) => { body += chunk; });
+      let bodyAborted = false;
+      req.on('data', (chunk) => {
+        if (bodyAborted) return;
+        body += chunk;
+        if (body.length > MAX_CHAT_BODY) {
+          bodyAborted = true;
+          json(413, { error: 'Request body too large.' });
+          req.destroy();
+        }
+      });
       req.on('end', async () => {
+        if (bodyAborted) return;
         const db = getDb();
         let sid: string;
         try {
@@ -1187,8 +1202,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   });
 
   // ── MCP ────────────────────────────────────────────────────────────────
+  // Never SELECT *: that would return the encrypted credentials blob to the
+  // renderer. Expose an explicit column list plus a derived `has_credentials`
+  // boolean so the UI can show a "configured" state without ever seeing secrets.
   ipcMain.handle('mcp:listTools', () => {
-    return getDb().prepare(`SELECT * FROM tools ORDER BY name ASC`).all();
+    return getDb().prepare(
+      `SELECT tool_id, name, description, schema_json, mcp_server_uri,
+              permissions_json, is_enabled, installed_at, conn_status, conn_error,
+              (credentials_enc IS NOT NULL) AS has_credentials
+         FROM tools ORDER BY name ASC`
+    ).all();
   });
 
   // Recount installed MCP servers and refresh the non-PII Sentry tag so errors
@@ -1201,26 +1224,140 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     setMcpServerCountTag(n);
   };
 
-  ipcMain.handle('mcp:installServer', async (_e, uri: string) => {
+  // One secret the renderer collected at install time. `kind` mirrors the
+  // catalog's McpCredentialField: 'env' values become environment variables,
+  // 'arg' values are appended to the server's command line (defaults to 'env').
+  type CredentialInput = { key: string; value: string; kind?: 'env' | 'arg' };
+
+  // Fold the renderer's flat credential list (plus any env extracted from inline
+  // ENV: tokens in the URI) into the {env, args} shape the spawn needs. Blank
+  // values are dropped so an untouched optional field doesn't clobber anything.
+  // Returns null when nothing usable was supplied.
+  const toStoredCredentials = (creds?: CredentialInput[], extraEnv?: Record<string, string>): StoredCredentials | null => {
+    const env: Record<string, string> = { ...(extraEnv ?? {}) };
+    const args: string[] = [];
+    for (const c of creds ?? []) {
+      const value = typeof c?.value === 'string' ? c.value.trim() : '';
+      if (!c?.key || !value) continue;
+      if (c.kind === 'arg') args.push(value);
+      else env[c.key] = value;
+    }
+    const hasEnv = Object.keys(env).length > 0;
+    if (!hasEnv && args.length === 0) return null;
+    return { env: hasEnv ? env : undefined, args: args.length ? args : undefined };
+  };
+
+  // Install accepts either a bare URI string (legacy / no-auth connectors) or
+  // `{ uri, credentials }`. Credentials are encrypted at rest (safeStorage) and
+  // injected into the server's child process on connect.
+  ipcMain.handle('mcp:installServer', async (_e, arg: string | { uri: string; credentials?: CredentialInput[] }) => {
     const db = getDb();
+    const rawUri = typeof arg === 'string' ? arg : arg.uri;
+    const credInput = typeof arg === 'string' ? undefined : arg.credentials;
+    // Secrets can arrive two ways: a structured credentials[] (Marketplace
+    // panel) or inline ENV:KEY=value tokens in the URI (MCP Tools panel).
+    // Normalize both into one encrypted store and persist a CLEAN uri so no
+    // plaintext secret is ever written to the DB / returned to the renderer /
+    // exported in a bundle.
+    const { cleanUri, env: uriEnv } = parseEnvTokens(rawUri);
     const id = crypto.randomUUID();
-    const name = uri.split('/').pop() ?? uri;
-    db.prepare(`INSERT INTO tools (tool_id, name, mcp_server_uri, description) VALUES (?,?,?,?)`)
-      .run(id, name, uri, `MCP server: ${uri}`);
-    await MCPRegistry.getInstance().connectServer(id, name, uri);
+    const name = cleanUri.split('/').pop() ?? cleanUri;
+    const stored = toStoredCredentials(credInput, uriEnv);
+    const sealed = sealCredentials(stored);
+    db.prepare(`INSERT INTO tools (tool_id, name, mcp_server_uri, description, credentials_enc) VALUES (?,?,?,?,?)`)
+      .run(id, name, cleanUri, `MCP server: ${cleanUri}`, sealed);
+    await MCPRegistry.getInstance().connectServer(id, name, cleanUri, stored ?? undefined);
     refreshMcpServerCountTag();
     return { id, name };
   });
 
-  ipcMain.handle('mcp:toggleTool', (_e, toolId: string, enabled: boolean) => {
-    getDb().prepare(`UPDATE tools SET is_enabled=? WHERE tool_id=?`).run(enabled ? 1 : 0, toolId);
+  // Update (or clear) the stored credentials for an already-installed server,
+  // then reconnect it so the new keys take effect immediately. Passing an empty
+  // list clears the credentials.
+  ipcMain.handle('mcp:setCredentials', async (_e, toolId: string, creds?: CredentialInput[]) => {
+    const db = getDb();
+    const row = db.prepare(`SELECT tool_id, name, mcp_server_uri FROM tools WHERE tool_id=?`)
+      .get(toolId) as { tool_id: string; name: string; mcp_server_uri: string | null } | undefined;
+    if (!row || !row.mcp_server_uri) return { success: false, error: 'Server not found.' };
+    const stored = toStoredCredentials(creds);
+    const sealed = sealCredentials(stored);
+    db.prepare(`UPDATE tools SET credentials_enc=? WHERE tool_id=?`).run(sealed, toolId);
+    try {
+      await MCPRegistry.getInstance().connectServer(row.tool_id, row.name, row.mcp_server_uri, stored ?? undefined);
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    return { success: true };
+  });
+
+  // Whether secrets are encrypted by the OS keychain on this machine. The
+  // install UI surfaces a warning when false (rare — e.g. Linux without a
+  // secret-service/keyring), since credentials then fall back to base64 at rest.
+  ipcMain.handle('mcp:credentialEncryptionAvailable', () => isAtRestEncryptionAvailable());
+
+  // Which installed servers currently have stored credentials — lets the UI show
+  // a "Configured"/"Update keys" affordance without ever returning the secrets.
+  ipcMain.handle('mcp:listConfiguredUris', () => {
+    const rows = getDb().prepare(
+      `SELECT mcp_server_uri FROM tools WHERE mcp_server_uri IS NOT NULL AND credentials_enc IS NOT NULL`
+    ).all() as { mcp_server_uri: string }[];
+    return rows.map(r => r.mcp_server_uri);
+  });
+
+  // Enable/disable must also start/stop the live process — otherwise a "disabled"
+  // server keeps running and its tools stay offered to the agent until restart,
+  // and an "enabled" one stays dead until restart. (No-op for built-in shim rows
+  // with a NULL mcp_server_uri.)
+  ipcMain.handle('mcp:toggleTool', async (_e, toolId: string, enabled: boolean) => {
+    const db = getDb();
+    db.prepare(`UPDATE tools SET is_enabled=? WHERE tool_id=?`).run(enabled ? 1 : 0, toolId);
+    const reg = MCPRegistry.getInstance();
+    if (!enabled) {
+      await reg.disconnectServer(toolId);
+      // Reflect the off state so the panel shows "Disabled", not a stale
+      // "connected"/"error" badge from the last run.
+      db.prepare(`UPDATE tools SET conn_status='disabled', conn_error=NULL WHERE tool_id=?`).run(toolId);
+    } else {
+      const row = db.prepare(`SELECT tool_id, name, mcp_server_uri, credentials_enc FROM tools WHERE tool_id=?`)
+        .get(toolId) as { tool_id: string; name: string; mcp_server_uri: string | null; credentials_enc: string | null } | undefined;
+      if (row?.mcp_server_uri) {
+        try {
+          await reg.connectServer(row.tool_id, row.name, row.mcp_server_uri, openCredentials(row.credentials_enc));
+        } catch (err) {
+          console.error(`[MCP] Re-enable failed for ${row.name}:`, err);
+        }
+      }
+    }
     return true;
   });
 
-  ipcMain.handle('mcp:removeServer', (_e, id: string) => {
+  // Remove must disconnect first so the child process is killed (it holds the
+  // connector's credentials in its env) and its tools stop being offered — then
+  // delete the row, which also drops the encrypted credentials.
+  ipcMain.handle('mcp:removeServer', async (_e, id: string) => {
+    await MCPRegistry.getInstance().disconnectServer(id);
     getDb().prepare(`DELETE FROM tools WHERE tool_id=?`).run(id);
     refreshMcpServerCountTag();
     return true;
+  });
+
+  // Retry connecting a server that failed (or to pick up a fixed dependency)
+  // without re-entering its API key — the stored credentials are reused.
+  // connectServer records the new conn_status; we echo success/error inline so
+  // the panel can show the latest failure reason immediately.
+  ipcMain.handle('mcp:reconnect', async (_e, toolId: string): Promise<{ success: boolean; error?: string }> => {
+    const db = getDb();
+    const row = db.prepare(`SELECT tool_id, name, mcp_server_uri, credentials_enc FROM tools WHERE tool_id=?`)
+      .get(toolId) as { tool_id: string; name: string; mcp_server_uri: string | null; credentials_enc: string | null } | undefined;
+    if (!row || !row.mcp_server_uri) return { success: false, error: 'Server not found.' };
+    // Make sure a previously-disabled row is enabled again on an explicit retry.
+    db.prepare(`UPDATE tools SET is_enabled=1 WHERE tool_id=?`).run(toolId);
+    try {
+      await MCPRegistry.getInstance().connectServer(row.tool_id, row.name, row.mcp_server_uri, openCredentials(row.credentials_enc));
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   // Installed MCP servers persist in the `tools` table keyed by their install

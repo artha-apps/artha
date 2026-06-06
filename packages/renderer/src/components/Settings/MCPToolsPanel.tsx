@@ -9,7 +9,7 @@ import {
   Wrench, Plus, Trash2, ToggleLeft, ToggleRight,
   RefreshCw, Clock, CheckCircle2, XCircle, ChevronDown, ChevronRight,
   Shield, Zap, Store, ExternalLink, Loader2, Globe, Brain,
-  GitBranch, MessageSquare, Monitor, Database, Search, Eye,
+  GitBranch, MessageSquare, Monitor, Database, Search, Eye, KeyRound,
 } from 'lucide-react';
 import { FeatureGuide } from '../ui/FeatureGuide';
 import { GUIDES } from './guides';
@@ -25,6 +25,13 @@ interface MCPTool {
   mcp_server_uri: string | null;
   is_enabled: number;
   installed_at: number;
+  /** 1 when the server has encrypted credentials stored (SQLite boolean).
+   *  Derived server-side; the secret values themselves never cross IPC. */
+  has_credentials?: number;
+  /** Last connection outcome: 'connected' | 'error' | 'disabled' | null. */
+  conn_status?: string | null;
+  /** Failure message when conn_status === 'error' (shown on hover / Retry). */
+  conn_error?: string | null;
 }
 
 /** Row from `tool_audit_log`. `result` is already truncated to 500 chars by
@@ -415,6 +422,8 @@ export default function MCPToolsPanel() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState('');
   const [marketplaceCategory, setMarketplaceCategory] = useState<string>('All');
+  // tool_id currently being retried, so its Retry button can show a spinner.
+  const [reconnecting, setReconnecting] = useState<string | null>(null);
 
   // ── Data loading ───────────────────────────────────────────────────────────
 
@@ -439,15 +448,31 @@ export default function MCPToolsPanel() {
 
   const toggle = async (tool: MCPTool) => {
     const next = !tool.is_enabled;
-    await window.artha.mcp.toggleTool(tool.tool_id, next);
+    // Optimistic flip for snappiness…
     setTools(prev => prev.map(t =>
       t.tool_id === tool.tool_id ? { ...t, is_enabled: next ? 1 : 0 } : t
     ));
+    await window.artha.mcp.toggleTool(tool.tool_id, next);
+    // …then reconcile: re-enabling may fail to connect, disabling sets
+    // 'disabled' — reload so the status pill tells the truth.
+    await load();
   };
 
   const remove = async (tool: MCPTool) => {
     await window.artha.mcp.removeServer(tool.tool_id);
     setTools(prev => prev.filter(t => t.tool_id !== tool.tool_id));
+  };
+
+  /** Retry a failed connection without re-entering the API key (stored
+   *  credentials are reused). Reloads so the row reflects the fresh status. */
+  const retry = async (tool: MCPTool) => {
+    setReconnecting(tool.tool_id);
+    try {
+      await window.artha.mcp.reconnect(tool.tool_id);
+    } finally {
+      setReconnecting(null);
+      await load();
+    }
   };
 
   const addServer = async () => {
@@ -580,7 +605,7 @@ export default function MCPToolsPanel() {
             <div className="flex items-center gap-2 mb-3">
               <Wrench size={13} className="text-artha-accent" />
               <h2 className="text-xs font-semibold text-artha-muted uppercase tracking-wide">
-                Connected MCP Servers
+                MCP Servers
               </h2>
               {mcpTools.length > 0 && (
                 <span className="text-xs text-artha-muted">({mcpTools.length})</span>
@@ -612,6 +637,41 @@ export default function MCPToolsPanel() {
                         </code>
                       )}
                     </div>
+
+                    {/* Credential indicator — keys are stored encrypted; values
+                        never leave the main process. */}
+                    {tool.has_credentials ? (
+                      <span title="API key stored (encrypted)"
+                        className="flex items-center gap-1 text-[10px] text-artha-muted">
+                        <KeyRound size={11} className="text-artha-accent" /> Key set
+                      </span>
+                    ) : null}
+
+                    {/* Connection status — honest state, not just "installed".
+                        A failed connect keeps the row (creds persist) and offers
+                        Retry instead of pretending it's live. */}
+                    {!tool.is_enabled ? (
+                      <span className="text-[10px] text-artha-muted/70">Disabled</span>
+                    ) : tool.conn_status === 'error' ? (
+                      <div className="flex items-center gap-1.5">
+                        <span title={tool.conn_error ?? 'Failed to connect'}
+                          className="flex items-center gap-1 text-[10px] text-red-400">
+                          <XCircle size={11} /> Not connected
+                        </span>
+                        <button onClick={() => retry(tool)} disabled={reconnecting === tool.tool_id}
+                          title="Retry connection (reuses stored key)"
+                          className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-artha-accent/15 text-artha-accent hover:bg-artha-accent/25 disabled:opacity-50 transition-colors">
+                          {reconnecting === tool.tool_id
+                            ? <Loader2 size={10} className="animate-spin" />
+                            : <RefreshCw size={10} />}
+                          Retry
+                        </button>
+                      </div>
+                    ) : tool.conn_status === 'connected' ? (
+                      <span className="flex items-center gap-1 text-[10px] text-green-400">
+                        <CheckCircle2 size={11} /> Connected
+                      </span>
+                    ) : null}
 
                     {/* Toggle */}
                     <button onClick={() => toggle(tool)} title={tool.is_enabled ? 'Disable' : 'Enable'}

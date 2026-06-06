@@ -21,6 +21,28 @@ export type McpCategory =
   | 'ai'
   | 'communication';
 
+/**
+ * One secret a connector needs before it can run (an API key, token, or
+ * connection string). Drives the credential form shown at install time and how
+ * the value is delivered to the server's child process.
+ *   - kind 'env': injected as the environment variable named by `key`.
+ *   - kind 'arg': appended to the spawn command line (e.g. a Postgres URL).
+ */
+export interface McpCredentialField {
+  /** Env-var name (kind 'env') or storage key (kind 'arg') the value maps to. */
+  key: string;
+  /** Human-readable label shown in the install form. */
+  label: string;
+  /** How the secret reaches the server process. Defaults to 'env'. */
+  kind?: 'env' | 'arg';
+  /** Short helper text explaining what to paste / where to find it. */
+  help?: string;
+  /** URL where the user can obtain the credential. */
+  link?: string;
+  /** Input placeholder hint. */
+  placeholder?: string;
+}
+
 export interface McpCatalogEntry {
   id: string;
   name: string;
@@ -33,6 +55,9 @@ export interface McpCatalogEntry {
   tools: string;
   /** Official docs or repo link */
   docsUrl?: string;
+  /** Secrets the user must supply before this connector can run. Absent/empty
+   *  means the connector works with no auth. */
+  credentials?: McpCredentialField[];
 }
 
 export const BUILTIN_CATALOG: McpCatalogEntry[] = [
@@ -82,6 +107,16 @@ export const BUILTIN_CATALOG: McpCatalogEntry[] = [
     author: 'Anthropic',
     tools: 'brave_web_search, brave_local_search',
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search',
+    credentials: [
+      {
+        key: 'BRAVE_API_KEY',
+        label: 'Brave API key',
+        kind: 'env',
+        help: 'Free tier available. Create a key in the Brave Search API dashboard.',
+        link: 'https://brave.com/search/api/',
+        placeholder: 'BSA…',
+      },
+    ],
   },
   {
     id: 'mcp-puppeteer',
@@ -117,6 +152,16 @@ export const BUILTIN_CATALOG: McpCatalogEntry[] = [
     author: 'Anthropic',
     tools: 'notion_search, notion_get_page, notion_create_page',
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/notion',
+    credentials: [
+      {
+        key: 'NOTION_API_KEY',
+        label: 'Notion integration token',
+        kind: 'env',
+        help: 'Create an internal integration and share the pages you want Artha to access with it.',
+        link: 'https://www.notion.so/my-integrations',
+        placeholder: 'secret_…',
+      },
+    ],
   },
 
   // ── Data ─────────────────────────────────────────────────────────────────
@@ -141,6 +186,15 @@ export const BUILTIN_CATALOG: McpCatalogEntry[] = [
     author: 'Anthropic',
     tools: 'query, list_tables, describe_table',
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/postgres',
+    credentials: [
+      {
+        key: 'connectionString',
+        label: 'Postgres connection string',
+        kind: 'arg',
+        help: 'A read-only role is recommended. The URL is passed to the server, never sent to the model.',
+        placeholder: 'postgresql://user:pass@host:5432/dbname',
+      },
+    ],
   },
 
   // ── Dev ──────────────────────────────────────────────────────────────────
@@ -154,6 +208,16 @@ export const BUILTIN_CATALOG: McpCatalogEntry[] = [
     author: 'Anthropic',
     tools: 'github_search, github_read_file, github_create_issue, github_create_pr',
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/github',
+    credentials: [
+      {
+        key: 'GITHUB_PERSONAL_ACCESS_TOKEN',
+        label: 'GitHub personal access token',
+        kind: 'env',
+        help: 'A fine-grained token scoped to just the repos you want is safest. Needs repo read (and write for issues/PRs).',
+        link: 'https://github.com/settings/tokens',
+        placeholder: 'ghp_… or github_pat_…',
+      },
+    ],
   },
   {
     id: 'mcp-git',
@@ -178,6 +242,23 @@ export const BUILTIN_CATALOG: McpCatalogEntry[] = [
     author: 'Anthropic',
     tools: 'slack_list_channels, slack_post_message, slack_search_messages',
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/slack',
+    credentials: [
+      {
+        key: 'SLACK_BOT_TOKEN',
+        label: 'Slack bot token',
+        kind: 'env',
+        help: 'Create a Slack app, add the bot scopes you need, install it to your workspace, and copy the Bot User OAuth Token.',
+        link: 'https://api.slack.com/apps',
+        placeholder: 'xoxb-…',
+      },
+      {
+        key: 'SLACK_TEAM_ID',
+        label: 'Slack team ID',
+        kind: 'env',
+        help: 'Your workspace ID (starts with T). Find it in your Slack URL or workspace settings.',
+        placeholder: 'T01234567',
+      },
+    ],
   },
 
   // ── AI ───────────────────────────────────────────────────────────────────
