@@ -60,8 +60,11 @@
 | `src/llm/ollamaRuntime.ts` | Ollama lifecycle — `ensureModelReady()` (auto-start the server if down + pre-warm the active model at matching num_ctx on launch, emitting `model:status`), `unloadActiveModel()` (keep_alive 0 on quit), `stopOllamaIfStarted()` (only a server WE spawned). Never instructs the user to run terminal commands; only stops what it started |
 | `src/llm/streamMerge.ts` | Merges streamed tool-call deltas (id+name on first chunk, args appended after) into complete tool calls |
 | **mcp/** | |
-| `src/mcp/registry.ts` | `MCPRegistry` — manages MCP server processes, tool schemas, invocations |
+| `src/mcp/registry.ts` | `MCPRegistry` — manages MCP server processes, tool schemas, invocations; injects decrypted connector credentials via `spawnEnv` (augmented PATH) and records per-server `conn_status` |
 | `src/mcp/registry-catalog.ts` | 22 curated MCP marketplace entries (filesystem, web, productivity, …) |
+| `src/mcp/envTokens.ts` | `parseEnvTokens` — dependency-free parser for the `ENV:KEY=value` install convention (the single source of truth, replacing the former `serverUri.ts`) |
+| **security/** | |
+| `src/security/secrets.ts` | Connector-credential secret store — encrypts API keys/tokens at rest via Electron `safeStorage` (OS keychain) with a base64 fallback + availability flag |
 | **tools/** | |
 | `src/tools/filesystem.ts` | Built-in fs tools (list/search/read/move/copy/delete) — hard sandbox confines reads/writes to the chat's attached scopes when present |
 | `src/tools/web.ts` | `webSearchImpl` — three-tier search chain (Brave → SearXNG → DuckDuckGo) + citation collection |

@@ -112,7 +112,11 @@ export async function exportBundle(args: ExportArgs): Promise<{ bundleId: string
     prompt: run.goal,
     model: run.model,
     sessionTitle: run.session_title ?? '',
-    mcpServers: mcpRows.map(r => ({ name: r.name, uri: r.mcp_server_uri })),
+    // Strip any inline ENV:KEY=value tokens so a credential can never travel in
+    // a shared/signed bundle. Stored URIs are normally already clean (secrets
+    // live encrypted in credentials_enc); this is belt-and-suspenders for any
+    // row that predates the scrub migration.
+    mcpServers: mcpRows.map(r => ({ name: r.name, uri: r.mcp_server_uri.replace(/(^|\s)ENV:[^\s]+/g, '').trim() })),
     goldenContentHash,
   };
   const manifest: BundleManifest = { ...manifestCore, signature: signManifest(manifestCore) };

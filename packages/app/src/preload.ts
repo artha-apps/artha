@@ -308,16 +308,31 @@ const api = {
   // ── MCP Tools ────────────────────────────────────────────────────────────
   mcp: {
     listTools: () => ipcRenderer.invoke('mcp:listTools'),
-    installServer: (uri: string) =>
-      ipcRenderer.invoke('mcp:installServer', uri),
+    // Install a connector. Pass a bare URI for no-auth servers, or
+    // `{ uri, credentials }` to supply API keys/tokens — these are encrypted at
+    // rest and injected into the server's child process, never sent to the model.
+    installServer: (arg: string | { uri: string; credentials?: { key: string; value: string; kind?: 'env' | 'arg' }[] }) =>
+      ipcRenderer.invoke('mcp:installServer', arg),
+    // Update or clear the credentials of an already-installed server, then
+    // reconnect it so the new keys take effect.
+    setCredentials: (toolId: string, credentials?: { key: string; value: string; kind?: 'env' | 'arg' }[]) =>
+      ipcRenderer.invoke('mcp:setCredentials', toolId, credentials) as Promise<{ success: boolean; error?: string }>,
+    // True when the OS keychain encrypts secrets at rest on this machine.
+    credentialEncryptionAvailable: () =>
+      ipcRenderer.invoke('mcp:credentialEncryptionAvailable') as Promise<boolean>,
     toggleTool: (toolId: string, enabled: boolean) =>
       ipcRenderer.invoke('mcp:toggleTool', toolId, enabled),
     removeServer: (id: string) => ipcRenderer.invoke('mcp:removeServer', id),
+    // Retry a failed connection (reuses stored credentials; re-enables the row).
+    reconnect: (toolId: string) =>
+      ipcRenderer.invoke('mcp:reconnect', toolId) as Promise<{ success: boolean; error?: string }>,
     getAuditLog: (limit?: number) =>
       ipcRenderer.invoke('mcp:getAuditLog', limit),
     // Install URIs of every installed MCP server — lets the Marketplace restore
     // the "Installed" badge from the DB instead of in-memory state.
     listInstalledIds: () => ipcRenderer.invoke('mcp:listInstalledIds') as Promise<string[]>,
+    // Install URIs of servers that have stored credentials (no secrets returned).
+    listConfiguredUris: () => ipcRenderer.invoke('mcp:listConfiguredUris') as Promise<string[]>,
   },
 
   // ── Skills ───────────────────────────────────────────────────────────────

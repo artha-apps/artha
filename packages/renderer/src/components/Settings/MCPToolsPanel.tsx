@@ -25,6 +25,14 @@ interface MCPTool {
   mcp_server_uri: string | null;
   is_enabled: number;
   installed_at: number;
+  /** Last connection outcome (from the `conn_status`/`conn_error` columns) so the
+   *  row shows honest state — connected, failed (+ Retry), or disabled — instead
+   *  of implying every installed server is live. Absent on built-in shim rows. */
+  conn_status?: 'connected' | 'error' | 'disabled' | null;
+  conn_error?: string | null;
+  /** 1 when the server has encrypted credentials stored (derived server-side as
+   *  `credentials_enc IS NOT NULL`; the secret itself is never sent to the UI). */
+  has_credentials?: number;
 }
 
 /** Row from `tool_audit_log`. `result` is already truncated to 500 chars by
@@ -477,6 +485,16 @@ export default function MCPToolsPanel() {
     window.artha.system.checkRuntime().then(r => setNpxMissing(!r.npx)).catch(() => { /* ignore */ });
   }, []);
 
+  // Whether the OS keychain encrypts connector secrets at rest on this machine.
+  // Default true so we never flash a warning before the check resolves; flips to
+  // false only on a box without a secret-service/keyring (rare — e.g. some Linux
+  // setups), where credentials fall back to base64-at-rest and the user deserves
+  // to know before pasting an API key.
+  const [credEncAvailable, setCredEncAvailable] = useState(true);
+  useEffect(() => {
+    window.artha.mcp.credentialEncryptionAvailable().then(setCredEncAvailable).catch(() => { /* assume available */ });
+  }, []);
+
   // ── Data loading ───────────────────────────────────────────────────────────
 
   /** Fetch both tools and audit log in parallel so the count badge in the tab
@@ -500,10 +518,33 @@ export default function MCPToolsPanel() {
 
   const toggle = async (tool: MCPTool) => {
     const next = !tool.is_enabled;
-    await window.artha.mcp.toggleTool(tool.tool_id, next);
+    // Optimistic flip for snappy UI...
     setTools(prev => prev.map(t =>
       t.tool_id === tool.tool_id ? { ...t, is_enabled: next ? 1 : 0 } : t
     ));
+    await window.artha.mcp.toggleTool(tool.tool_id, next);
+    // ...then reconcile from the DB. Enabling a server can fail to connect
+    // (bad key / npx cold-start); the handler records conn_status='error' but
+    // returns true, so without this reload the row would look healthy. load()
+    // pulls the real conn_status/conn_error so the badge + Retry reflect reality.
+    await load();
+  };
+
+  // Per-server "retrying…" state so the Retry button can spin and disable while
+  // the reconnect IPC is in flight (npx cold-starts can take a few seconds).
+  const [retrying, setRetrying] = useState<Set<string>>(new Set());
+
+  /** Retry a failed/disabled connection without re-entering the API key — the
+   *  stored (encrypted) credentials are reused server-side. Reflects the new
+   *  conn_status by reloading so the badge updates. */
+  const reconnect = async (tool: MCPTool) => {
+    setRetrying(prev => new Set(prev).add(tool.tool_id));
+    try {
+      await window.artha.mcp.reconnect(tool.tool_id);
+      await load();
+    } finally {
+      setRetrying(prev => { const n = new Set(prev); n.delete(tool.tool_id); return n; });
+    }
   };
 
   const remove = async (tool: MCPTool) => {
@@ -672,7 +713,30 @@ export default function MCPToolsPanel() {
                           {tool.mcp_server_uri.replace(/ENV:[^\s]+ /g, '')}
                         </code>
                       )}
+                      {/* Honest per-server status: a failed connect keeps the row
+                          (credentials persist) but says so + offers Retry. */}
+                      {tool.is_enabled && tool.conn_status === 'error' && (
+                        <span className="mt-0.5 inline-flex items-center gap-1 text-xs text-artha-danger"
+                          title={tool.conn_error ?? undefined}>
+                          <XCircle size={11} className="shrink-0" />
+                          <span className="truncate">Not connected{tool.conn_error ? ` — ${tool.conn_error}` : ''}</span>
+                        </span>
+                      )}
+                      {tool.is_enabled && tool.conn_status === 'connected' && (
+                        <span className="mt-0.5 inline-flex items-center gap-1 text-xs text-artha-success">
+                          <CheckCircle2 size={11} className="shrink-0" /> Connected
+                        </span>
+                      )}
                     </div>
+
+                    {/* Retry — only for a server that failed to connect; reuses
+                        the stored key (no re-entry). */}
+                    {tool.is_enabled && tool.conn_status === 'error' && (
+                      <button onClick={() => reconnect(tool)} disabled={retrying.has(tool.tool_id)}
+                        title="Retry connection" className="text-artha-muted hover:text-artha-text transition-colors disabled:opacity-50">
+                        <RefreshCw size={14} className={retrying.has(tool.tool_id) ? 'animate-spin' : ''} />
+                      </button>
+                    )}
 
                     {/* Toggle */}
                     <button onClick={() => toggle(tool)} title={tool.is_enabled ? 'Disable' : 'Enable'}
@@ -695,6 +759,20 @@ export default function MCPToolsPanel() {
             {/* Manual add server */}
             <div className="mt-4 space-y-2">
               <p className="text-xs font-medium text-artha-muted uppercase tracking-wide">Add custom server</p>
+              {/* Secrets are normally sealed by the OS keychain. When that's
+                  unavailable they fall back to base64-at-rest — not encryption —
+                  so warn before the user pastes an ENV:KEY=… token. */}
+              {!credEncAvailable && (
+                <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-sm">
+                  <AlertCircle size={15} className="text-amber-500 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-artha-text font-medium">Secrets aren’t encrypted at rest on this machine</p>
+                    <p className="text-xs text-artha-muted leading-snug mt-0.5">
+                      No OS keychain (secret-service/keyring) was found, so any API keys you add to a connector are stored only base64-encoded, not encrypted. Avoid entering high-value credentials until a keyring is available.
+                    </p>
+                  </div>
+                </div>
+              )}
               <div className="flex gap-2">
                 <input
                   value={addUri}
