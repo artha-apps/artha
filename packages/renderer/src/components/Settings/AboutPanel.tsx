@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Download, ExternalLink } from 'lucide-react';
+import { BrandWordmark } from '../ui/BrandWordmark';
 
 interface AppInfo {
   version: string;
@@ -40,10 +41,10 @@ export default function AboutPanel() {
 
       {/* Identity */}
       <div className="flex items-center gap-3 mb-6">
-        <img src="/logo-mark.png" alt="" width={44} height={44} className="rounded-lg" onError={(e) => { (e.currentTarget.style.display = 'none'); }} />
+        <img src="./logo-mark.png" alt="" width={44} height={44} className="rounded-lg" onError={(e) => { (e.currentTarget.style.display = 'none'); }} />
         <div>
-          <div className="text-base font-semibold text-artha-text">Artha</div>
-          <div className="text-sm text-artha-muted">
+          <BrandWordmark height={18} />
+          <div className="mt-1 text-sm text-artha-muted">
             {info ? `Version ${info.version}` : 'Loading…'}
           </div>
         </div>

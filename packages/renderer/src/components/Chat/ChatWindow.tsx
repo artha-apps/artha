@@ -16,6 +16,7 @@ import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic
 import ReactMarkdown from 'react-markdown';
 import { useChatStore, type ReasoningStep } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
+import { BrandWordmark } from '../ui/BrandWordmark';
 import { toast, useToastStore } from '../../stores/toast';
 import ToolCallInline from './ToolCallInline';
 import Citations from './Citations';
@@ -231,7 +232,7 @@ function AgentAvatar({ pulse = false }: { pulse?: boolean }) {
       className={`w-7 h-7 rounded-lg overflow-hidden shrink-0 mt-1 ring-1 select-none ${pulse ? 'ring-artha-accent/50 animate-pulse' : 'ring-artha-border'}`}
       style={pulse ? { boxShadow: '0 0 0 3px rgba(79,70,229,0.12)' } : undefined}
     >
-      <img src="/logo-mark.png" alt="Artha" width={28} height={28} draggable={false} className="w-full h-full object-cover" />
+      <img src="./logo-mark.png" alt="Artha" width={28} height={28} draggable={false} className="w-full h-full object-cover" />
     </span>
   );
 }
@@ -672,11 +673,16 @@ export default function ChatWindow() {
   if (!activeSessionId) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-8 px-6 animate-fade-up">
-        <div className="text-center">
-          <div className="w-12 h-12 rounded-2xl bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center mx-auto mb-4 shadow-glow animate-glow-pulse">
-            <Bot size={22} className="text-artha-accent" />
-          </div>
-          <h1 className="text-3xl font-bold text-gradient-emerald mb-1 tracking-tight">Artha</h1>
+        <div className="text-center flex flex-col items-center">
+          <img
+            src="./logo-mark.png"
+            alt=""
+            width={56}
+            height={56}
+            draggable={false}
+            className="rounded-2xl shadow-lifted ring-1 ring-artha-border-strong/50 select-none mb-4"
+          />
+          <BrandWordmark height={34} className="mb-2" />
           <p className="text-artha-muted text-sm">Your local AI agent. Fully private, runs on your Mac.</p>
         </div>
         <div className="grid grid-cols-2 gap-2 w-full max-w-md">
@@ -728,7 +734,7 @@ export default function ChatWindow() {
             <div className="flex flex-col items-center gap-7 pt-10">
               <div className="flex flex-col items-center gap-3 text-center">
                 <img
-                  src="/logo-mark.png"
+                  src="./logo-mark.png"
                   alt="Artha"
                   width={60}
                   height={60}

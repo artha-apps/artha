@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { MessageSquare, Plus, Settings as SettingsIcon, ChevronDown, ChevronRight, Folder, Trash2, Search, Pin, X } from 'lucide-react';
 import { useChatStore, type Session } from '../../stores/chat';
 import { Tooltip } from '../ui/Tooltip';
+import { BrandWordmark } from '../ui/BrandWordmark';
 import ThemeToggle from '../ui/ThemeToggle';
 import ProjectSwitcher from './ProjectSwitcher';
 
@@ -233,7 +234,7 @@ export default function Sidebar() {
           handle and gives the window a clear identity. */}
       <div className="drag-region flex items-center gap-2.5 px-4 pt-9 pb-3">
         <img
-          src="/logo-mark.png"
+          src="./logo-mark.png"
           alt="Artha"
           width={30}
           height={30}
@@ -241,8 +242,8 @@ export default function Sidebar() {
           className="rounded-lg shadow-soft ring-1 ring-artha-border-strong/50 select-none"
         />
         <div className="leading-none">
-          <div className="text-[15px] font-semibold tracking-tight text-artha-text">Artha</div>
-          <div className="mt-1 text-[9.5px] font-medium uppercase tracking-[0.16em] text-artha-subtle">
+          <BrandWordmark height={16} />
+          <div className="mt-1.5 text-[9.5px] font-medium uppercase tracking-[0.16em] text-artha-subtle">
             Local AI Agent
           </div>
         </div>

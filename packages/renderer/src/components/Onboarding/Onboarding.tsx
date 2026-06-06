@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import OrgSetup from './OrgSetup';
 import MemoryImport from '../MemoryImport/MemoryImport';
+import { BrandWordmark } from '../ui/BrandWordmark';
 
 /** A model returned by `window.artha.llm.listModels()` — only fields we render. */
 interface OllamaModel { name: string; size: number; }
@@ -159,11 +160,17 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       {persona === null && (
         <div className="w-full max-w-lg bg-artha-surface-raised border border-artha-border rounded-2xl shadow-modal p-8 animate-scale-in">
           <div className="flex flex-col items-center text-center mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-artha-accent/10 border border-artha-accent/30 flex items-center justify-center mb-4 shadow-glow animate-glow-pulse">
-              <Bot size={26} className="text-artha-accent" />
-            </div>
-            <h1 className="text-2xl font-bold text-gradient-emerald mb-1 tracking-tight">Welcome to Artha</h1>
-            <p className="text-sm text-artha-muted">How are you using Artha?</p>
+            <img
+              src="./logo-mark.png"
+              alt=""
+              width={56}
+              height={56}
+              draggable={false}
+              className="rounded-2xl shadow-lifted ring-1 ring-artha-border-strong/50 select-none mb-3"
+            />
+            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-artha-subtle mb-1.5">Welcome to</p>
+            <BrandWordmark height={30} />
+            <p className="text-sm text-artha-muted mt-2">How are you using Artha?</p>
           </div>
 
           <div className="space-y-3">
