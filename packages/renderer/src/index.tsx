@@ -16,6 +16,10 @@ import '@fontsource/inter/500.css';
 import '@fontsource/inter/600.css';
 import '@fontsource/inter/700.css';
 
+// Marcellus — thin, wide-tracked Roman caps used ONLY for the brand wordmark,
+// matching the landing site's lockup (landing/app/layout.tsx).
+import '@fontsource/marcellus/400.css';
+
 import './index.css';
 
 const root = document.getElementById('root');
