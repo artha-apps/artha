@@ -16,6 +16,8 @@
 | `.github/workflows/ci.yml` | CI: typecheck + lint + test on push/PR |
 | `.github/workflows/release.yml` | Release: build DMG/EXE/DEB, code-sign + notarize macOS (via `CSC_*`/`APPLE_*` secrets), and publish to `artha-apps/artha` GitHub Releases on tag push |
 | `docs/deploy/org-hub.md` | Runbook for standing up the Enterprise org hub — dedicated-host (Option A, recommended) + interim Docker (Option B), sizing, network, updates, backups, license issuance, member quick-connect |
+| `docs/user-guide.md` | Non-technical end-user guide: quick-start (install → first task) + Part 2 "every feature, step by step" (numbered steps + Try-this per feature). Mirrors the in-app guide copy |
+| `docs/user-guide-slides.html` | Self-contained HTML slide deck of the user guide — one feature per slide, keyboard/click/swipe nav, print-to-PDF. Same copy as `user-guide.md` |
 
 ---
 
