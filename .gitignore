@@ -82,3 +82,15 @@ models/
 
 # Playwright MCP session artifacts
 .playwright-mcp/
+
+# Business / fundraising material — investor decks, financials, pitch, PRD.
+# NEVER commit to the PUBLIC repo. Keep in the private internal-docs store.
+business/
+Artha_Investor_Deck.*
+Artha_Pitch_Deck.*
+Artha_Cost_Revenue_Model.*
+Artha_Monetization_Plan.*
+
+# Office lock / temp files
+~$*
+.~lock.*#
