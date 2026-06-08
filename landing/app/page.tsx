@@ -3,6 +3,15 @@
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
 
+/**
+ * Public pricing visibility. `false` HIDES the pricing section + the "Pricing"
+ * nav link from the marketing site while the monetization model (monthly vs
+ * annual) is being decided. The Stripe checkout, webhook, license issuance, and
+ * the app's licensing all stay fully functional — the price just isn't
+ * advertised. Flip back to `true` to re-show it.
+ */
+const SHOW_PRICING = false;
+
 type Platform = 'mac-arm64' | 'mac-intel' | 'windows' | 'linux' | 'unknown';
 
 function detectPlatform(): Platform {
@@ -209,9 +218,11 @@ export default function Page() {
               <li>
                 <a href="#features">Features</a>
               </li>
-              <li>
-                <a href="#pricing">Pricing</a>
-              </li>
+              {SHOW_PRICING && (
+                <li>
+                  <a href="#pricing">Pricing</a>
+                </li>
+              )}
               <li className="hide-sm">
                 <a href="#getting-started">Get started</a>
               </li>
@@ -327,6 +338,7 @@ export default function Page() {
           </div>
         </section>
 
+        {SHOW_PRICING && (
         <section className="pricing" id="pricing">
           <div className="container">
             <div className="section-header">
@@ -376,6 +388,7 @@ export default function Page() {
             </div>
           </div>
         </section>
+        )}
 
         <section className="getting-started" id="getting-started">
           <div className="container">

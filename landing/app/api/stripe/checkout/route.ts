@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
       // Pass the email through so the webhook can read it without a DB.
       metadata: { customer_email: email ?? '' },
       success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/#pricing`,
+      cancel_url: `${baseUrl}/`,
       // Automatically generate a Stripe invoice PDF (nice for B2B buyers).
       invoice_creation: { enabled: true },
     });
