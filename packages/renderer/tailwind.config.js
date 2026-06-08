@@ -28,6 +28,7 @@ export default {
           'accent-hover':  token('--artha-accent-hover'),
           'on-accent':     token('--artha-on-accent'),
           mint:            token('--artha-mint'),
+          gold:            token('--artha-gold'),
           danger:          token('--artha-danger'),
           success:         token('--artha-success'),
           warn:            token('--artha-warn'),
@@ -56,10 +57,11 @@ export default {
         'soft':    '0 1px 2px rgba(10, 22, 40, 0.04)',
         'lifted':  '0 4px 12px rgba(10, 22, 40, 0.06)',
         'modal':   '0 12px 32px rgba(10, 22, 40, 0.10)',
-        // Emerald/mint glows — driven by --artha-glow so they soften in light.
-        'glow':       '0 0 0 1px rgb(var(--artha-accent) / 0.30), 0 4px 20px var(--artha-glow)',
+        // Gold glows — ring + halo both driven by the gold tokens so the glow
+        // reads gold (the accent stays green for fills/borders).
+        'glow':       '0 0 0 1px rgb(var(--artha-gold) / 0.35), 0 4px 20px var(--artha-glow)',
         'glow-sm':    '0 0 12px var(--artha-glow)',
-        'glow-strong':'0 0 0 1px rgb(var(--artha-accent) / 0.45), 0 6px 28px var(--artha-glow)',
+        'glow-strong':'0 0 0 1px rgb(var(--artha-gold) / 0.5), 0 6px 28px var(--artha-glow)',
       },
       keyframes: {
         'fade-in':   { '0%': { opacity: '0' }, '100%': { opacity: '1' } },

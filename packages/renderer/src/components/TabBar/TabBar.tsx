@@ -36,7 +36,7 @@ const TABS: TabDef[] = [
 
 /** Single row of tabs + the always-visible scope badge. */
 export default function TabBar() {
-  const { activeTab, setActiveTab, projects, activeProjectId, workspaceSettingsOpen, openGuide } = useChatStore();
+  const { activeTab, setActiveTab, projects, activeProjectId, workspaceSettingsOpen, startTour } = useChatStore();
   const activeProject = projects.find((p: Project) => p.project_id === activeProjectId) ?? null;
 
   return (
@@ -55,7 +55,7 @@ export default function TabBar() {
                 onClick={() => setActiveTab(id)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 active:scale-95
                   ${isActive
-                    ? 'bg-artha-surface text-artha-text border border-artha-accent/40 shadow-glow-sm'
+                    ? 'bg-artha-surface text-artha-text border border-artha-gold/45 shadow-glow-sm'
                     : 'text-artha-muted hover:bg-artha-surface hover:text-artha-text border border-transparent'}`}
               >
                 <Icon size={13} style={isActive ? { color: theme.accent } : undefined} />
@@ -68,12 +68,12 @@ export default function TabBar() {
 
       {/* ── Right rail: help + active model + scope badge ──────────────── */}
       <div className="flex items-center gap-2">
-        {/* Help — opens the "How to use Artha" feature guide. */}
-        <Tooltip content="How to use Artha" side="bottom" sideOffset={6}>
+        {/* Help — replays this tab's step-by-step tour slideshow. */}
+        <Tooltip content={`Show the ${activeTab} guide`} side="bottom" sideOffset={6}>
           <button
-            onClick={openGuide}
-            className="flex items-center justify-center w-7 h-7 rounded-md border border-artha-border text-artha-muted hover:text-artha-text hover:border-artha-accent hover:shadow-glow-sm transition-all duration-200 active:scale-95"
-            aria-label="How to use Artha"
+            onClick={() => startTour(activeTab)}
+            className="flex items-center justify-center w-7 h-7 rounded-md border border-artha-border text-artha-muted hover:text-artha-text hover:border-artha-gold hover:shadow-glow-sm transition-all duration-200 active:scale-95"
+            aria-label="Show the guide for this tab"
           >
             <HelpCircle size={13} />
           </button>

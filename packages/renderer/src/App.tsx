@@ -37,6 +37,7 @@ import WorkspaceSettings from './components/WorkspaceSettings/WorkspaceSettings'
 import Toaster from './components/ui/Toaster';
 import ShortcutsOverlay from './components/ui/ShortcutsOverlay';
 import CommandPalette from './components/ui/CommandPalette';
+import { FeatureTour } from './components/ui/FeatureTour';
 import UndoAfterRun from './components/UndoAfterRun';
 import Briefing from './components/Briefing';
 import { TooltipProvider } from './components/ui/Tooltip';
@@ -76,6 +77,15 @@ export default function App() {
   // First-run onboarding gate. `null` = still loading the flag; show nothing
   // structural until we know, to avoid a flash of the empty chat behind it.
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
+
+  // Feature tours: the first time a user lands on a tab (after onboarding), open
+  // its step-by-step slideshow once. Reads `seenGuides` fresh from the store so
+  // marking a tour seen never re-triggers it. Keyed `tour:<tab>`.
+  useEffect(() => {
+    if (showOnboarding !== false) return;
+    const { seenGuides, startTour } = useChatStore.getState();
+    if (!seenGuides.has(`tour:${activeTab}`)) startTour(activeTab);
+  }, [activeTab, showOnboarding]);
 
   // In-app "update available" banner — set when the main process detects a
   // newer GitHub release. Notification-only; the button opens the download page.
@@ -283,6 +293,10 @@ export default function App() {
         <RunInspector />
 
         {showOnboarding && <Onboarding onDone={() => setShowOnboarding(false)} />}
+
+        {/* First-run feature slideshow — auto-opens once per tab, replayable
+            from the TabBar "?". */}
+        <FeatureTour />
 
         {/* Local-model startup status — Artha auto-starts Ollama + warms the
             model; this is the quiet, non-blocking notice (bottom-left). */}
