@@ -26,6 +26,9 @@
   --artha-warn:           180 83 9;
   /* Glow is near-invisible in light so existing restraint is preserved. */
   --artha-glow:           rgba(0, 53, 237, 0.10);
+  /* Gold — brand colour for glow rings + the active-tab ring, kept SEPARATE
+     from `accent` so highlights (buttons, bubbles) can stay green/teal. */
+  --artha-gold:           180 140 40;
   /* Gradient stops for accent text/fills. */
   --artha-grad-from:      0 53 237;
   --artha-grad-to:        21 128 61;
@@ -59,6 +62,7 @@
   --artha-success:        52 211 153;   /* #34D399 */
   --artha-warn:           251 191 36;   /* #FBBF24 */
   --artha-glow:           rgba(226, 191, 92, 0.32);  /* GOLD halo — the gold touch */
+  --artha-gold:           226 191 92;   /* #E2BF5C — glow rings + active-tab ring */
   --artha-grad-from:      16 185 129;
   --artha-grad-to:        110 231 183;
 }

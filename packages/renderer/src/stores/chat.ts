@@ -196,6 +196,8 @@ interface ChatState {
   /** Which top-level tab is showing inside the Chat view. Ignored when
    *  `activeView !== 'chat'` (because a settings modal is open). */
   activeTab: ActiveTab;
+  /** Which feature tab's first-run tour is currently showing (null = none). */
+  activeTour: ActiveTab | null;
   /** Workspace Settings modal — open state + which panel to scroll to. The
    *  panel id matches the legacy `ActiveView` value so old call-sites keep
    *  working: `setActiveView('models')` opens the modal to Models. */
@@ -259,6 +261,10 @@ interface ChatState {
   dismissGuide: (featureKey: string) => void;
   /** Re-open a feature guide (called from the panel header "?" button). */
   reopenGuide: (featureKey: string) => void;
+  /** Open a feature tab's first-run slideshow tour (also used to replay it). */
+  startTour: (tab: ActiveTab) => void;
+  /** Close the tour; `markSeen` (default true) records it so it won't re-open. */
+  closeTour: (markSeen?: boolean) => void;
 }
 
 const SEEN_GUIDES_KEY = 'artha.seenGuides.v1';
@@ -335,6 +341,7 @@ export const useChatStore = create<ChatState>((set) => ({
   showReasoning: true,
   activeView: 'chat',
   activeTab: loadActiveTab(),
+  activeTour: null,
   workspaceSettingsOpen: false,
   workspaceSettingsSection: null,
   activeProjectId: loadActiveProjectId(),
@@ -523,5 +530,19 @@ export const useChatStore = create<ChatState>((set) => ({
       next.delete(featureKey);
       saveSeenGuides(next);
       return { seenGuides: next };
+    }),
+
+  // ── Feature tours ──────────────────────────────────────────────────────────
+  // The first-run slideshow for a feature tab. `startTour` opens it (also used
+  // by the TabBar "?" to replay); `closeTour` hides it and, by default, marks
+  // the tab's tour seen (key `tour:<tab>`) so it never auto-opens again.
+  startTour: (tab) => set({ activeTour: tab }),
+  closeTour: (markSeen = true) =>
+    set((s) => {
+      if (!markSeen) return { activeTour: null };
+      const next = new Set(s.seenGuides);
+      next.add(`tour:${s.activeTour}`);
+      saveSeenGuides(next);
+      return { activeTour: null, seenGuides: next };
     }),
 }));
