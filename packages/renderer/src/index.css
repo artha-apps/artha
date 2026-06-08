@@ -38,10 +38,10 @@
 }
 
 .dark {
-  /* Gold theme — warm near-black base + the logo's gold accent, so the UI is in
-     sync with the अ mark + ARTHA wordmark (which are gold, not emerald). Surfaces
-     are neutral-warm (faint gold tint) instead of green; `success` stays green
-     and `warn`/`danger` keep their semantic hues. */
+  /* Warm-neutral base + a GOLD glow give a subtle nod to the gold logo, but the
+     interactive accent (buttons, "New Chat", user message bubbles, focus ring,
+     gradient titles) stays emerald/teal — so gold accents the UI as a touch
+     without overpowering it. `success` is green; `danger`/`warn` keep their hues. */
   --artha-bg:             16 14 10;     /* #100E0A warm near-black */
   --artha-surface:        24 21 14;     /* #18150E */
   --artha-surface2:       33 28 19;     /* #211C13 */
@@ -51,16 +51,16 @@
   --artha-text:           244 240 230;  /* #F4F0E6 warm white */
   --artha-muted:          179 168 146;  /* #B3A892 */
   --artha-subtle:         128 118 100;  /* #807664 */
-  --artha-accent:         226 191 92;   /* #E2BF5C gold — the wordmark's mid-gold */
-  --artha-accent-hover:   242 215 130;  /* #F2D782 lighter gold */
-  --artha-on-accent:      28 21 8;      /* #1C1508 near-black on gold (~8:1) */
-  --artha-mint:           245 224 150;  /* #F5E096 pale-gold highlight (was neon mint) */
+  --artha-accent:         16 185 129;   /* #10B981 emerald — primary interactive accent */
+  --artha-accent-hover:   52 211 153;   /* #34D399 emerald-400 */
+  --artha-on-accent:      8 18 13;      /* near-black on emerald (~6.7:1) */
+  --artha-mint:           110 231 183;  /* #6EE7B7 neon mint */
   --artha-danger:         248 113 113;  /* #F87171 light-on-dark */
-  --artha-success:        52 211 153;   /* #34D399 — green kept for success semantics */
+  --artha-success:        52 211 153;   /* #34D399 */
   --artha-warn:           251 191 36;   /* #FBBF24 */
-  --artha-glow:           rgba(226, 191, 92, 0.32);  /* gold halo (was mint) */
-  --artha-grad-from:      226 191 92;
-  --artha-grad-to:        245 224 150;
+  --artha-glow:           rgba(226, 191, 92, 0.32);  /* GOLD halo — the gold touch */
+  --artha-grad-from:      16 185 129;
+  --artha-grad-to:        110 231 183;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
