@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Artha — User Guide (Slides)</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --panel:#ffffff; --ink:#0a1628; --muted:#5b6577;
+    --accent:#0035ed; --accent-soft:#e7ecff; --line:#e6e8f0; --ok:#0a7d4d;
+    --shadow:0 18px 50px rgba(10,22,40,.12);
+    --radius:18px; --maxw:980px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    background:radial-gradient(1200px 700px at 80% -10%,#eaeeff 0%,var(--bg) 55%);
+    color:var(--ink);-webkit-font-smoothing:antialiased;overflow:hidden;
+  }
+  /* Deck frame */
+  .deck{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:48px 64px}
+  .slide{
+    width:100%;max-width:var(--maxw);background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);box-shadow:var(--shadow);padding:48px 56px;display:none;
+    animation:rise .35s ease both;min-height:520px;position:relative;
+  }
+  .slide.active{display:block}
+  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:700;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--accent);
+    background:var(--accent-soft);padding:6px 12px;border-radius:999px;margin-bottom:18px}
+  .glyph{font-weight:700}
+  h1{font-size:40px;line-height:1.1;margin:0 0 14px;letter-spacing:-.02em}
+  h2{font-size:30px;line-height:1.15;margin:0 0 14px;letter-spacing:-.01em}
+  .blurb{font-size:18px;color:var(--muted);line-height:1.55;margin:0 0 26px;max-width:60ch}
+  ol.steps{margin:0;padding:0;list-style:none;counter-reset:s;display:grid;gap:14px;max-width:64ch}
+  ol.steps li{counter-increment:s;position:relative;padding:14px 16px 14px 56px;
+    background:#fbfcff;border:1px solid var(--line);border-radius:12px;font-size:16.5px;line-height:1.5}
+  ol.steps li::before{content:counter(s);position:absolute;left:14px;top:13px;width:28px;height:28px;
+    display:flex;align-items:center;justify-content:center;border-radius:8px;
+    background:var(--accent);color:#fff;font-size:14px;font-weight:700}
+  .try{margin-top:22px;font-size:15px;color:var(--ink);background:#f1fff8;border:1px solid #cdeedd;
+    border-left:3px solid var(--ok);padding:12px 16px;border-radius:10px}
+  .try b{color:var(--ok)}
+  .pill-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+  .pill{font-size:14px;color:var(--ink);background:#fff;border:1px solid var(--line);
+    border-radius:999px;padding:8px 14px}
+  .pro{margin-left:8px;font-size:11px;font-weight:700;color:#7a4d00;background:#ffe9c2;
+    border-radius:6px;padding:3px 7px;vertical-align:middle;letter-spacing:.04em}
+
+  /* Title slide — centering applies ONLY when active, so the base .slide
+     display:none still hides inactive title slides (otherwise display:flex here
+     would override it and they'd always show). */
+  .title-slide{text-align:center}
+  .slide.active.title-slide{display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .mark{font-size:64px;line-height:1;color:var(--accent);font-weight:700;margin-bottom:10px}
+  .title-slide h1{font-size:52px;margin-bottom:8px}
+  .title-slide .blurb{font-size:20px;text-align:center}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:64ch}
+
+  /* Chrome: progress, nav, counter */
+  .progress{position:fixed;top:0;left:0;height:4px;background:var(--accent);width:0;transition:width .3s ease;z-index:20}
+  .counter{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);font-size:13px;color:var(--muted);
+    background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 14px;z-index:20}
+  .nav{position:fixed;bottom:14px;right:18px;display:flex;gap:8px;z-index:20}
+  .nav button{font:inherit;font-size:14px;border:1px solid var(--line);background:#fff;color:var(--ink);
+    border-radius:10px;padding:8px 12px;cursor:pointer;box-shadow:0 2px 8px rgba(10,22,40,.06)}
+  .nav button:hover{border-color:var(--accent);color:var(--accent)}
+  .hint{position:fixed;bottom:18px;left:18px;font-size:12px;color:var(--muted);z-index:20}
+  .crumbs{position:fixed;top:16px;right:20px;font-size:12px;color:var(--muted);z-index:20}
+  @media (max-width:720px){
+    .deck{padding:20px}.slide{padding:30px 24px;min-height:0}
+    h1{font-size:30px}.title-slide h1{font-size:38px}h2{font-size:24px}.blurb{font-size:16px}
+    .grid2{grid-template-columns:1fr}
+  }
+  @media print{
+    body{overflow:visible}.deck{position:static;display:block;padding:0}
+    .slide{display:block!important;page-break-after:always;box-shadow:none;margin:0 0 12px;max-width:none}
+    .progress,.counter,.nav,.hint,.crumbs{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="crumbs" id="crumbs"></div>
+<div class="deck" id="deck"><!-- slides injected here --></div>
+<div class="counter" id="counter"></div>
+<div class="hint">← → to move · F fullscreen · P print/PDF</div>
+<div class="nav">
+  <button id="prev" aria-label="Previous">‹ Prev</button>
+  <button id="next" aria-label="Next">Next ›</button>
+</div>
+
+<script>
+// ── Slide data ──────────────────────────────────────────────────────────────
+// Each slide: {cat, icon, title, blurb, steps[], try, pills[], pro}
+// Copy mirrors the in-app guide (GuidePanel + Settings/guides) so the deck and
+// the app never drift. Edit here = edit the canonical user-facing walkthrough.
+const SLIDES = [
+  { type:'title', icon:'अ', title:'Artha',
+    blurb:'Your private, on-device AI assistant — a step-by-step tour of every feature.',
+    foot:'artha.space · User Guide' },
+
+  { cat:'Start here', icon:'🔒', title:'What Artha is',
+    blurb:'An AI assistant that lives on your own computer. Type what you want in plain English and it does the work — then hands you the finished file.',
+    pills:['100% on your machine','No account','No subscription','Zero telemetry'],
+    try:'Your contracts, finances, and client files never leave your computer.' },
+
+  { cat:'Step 0', icon:'⬇️', title:'Install in 2 clicks',
+    blurb:'A real app you install once — like Zoom or Spotify, not a website you log into.',
+    steps:[
+      'Go to artha.space and click Download — it detects Mac / Windows / Linux for you.',
+      'Open the file: drag to Applications on Mac, or run the installer on Windows.',
+      'Launch Artha like any other app.'] },
+
+  { cat:'Step 1', icon:'🧠', title:'First launch — get a local brain',
+    blurb:'On first run, Artha helps you install a local AI model (via Ollama). This is the engine that runs entirely offline.',
+    steps:[
+      'The Welcome screen checks if the engine (Ollama) is installed and offers to set it up.',
+      'Artha suggests a model that fits your computer — bigger = smarter, smaller = faster.',
+      'Click to download the model and wait once. After that, everything runs offline.'] },
+
+  { cat:'Step 2', icon:'🧭', title:'The main screen',
+    blurb:'Four colour-coded rooms across the top, your chats on the left, and the model chip showing the active brain.',
+    grid:[
+      'Chat — talk to the AI, do tasks',
+      'Workflows — saved & repeatable runs',
+      'Code — coding-focused sessions',
+      'Delegate — hand over a whole goal'],
+    try:'The model chip (top) always shows which AI is active. Click it to switch.' },
+
+  { cat:'Everyday', icon:'💬', title:'Chat with local AI',
+    blurb:'Talk to Artha in plain English. It runs entirely on your machine — no cloud, no account.',
+    steps:[
+      'Check the model chip at the top shows a model (e.g. qwen3.5).',
+      'Type what you want in the box at the bottom.',
+      'Press Enter — watch it think and reply.'],
+    try:'Explain what an MCP server is in simple terms.' },
+
+  { cat:'Everyday', icon:'🗂️', title:'Get things done with your files',
+    blurb:'Ask Artha to move, organise, rename, or find files. It actually does it — and you watch each step.',
+    steps:[
+      'Ask in plain English what you want done.',
+      'Artha looks through the folder, then performs the changes.',
+      'It confirms what it moved or created when finished.'],
+    try:'Move today’s screenshots on my Desktop into a folder called ss26.' },
+
+  { cat:'Everyday', icon:'📄', title:'Create documents',
+    blurb:'Generate Word, Excel, PowerPoint, and PDF files from a description — saved straight to your machine.',
+    steps:[
+      'Describe the document you want.',
+      'Artha writes it and saves the file locally.',
+      'Open it from the folder it tells you.'],
+    try:'Make a one-page PDF proposal for a small coffee shop.' },
+
+  { cat:'Everyday', icon:'🔎', title:'Chat with your own files',
+    blurb:'Point Artha at a folder and ask questions about its contents — it answers and cites the files it used.',
+    steps:[
+      'Click the Folder button next to the message box to attach a folder.',
+      'Ask a question about what’s in it.',
+      'Artha answers and shows which files it used.'],
+    try:'What did I decide in my meeting notes from last week?' },
+
+  { cat:'Power', icon:'🤝', title:'Delegate a whole goal',
+    blurb:'Hand over a task and Artha acts on your behalf — driving the browser and apps to actually finish it, like an assistant at your computer.',
+    steps:[
+      'Open the Delegate tab and type your goal in plain English.',
+      'Review the plan, then approve — Artha starts working and shows a live progress timeline.',
+      'If a site needs a login, Artha pauses and hands you the browser; sign in, then it continues.',
+      'Read the result and any files it produced when it finishes.'],
+    try:'Find the 3 cheapest direct flights NYC→London next month and put them in a table.' },
+
+  { cat:'Power', icon:'🌐', title:'The agent browser',
+    blurb:'Artha drives a real Chromium tab you can see — no screenshots. You can take the wheel at any moment.',
+    steps:[
+      'Ask Artha to look something up or use a website; the browser pane opens automatically.',
+      'Watch it navigate, click, and read pages live.',
+      'For a login, captcha, or 2FA, it hands you control — finish the step, then click Resume.',
+      'Drag the divider to resize the chat ⇄ browser split.'],
+    try:'Open my bank’s login page so I can sign in, then summarise my latest statement.' },
+
+  { cat:'Power', icon:'🔁', title:'Workflows — save & replay',
+    blurb:'Turn any successful run into a repeatable workflow you can replay against new inputs.',
+    steps:[
+      'Run a multi-step task in Chat once and confirm it worked.',
+      'Save it as a Workflow from the run’s menu.',
+      'Open the Workflows tab to replay it, or browse the Runs / Activity feed of everything Artha has done.'],
+    try:'Save your “weekly competitor digest” run, then replay it every Monday.' },
+
+  { cat:'Power', icon:'⚡', title:'Skills — slash playbooks',
+    blurb:'Named playbooks the agent picks automatically. Each skill is a focused mode: research, writing, organizing, and more.',
+    steps:[
+      'Type “/” in the chat composer to see all available skills.',
+      'Pick one (e.g. /research) or just describe your task — Artha auto-matches a skill.',
+      'Create your own with “+ New skill”: a slug, instructions, and the tools it may use.'],
+    try:'/research summarize the top AI news today' },
+
+  { cat:'Power', icon:'📚', title:'RAG — chat with a whole folder',
+    blurb:'Give the agent searchable access to a folder on your machine — no cloud, no upload. Re-indexing only touches changed files.',
+    steps:[
+      'In Settings → RAG, click “+ New index” and pick a folder.',
+      'Wait for the index to build — seconds for small folders, minutes for large ones.',
+      'In a chat, type “/ask what is X?” — the agent searches and cites the files it used.'],
+    try:'/ask what are the payment terms across all my contracts?' },
+
+  { cat:'Power', icon:'🧩', title:'Memory — it remembers you',
+    blurb:'Long-term facts the agent keeps across every conversation — your preferences, projects, and decisions.',
+    steps:[
+      'In any chat, say “Remember that my preferred document style is APA.”',
+      'Open Settings → Memory to see, pin, edit, or delete what it stored.',
+      'Start a new chat and ask “What’s my preferred document style?” — it knows.'] },
+
+  { cat:'Models', icon:'🧮', title:'Pick & route your models',
+    blurb:'Choose which local model powers Artha, and route different kinds of work to different models to save time.',
+    steps:[
+      'Click the model chip → Settings → Models to pick or download a model.',
+      'In Settings → Router, add rules like “code → llama3.1:70b”, “everything else → llama3.2:3b”.',
+      'Send a chat — the chosen model appears in the execution log.'],
+    try:'Smaller models are faster; bigger ones are smarter. Mix them with the Router.' },
+
+  { cat:'Connect', icon:'🔌', title:'MCP tools & Marketplace',
+    blurb:'Plug external tools into the agent. MCP servers add raw capabilities (Slack, GitHub, Postgres); the Marketplace adds curated skill packs.',
+    steps:[
+      'Open Settings → Marketplace and browse the curated list.',
+      'Pick a server or skill pack and click Install — it sets everything up.',
+      'Toggle it on; the agent can now use those tools or playbooks in any chat.'],
+    try:'Install the GitHub MCP server, then: “open a PR with my latest changes.”' },
+
+  { cat:'Connect', icon:'☁️', title:'Cloud integrations',
+    blurb:'Bring your Google, Notion, GitHub, and other accounts in so the agent can read and act on them. Tokens stay only on your machine.',
+    steps:[
+      'In Settings → Cloud Integrations, pick a service (e.g. Google Drive).',
+      'Sign in through the browser window that opens (a one-time login).',
+      'In a chat, ask “What files do I have in Drive?” — revoke any time to forget the token.'] },
+
+  { cat:'Connect', icon:'👥', title:'CRM + knowledge graph',
+    blurb:'Artha keeps a local CRM of companies and contacts, linked in a knowledge graph it can reason over — all on your machine.',
+    steps:[
+      'Ask Artha to add or look up people and companies; entries appear in Settings → CRM.',
+      'It links related entities so it can answer relationship questions.',
+      'Combine with research: it can find facts on the web and file them straight into your CRM.'],
+    try:'Research our top 3 competitors and add each as a company in my CRM.' },
+
+  { cat:'Automate', icon:'⏰', title:'Scheduler — recurring tasks',
+    blurb:'Run a task on a schedule, or set up proactive briefings that prepare information before you ask.',
+    steps:[
+      'Open Settings → Scheduler and create a job from a task or saved workflow.',
+      'Choose when it runs (e.g. every weekday at 8am).',
+      'Artha runs it in the background and notifies you with the result.'],
+    try:'Every Monday 8am: summarise last week’s sales emails.' },
+
+  { cat:'Trust', icon:'🛡️', title:'Policies, preview & receipts',
+    blurb:'You stay in control of every action: set per-tool rules, preview the impact before approving, and audit a verifiable trail of what ran.',
+    steps:[
+      'Settings → Tool Policies: set each tool to Auto, Confirm, Dry-run, or Forbid (Artha asks before deleting files by default).',
+      'On an approval card, read the “Estimated impact” chips — deletions, web access, reversibility, rough cost.',
+      'After a run, open “Run details” (or Workflows → Runs) to see receipts — what happened, content hashes, and anything blocked.'],
+    try:'Organise my Downloads folder by file type — then check the receipts.' },
+
+  { cat:'Trust', icon:'🖱️', title:'Desktop control (opt-in)',
+    blurb:'When you allow it, Artha can move the real mouse and keyboard to operate any app — with a clear on-screen indicator the whole time.',
+    steps:[
+      'Enable it in Settings → Desktop Control (off by default).',
+      'Ask for a task that needs a non-web app; a glowing “Artha is in control” overlay shows while it acts.',
+      'Move your mouse or stop the run any time to take back control.'] },
+
+  { cat:'Team & Pro', icon:'📶', title:'Share over your network', pro:true,
+    blurb:'Run Artha as a small server on your local network so teammates can reach the same agent from a browser or curl.',
+    steps:[
+      'Apply a Pro/Enterprise license, then open Settings → Team / LAN Server.',
+      'Create at least one API key (the server refuses to start without auth).',
+      'Start the server and share the LAN URL + key with your teammates.'] },
+
+  { cat:'Team & Pro', icon:'🔑', title:'Unlock Pro', pro:true,
+    blurb:'Pro is a one-time purchase that unlocks team features like the LAN server. Buy once — your key never expires.',
+    steps:[
+      'Buy Pro at artha.space — your license key is emailed to you.',
+      'Open Settings → License and paste the key.',
+      'Pro features unlock immediately; the key stays on your machine.'] },
+
+  { type:'title', icon:'अ', title:'That’s Artha.',
+    blurb:'Tell it what you want in plain English. It plans, acts, and shows its work — privately, on your machine.',
+    foot:'artha.space · Press P to save these slides as a PDF' },
+];
+
+// ── Render ──────────────────────────────────────────────────────────────────
+const deck = document.getElementById('deck');
+SLIDES.forEach((s, i) => {
+  const el = document.createElement('section');
+  el.className = 'slide' + (s.type === 'title' ? ' title-slide' : '');
+  let html = '';
+  if (s.type === 'title') {
+    html += `<div class="mark">${s.icon}</div><h1>${s.title}</h1><p class="blurb">${s.blurb}</p>`;
+    if (s.foot) html += `<div class="pill-row" style="justify-content:center"><span class="pill">${s.foot}</span></div>`;
+  } else {
+    html += `<div class="kicker"><span class="glyph">${s.icon}</span> ${s.cat}</div>`;
+    html += `<h2>${s.title}${s.pro ? '<span class="pro">PRO</span>' : ''}</h2>`;
+    html += `<p class="blurb">${s.blurb}</p>`;
+    if (s.steps) { html += '<ol class="steps">'; s.steps.forEach(t => html += `<li>${t}</li>`); html += '</ol>'; }
+    if (s.grid) { html += '<div class="grid2">'; s.grid.forEach(t => html += `<span class="pill">${t}</span>`); html += '</div>'; }
+    if (s.pills) { html += '<div class="pill-row">'; s.pills.forEach(t => html += `<span class="pill">${t}</span>`); html += '</div>'; }
+    if (s.try) html += `<div class="try"><b>Try:</b> ${s.try}</div>`;
+  }
+  el.innerHTML = html;
+  deck.appendChild(el);
+});
+
+// ── Navigation ───────────────────────────────────────────────────────────────
+const slides = [...document.querySelectorAll('.slide')];
+const N = slides.length;
+let idx = 0;
+const progress = document.getElementById('progress');
+const counter = document.getElementById('counter');
+const crumbs = document.getElementById('crumbs');
+
+function show(n){
+  idx = Math.max(0, Math.min(N - 1, n));
+  slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+  progress.style.width = ((idx) / (N - 1) * 100) + '%';
+  counter.textContent = `${idx + 1} / ${N}`;
+  const s = SLIDES[idx];
+  crumbs.textContent = s.cat ? s.cat : 'Artha';
+  if (location.hash !== '#' + (idx + 1)) history.replaceState(null, '', '#' + (idx + 1));
+}
+function next(){ show(idx + 1); }
+function prev(){ show(idx - 1); }
+
+document.getElementById('next').onclick = next;
+document.getElementById('prev').onclick = prev;
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); next(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prev(); }
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(N - 1);
+  else if (e.key.toLowerCase() === 'f') { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
+  else if (e.key.toLowerCase() === 'p') window.print();
+});
+// Click left/right third of the screen to move (ignore clicks on buttons/links).
+document.addEventListener('click', e => {
+  if (e.target.closest('button,a')) return;
+  if (e.clientX > innerWidth * 0.62) next();
+  else if (e.clientX < innerWidth * 0.38) prev();
+});
+// Touch swipe
+let tx = 0;
+addEventListener('touchstart', e => tx = e.changedTouches[0].clientX, {passive:true});
+addEventListener('touchend', e => { const d = e.changedTouches[0].clientX - tx; if (Math.abs(d) > 50) (d < 0 ? next : prev)(); }, {passive:true});
+
+// Respond to external hash changes (deep-links, back/forward) too.
+addEventListener('hashchange', () => {
+  const n = parseInt(location.hash.slice(1), 10);
+  if (!Number.isNaN(n) && n - 1 !== idx) show(n - 1);
+});
+show(location.hash ? (parseInt(location.hash.slice(1), 10) - 1 || 0) : 0);
+</script>
+</body>
+</html>
