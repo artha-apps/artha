@@ -1,6 +1,6 @@
 {
   "name": "artha",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "description": "Artha — Local-first AI productivity agent. Document workflows, MCP tools, zero cloud.",
   "author": "Noopur Trivedi <trivedi.noopur@gmail.com>",
