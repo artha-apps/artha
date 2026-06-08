@@ -38,25 +38,29 @@
 }
 
 .dark {
-  --artha-bg:             10 19 15;     /* #0A130F near-black, green tint */
-  --artha-surface:        15 28 22;     /* #0F1C16 */
-  --artha-surface2:       21 38 29;     /* #15261D */
-  --artha-surface-raised: 26 46 35;     /* #1A2E23 elevated cards/menus */
-  --artha-border:         30 51 41;     /* #1E3329 */
-  --artha-border-strong:  42 70 54;     /* #2A4636 */
-  --artha-text:           234 244 239;  /* #EAF4EF soft mint-white */
-  --artha-muted:          157 181 170;  /* #9DB5AA */
-  --artha-subtle:         110 133 121;  /* #6E8579 */
-  --artha-accent:         16 185 129;   /* #10B981 emerald */
-  --artha-accent-hover:   52 211 153;   /* #34D399 emerald-400 */
-  --artha-on-accent:      8 18 13;      /* near-black on emerald — ~6.7:1 vs white's ~2.5:1 */
-  --artha-mint:           110 231 183;  /* #6EE7B7 neon mint */
+  /* Gold theme — warm near-black base + the logo's gold accent, so the UI is in
+     sync with the अ mark + ARTHA wordmark (which are gold, not emerald). Surfaces
+     are neutral-warm (faint gold tint) instead of green; `success` stays green
+     and `warn`/`danger` keep their semantic hues. */
+  --artha-bg:             16 14 10;     /* #100E0A warm near-black */
+  --artha-surface:        24 21 14;     /* #18150E */
+  --artha-surface2:       33 28 19;     /* #211C13 */
+  --artha-surface-raised: 42 36 24;     /* #2A2418 elevated cards/menus */
+  --artha-border:         46 39 26;     /* #2E271A */
+  --artha-border-strong:  66 56 38;     /* #423826 */
+  --artha-text:           244 240 230;  /* #F4F0E6 warm white */
+  --artha-muted:          179 168 146;  /* #B3A892 */
+  --artha-subtle:         128 118 100;  /* #807664 */
+  --artha-accent:         226 191 92;   /* #E2BF5C gold — the wordmark's mid-gold */
+  --artha-accent-hover:   242 215 130;  /* #F2D782 lighter gold */
+  --artha-on-accent:      28 21 8;      /* #1C1508 near-black on gold (~8:1) */
+  --artha-mint:           245 224 150;  /* #F5E096 pale-gold highlight (was neon mint) */
   --artha-danger:         248 113 113;  /* #F87171 light-on-dark */
-  --artha-success:        52 211 153;   /* #34D399 */
+  --artha-success:        52 211 153;   /* #34D399 — green kept for success semantics */
   --artha-warn:           251 191 36;   /* #FBBF24 */
-  --artha-glow:           rgba(52, 211, 153, 0.35);  /* mint halo */
-  --artha-grad-from:      16 185 129;
-  --artha-grad-to:        110 231 183;
+  --artha-glow:           rgba(226, 191, 92, 0.32);  /* gold halo (was mint) */
+  --artha-grad-from:      226 191 92;
+  --artha-grad-to:        245 224 150;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
