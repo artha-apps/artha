@@ -36,22 +36,22 @@ Its primary differentiator: **document workflow generation**. Say "write a proje
 
 ---
 
-## 🙏 Acknowledgements
+## 🏗️ Built on
 
-Artha is an original, independently written codebase. It was *informed* by ideas
-and architectural patterns common to the local-first AI-agent space. The
-following projects are credited in good faith as **conceptual influences only —
-no source code from them is incorporated** (see [`NOTICE`](./NOTICE)):
+Artha is distributed as proprietary software, but it incorporates and builds
+upon open-source work, used under the MIT License — see [`NOTICE`](./NOTICE) for
+the preserved upstream copyright and license text:
 
-- **[OpenHands](https://github.com/OpenHands/OpenHands)** (MIT) — ReAct/CodeAct agentic orchestration patterns.
-- **[Jan AI](https://github.com/janhq/jan)** (MIT) — local LLM management UI/UX inspiration.
+- **[OpenCoworkAI/open-cowork](https://github.com/OpenCoworkAI/open-cowork)** (MIT) — source code incorporated and modified under MIT; attribution preserved in [`NOTICE`](./NOTICE).
+- **[OpenHands](https://github.com/OpenHands/OpenHands)** (MIT) — ReAct/CodeAct orchestration patterns (influence).
+- **[Jan AI](https://github.com/janhq/jan)** (MIT) — local LLM management UI/UX inspiration (influence).
 
-Artha is built with open-source npm dependencies, each under its own license —
-see [`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md).
+Artha is also built with open-source npm dependencies, each under its own
+license — see [`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md).
 
-Artha itself is **proprietary software** (see [`LICENSE`](./LICENSE)). The
-**"Artha" name, the अ mark, and logo are trademarks of Shree Labs Inc.** — see
-[`TRADEMARK.md`](./TRADEMARK.md).
+The original code Shree Labs Inc. added on top is **proprietary** (see
+[`LICENSE`](./LICENSE)). The **"Artha" name, the अ mark, and logo are trademarks
+of Shree Labs Inc.** — see [`TRADEMARK.md`](./TRADEMARK.md).
 
 ---
 

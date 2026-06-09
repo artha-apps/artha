@@ -1,13 +1,25 @@
 Artha — Third-Party Software Notices
 ====================================
 
-Artha is proprietary software (see LICENSE). It is built with the open-source
-npm packages listed below, each used under its own license. Their copyright
-notices and license terms are retained as required. This file lists every
-production dependency bundled with Artha grouped by license.
+Artha is proprietary software (see LICENSE). It incorporates and is built with
+third-party open-source software, each used under its own license, with the
+required notices retained.
 
-Full license texts for each package are available in that package's directory
-under node_modules/, and can be regenerated at any time with:
+-------------------------------------------------------------------------------
+INCORPORATED SOURCE CODE
+
+  open-cowork — https://github.com/OpenCoworkAI/open-cowork — MIT License
+    Copyright (c) 2026 OpenCoworkAI
+    Source code from open-cowork was incorporated and modified under the MIT
+    License. The full upstream MIT copyright and license text is reproduced in
+    the NOTICE file distributed with Artha. (Exact scope under formal review.)
+
+-------------------------------------------------------------------------------
+BUNDLED NPM DEPENDENCIES
+
+The npm packages listed below are bundled with Artha, each used under its own
+license. Full license texts are available in each package's directory under
+node_modules/, and the list can be regenerated at any time with:
 
     npx license-checker --production
 

@@ -1,30 +1,62 @@
 Artha — Notices & Acknowledgements
 ==================================
 
-Artha is proprietary software. Copyright (c) 2026 Shree Labs Inc. All rights
-reserved. See LICENSE.
+Artha is distributed as proprietary software. Copyright (c) 2026 Shree Labs Inc.
+See LICENSE. Artha incorporates and builds upon third-party open-source software.
+The copyright and license notices below are preserved as those licenses require.
 
 -------------------------------------------------------------------------------
-Independent implementation
+open-cowork
+https://github.com/OpenCoworkAI/open-cowork
 
-Artha is an original, independently written implementation. Its source code was
-authored by the Artha team and is not copied from any third-party project.
+Artha was built upon and incorporates source code from the open-cowork project,
+used and modified under the terms of the MIT License. The upstream copyright and
+license are preserved here as required:
 
-Like most software, Artha was informed by ideas, architectural patterns, and
-prior art that are common in the local-first AI-agent space. Architecture,
-concepts, and ideas are not subject to copyright — only specific source code is,
-and Artha's source code is its own.
+    MIT License
+
+    Copyright (c) 2026 OpenCoworkAI
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
 
 -------------------------------------------------------------------------------
-Third-party software
+Additional acknowledgements (architectural / UX influence):
 
-Artha is built with open-source npm packages, each used under its own license.
-Those licenses are retained and the complete list of bundled production
-dependencies is in THIRD-PARTY-NOTICES.md. Run `npx license-checker --production`
-to regenerate it.
+  • OpenHands — https://github.com/OpenHands/OpenHands — MIT
+    ReAct / CodeAct agentic-orchestration patterns.
+
+  • Jan — https://github.com/janhq/jan — MIT
+    Local LLM management UI/UX inspiration.
+
+-------------------------------------------------------------------------------
+Third-party npm dependencies
+
+Artha also bundles open-source npm packages, each under its own license. The
+complete list is in THIRD-PARTY-NOTICES.md (regenerate with
+`npx license-checker --production`).
 
 -------------------------------------------------------------------------------
 Trademarks
 
 The "Artha" name, the अ mark, and the Artha logo are trademarks of Shree Labs
-Inc. They are not licensed to third parties. See TRADEMARK.md.
+Inc. and are not licensed to third parties. See TRADEMARK.md.
+
+-------------------------------------------------------------------------------
+Note: The exact scope of incorporated open-cowork code is being formally
+reviewed. This notice preserves upstream attribution pending that review.

@@ -5,9 +5,12 @@ Artha is proprietary software owned by Shree Labs Inc. ("the Company"). It is
 made available only under the terms below. By accessing, copying, building, or
 using this software or its source code, you agree to these terms.
 
-1. Ownership. Artha, including its source code, design, and all associated
-   intellectual property, is and remains the exclusive property of the Company.
-   This license grants no ownership rights.
+1. Ownership. Artha's original source code, design, and associated intellectual
+   property are and remain the property of the Company, EXCEPT for third-party
+   components identified in Section 4 and in the NOTICE and THIRD-PARTY-NOTICES
+   files — including source code incorporated from the open-cowork project under
+   the MIT License — which remain the property of their respective authors under
+   their own licenses. This license grants no ownership rights.
 
 2. No grant of rights by default. Except where the Company has signed a
    separate written agreement with you, you are NOT granted any right to use,
