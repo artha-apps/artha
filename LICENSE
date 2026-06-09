@@ -1,6 +1,12 @@
 MIT License
 
 Copyright (c) 2026 Noopur Trivedi
+Portions Copyright (c) 2026 OpenCoworkAI — https://github.com/OpenCoworkAI/open-cowork
+
+Artha builds upon source code from the open-cowork project, used under the MIT
+License. The upstream copyright notice is preserved above; the full upstream
+license text and all third-party attributions are reproduced in the NOTICE
+file distributed with this software.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

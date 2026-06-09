@@ -38,11 +38,17 @@ Its primary differentiator: **document workflow generation**. Say "write a proje
 
 ## 🏗️ Built On
 
-Artha stands on the shoulders of excellent open-source work:
+Artha is an open-core product. Its foundation incorporates and builds upon
+excellent open-source work, used under the MIT License — see [`NOTICE`](./NOTICE)
+for the preserved upstream copyright and license text:
 
-- **[OpenCoworkAI/open-cowork](https://github.com/OpenCoworkAI/open-cowork)** — Electron shell, MCP integration, Skills system
-- **[OpenHands](https://github.com/OpenHands/OpenHands)** — ReAct/CodeAct agentic orchestration patterns (MIT)
-- **[Jan AI](https://github.com/janhq/jan)** — Local LLM management UI/UX inspiration (MIT)
+- **[OpenCoworkAI/open-cowork](https://github.com/OpenCoworkAI/open-cowork)** (MIT) — Electron shell, MCP integration, Skills system. Source code incorporated and modified under MIT; attribution preserved in [`NOTICE`](./NOTICE).
+- **[OpenHands](https://github.com/OpenHands/OpenHands)** (MIT) — ReAct/CodeAct agentic orchestration patterns (influence, not code).
+- **[Jan AI](https://github.com/janhq/jan)** (MIT) — Local LLM management UI/UX inspiration (influence, not code).
+
+The Artha source is MIT-licensed (see [`LICENSE`](./LICENSE)). The **"Artha" name,
+the अ mark, and logo are trademarks of Shree Labs Inc.** and are not covered by
+that license — see [`TRADEMARK.md`](./TRADEMARK.md).
 
 ---
 
