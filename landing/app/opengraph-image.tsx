@@ -68,7 +68,7 @@ export default function OG() {
               maxWidth: 800,
             }}
           >
-            An open-source AI workspace. Your data never leaves your machine.
+            A local-first AI workspace. Your data never leaves your machine.
           </div>
         </div>
 
@@ -87,7 +87,7 @@ export default function OG() {
           }}
         >
           <div>artha.space</div>
-          <div>Open source · MIT · Zero telemetry</div>
+          <div>Local-first · Private · Zero telemetry</div>
         </div>
       </div>
     ),

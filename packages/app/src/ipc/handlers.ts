@@ -726,10 +726,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'delegate')`).run(sessionId, title);
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, goal);
 
-    // Delegate runs in Operator (Cowork-style) mode: it ACTS — drives the
-    // browser, hands off for login, and finishes the task. We always inject the
-    // operator playbook (with full tool access) and fold in any matched
-    // capability's task-specific playbook underneath it.
+    // Delegate runs in Operator mode: instead of advising, the agent ACTS — it
+    // drives the browser, hands control back for login when needed, and finishes
+    // the task itself. We always inject the operator playbook (granting full tool
+    // access) and fold in any matched capability's task-specific playbook
+    // underneath it.
     const registry = new CapabilityRegistry(SkillRegistry.getInstance());
     const capability = await registry.select(goal);
     let taskPlaybook: { name: string; instructions: string } | null = null;

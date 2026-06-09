@@ -114,7 +114,7 @@ export default function Home() {
         <div className="relative max-w-4xl mx-auto">
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-artha-500/40 bg-artha-500/10 text-artha-300 text-sm mb-8">
             <span className="w-2 h-2 rounded-full bg-artha-400 animate-pulse" />
-            Open source · Local-first · Free forever
+            Local-first · Private by design
           </div>
 
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-tight mb-6">
@@ -226,21 +226,9 @@ export default function Home() {
             Ready to run your own agent?
           </h2>
           <p className="text-gray-400 text-lg mb-10">
-            Free, open source, and yours forever. No sign-up required.
+            Private, local-first, and yours. No sign-up required.
           </p>
           <DownloadButton releaseUrl={releaseUrl} size="xl" />
-          <p className="mt-6 text-sm text-gray-500">
-            Or{' '}
-            <a
-              href={`https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`}
-              className="underline underline-offset-2 hover:text-gray-300 transition-colors"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              build from source
-            </a>{' '}
-            · MIT licensed
-          </p>
         </div>
       </section>
 
@@ -263,7 +251,7 @@ export default function Home() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            MIT License
+            License
           </a>
         </p>
       </footer>

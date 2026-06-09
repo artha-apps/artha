@@ -1,8 +1,10 @@
 /**
  * Folder-scoped retrieval tests for the rag tools. When a chat has folders
  * attached, `rag_search` and `rag_list_indexes` must be confined to those
- * folders' indexes (Cowork-style — retrieval stays inside the approved
- * folders); an unscoped chat searches every index.
+ * folders' indexes — retrieval must stay inside the folders the user has
+ * explicitly approved for that chat, so the agent can never read from files
+ * outside its granted scope. An unscoped chat (no folders attached) is allowed
+ * to search every index.
  *
  * The real retrieval path needs Electron + the DB + Ollama embeddings, so we
  * mock the indexer and DB to assert *which* indexes the tool reaches for.

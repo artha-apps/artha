@@ -427,9 +427,9 @@ export default function Page() {
               <li>
                 <div className="num">03</div>
                 <div className="body">
-                  <p>The binary is open source and auditable.</p>
+                  <p>The app runs entirely on your machine.</p>
                   <p>
-                    Run it as a black box, or build from source — your call.
+                    No telemetry, no account, no cloud — your data stays local.
                   </p>
                 </div>
               </li>

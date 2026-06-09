@@ -214,8 +214,9 @@ const api = {
 
   // ── Filesystem reads (renderer-safe, read-only) ──────────────────────────
   fs: {
-    /** Depth-2 directory tree as a multi-line string (Cowork-style). Used by
-     *  the Code tab's file pane; returns '' for empty / unreadable paths. */
+    /** Returns the directory tree (up to two levels deep) as a multi-line
+     *  string for display. Used by the Code tab's file pane; returns '' for
+     *  empty or unreadable paths so the caller can render a blank state. */
     tree: (rootPath: string, maxEntries?: number) =>
       ipcRenderer.invoke('fs:tree', rootPath, maxEntries) as Promise<string>,
   },

@@ -4,7 +4,7 @@
   "private": true,
   "description": "Artha — Local-first AI productivity agent. Document workflows, MCP tools, zero cloud.",
   "author": "Noopur Trivedi <trivedi.noopur@gmail.com>",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "main": "packages/app/dist/main.js",
   "workspaces": [
     "packages/app",
@@ -70,7 +70,7 @@
   "build": {
     "appId": "ai.artha.app",
     "productName": "Artha",
-    "copyright": "Copyright © 2026 Artha",
+    "copyright": "Copyright © 2026 Shree Labs Inc. All rights reserved.",
     "npmRebuild": false,
     "directories": {
       "output": "dist"

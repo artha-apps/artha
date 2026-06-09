@@ -45,7 +45,7 @@
 | `src/bodhi/capabilities.ts` | Universal `invoke(capability, input, context)` contract + `Capability` type + `CapabilityRegistry` (wraps `SkillRegistry`, so Skills = capabilities today and Agents implement the same interface later). Pure projections (`skillToCapability`) are unit-tested |
 | `src/bodhi/tasks.ts` | `Task` = the existing `agent_runs` row, given a first-class read/write API (`getTask`/`listTasks`/`getTaskSteps`/`setTaskStatus`). Makes durable, async/resumable runs the core unit of work |
 | `src/bodhi/executor.ts` | `OrchestratorCapabilityExecutor` — the concrete `invoke(capability, input, ctx)` impl; runs a capability through `AgentOrchestrator.runCapability()` (silent, tracked as a Task) so every surface executes via the same engine as Chat |
-| `src/bodhi/operator.ts` | Delegation Operator playbook — the Cowork-style system instructions injected into every Delegate run (act don't advise; hand off for login via `browser_request_user` then continue; verify before claiming done) with full tool access. `buildOperatorSkill()` folds in a matched capability's playbook |
+| `src/bodhi/operator.ts` | Delegation Operator playbook — the operator-mode system instructions injected into every Delegate run (act don't advise; hand off for login via `browser_request_user` then continue; verify before claiming done) with full tool access. `buildOperatorSkill()` folds in a matched capability's playbook |
 | `src/bodhi/capabilities.test.ts` | Vitest — skill→capability projection, registry list/get/select via a fake `SkillSource`, executor-contract shape check |
 | `src/bodhi/tasks.test.ts` | Vitest — `rowToTask` projection (incl. forked-lineage) |
 | **skills/** | |

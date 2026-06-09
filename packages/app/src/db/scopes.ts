@@ -52,8 +52,10 @@ export function getSessionAllowedRoots(sessionId: string): ScopeRoot[] {
 }
 
 /** The RAG index IDs for the chat's attached folders. Passed to `rag_search`
- *  so a scoped chat retrieves only from its own folders (Cowork-style: search
- *  is confined to the approved folders). Empty ⇒ search every index. */
+ *  so a scoped chat retrieves only from its own folders — search is confined to
+ *  the folders the user approved for this chat. Returns an empty array when the
+ *  chat has no folders attached, which the caller treats as "search every
+ *  index". */
 export function getSessionRagIndexIds(sessionId: string): string[] {
   return getSessionScopes(sessionId)
     .filter(s => s.kind === 'folder' && s.rag_index_id)

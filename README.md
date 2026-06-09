@@ -1,10 +1,10 @@
 <div align="center">
   <h1>🪔 Artha</h1>
   <p><strong>Your work, done. Locally.</strong></p>
-  <p>Open-source local-first AI agent for document workflows, MCP tools, and agentic automation.<br/>No data leaves your machine. Ever.</p>
+  <p>A local-first AI agent for document workflows, MCP tools, and agentic automation.<br/>No data leaves your machine. Ever.</p>
   <br/>
   <img src="https://img.shields.io/badge/status-early_dev-orange?style=flat-square" />
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/license-proprietary-lightgrey?style=flat-square" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" />
   <img src="https://img.shields.io/badge/LLM-Ollama_first-green?style=flat-square" />
 </div>
@@ -36,19 +36,22 @@ Its primary differentiator: **document workflow generation**. Say "write a proje
 
 ---
 
-## 🏗️ Built On
+## 🙏 Acknowledgements
 
-Artha is an open-core product. Its foundation incorporates and builds upon
-excellent open-source work, used under the MIT License — see [`NOTICE`](./NOTICE)
-for the preserved upstream copyright and license text:
+Artha is an original, independently written codebase. It was *informed* by ideas
+and architectural patterns common to the local-first AI-agent space. The
+following projects are credited in good faith as **conceptual influences only —
+no source code from them is incorporated** (see [`NOTICE`](./NOTICE)):
 
-- **[OpenCoworkAI/open-cowork](https://github.com/OpenCoworkAI/open-cowork)** (MIT) — Electron shell, MCP integration, Skills system. Source code incorporated and modified under MIT; attribution preserved in [`NOTICE`](./NOTICE).
-- **[OpenHands](https://github.com/OpenHands/OpenHands)** (MIT) — ReAct/CodeAct agentic orchestration patterns (influence, not code).
-- **[Jan AI](https://github.com/janhq/jan)** (MIT) — Local LLM management UI/UX inspiration (influence, not code).
+- **[OpenHands](https://github.com/OpenHands/OpenHands)** (MIT) — ReAct/CodeAct agentic orchestration patterns.
+- **[Jan AI](https://github.com/janhq/jan)** (MIT) — local LLM management UI/UX inspiration.
 
-The Artha source is MIT-licensed (see [`LICENSE`](./LICENSE)). The **"Artha" name,
-the अ mark, and logo are trademarks of Shree Labs Inc.** and are not covered by
-that license — see [`TRADEMARK.md`](./TRADEMARK.md).
+Artha is built with open-source npm dependencies, each under its own license —
+see [`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md).
+
+Artha itself is **proprietary software** (see [`LICENSE`](./LICENSE)). The
+**"Artha" name, the अ mark, and logo are trademarks of Shree Labs Inc.** — see
+[`TRADEMARK.md`](./TRADEMARK.md).
 
 ---
 
@@ -137,19 +140,17 @@ See [`docs/architecture.md`](docs/architecture.md) for full detail.
 
 ## 🤝 Contributing
 
-We'd love contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-Key areas where help is wanted:
-- More MCP server integrations (GitHub, Notion, Calendar)
-- Better document templates and styling
-- GPU detection and hardware-aware model recommendations
-- Windows and Linux testing
+Artha is proprietary and not currently open to outside code contributions. If
+you'd like to report a bug or request a feature, please open an issue. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
 ## 📄 License
 
-MIT — see [LICENSE](LICENSE)
+Proprietary — Copyright © 2026 Shree Labs Inc. All rights reserved. See
+[LICENSE](LICENSE). Third-party dependencies: see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ---
 

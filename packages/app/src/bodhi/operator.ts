@@ -1,9 +1,9 @@
 /**
  * Bodhi — Delegation Operator playbook.
  *
- * Delegate is goal-driven, Cowork-style execution: hand over a task and Artha
- * drives the browser/apps to actually DO it — including getting you to log in
- * when a site needs it, then continuing the job.
+ * Delegate is goal-driven execution: the user hands over a task and Artha drives
+ * the browser and apps to actually DO it — including pausing to get the user to
+ * log in when a site requires it, then continuing the job on its own.
  *
  * The blocker observed in practice: on a login wall the model tends to REFUSE
  * ("I can't log in for you for security reasons") and end with instructions,

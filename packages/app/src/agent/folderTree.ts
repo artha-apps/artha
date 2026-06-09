@@ -1,9 +1,10 @@
 /**
  * Shallow folder-tree rendering for the working-scope preamble. Giving the model
- * a folder's structure up front (Cowork-style) lets it answer "what is this?"
- * by reading the obvious files (README, package.json, …) directly, instead of
- * depending on a RAG index that may still be building or empty. Kept Electron-
- * free so it's unit-testable against a temp dir.
+ * a folder's structure up front lets it answer "what is this project?" by reading
+ * the obvious entry-point files (README, package.json, …) directly, instead of
+ * depending on a RAG index that may still be building or empty when the chat
+ * starts. Kept free of any Electron imports so it stays unit-testable against a
+ * plain temp directory.
  */
 import * as fs from 'fs';
 import * as path from 'path';

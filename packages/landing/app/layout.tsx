@@ -13,7 +13,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Artha — Local-first AI productivity agent',
   description:
-    'Artha runs entirely on your machine. Document workflows, MCP tools, zero cloud. Free forever.',
+    'Artha runs entirely on your machine. Document workflows, MCP tools, zero cloud.',
   openGraph: {
     title: 'Artha — Local-first AI productivity agent',
     description: 'Run AI agents on your own hardware. Privacy-first, MCP-native, zero cloud.',

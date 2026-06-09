@@ -140,7 +140,7 @@ export default function DownloadButton({
         </svg>
         {label}
       </a>
-      <span className="text-xs text-gray-500">{sub} · Free & open source</span>
+      <span className="text-xs text-gray-500">{sub} · Local-first · Private</span>
       {/* Other platforms — only shown when OS is identified, so users can grab a
           build for a different machine without hunting through the releases page. */}
       {os !== 'unknown' && (
