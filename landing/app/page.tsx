@@ -480,7 +480,7 @@ export default function Page() {
             </div>
           </div>
           <div className="footer-bottom">
-            <div>© 2026 Artha</div>
+            <div>© 2026 Shree Labs Inc.</div>
             <div>Built locally.</div>
           </div>
           <div className="footer-credit">

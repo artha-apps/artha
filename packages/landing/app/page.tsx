@@ -16,7 +16,7 @@ import FeatureCard from '../components/FeatureCard';
 import NavBar from '../components/NavBar';
 
 // Centralised so that every GitHub link on the page stays in sync.
-const GITHUB_OWNER = 'Noopurtrivedi';
+const GITHUB_OWNER = 'artha-apps';
 const GITHUB_REPO = 'artha';
 
 // Static feature definitions — rendered in the Features grid section.
@@ -235,16 +235,7 @@ export default function Home() {
       {/* ── Footer ── */}
       <footer className="border-t border-gray-800/60 py-10 px-4 text-center text-sm text-gray-500">
         <p>
-          © {new Date().getFullYear()} Artha · Built by{' '}
-          <a
-            href="https://github.com/Noopurtrivedi"
-            className="hover:text-gray-300 transition-colors"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Noopur Trivedi
-          </a>{' '}
-          ·{' '}
+          © {new Date().getFullYear()} Shree Labs Inc. ·{' '}
           <a
             href={`https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/blob/main/LICENSE`}
             className="hover:text-gray-300 transition-colors"

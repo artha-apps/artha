@@ -21,7 +21,7 @@ root [`README.md`](../README.md); for how the pieces fit together see
 ## Install & run
 
 ```bash
-git clone https://github.com/Noopurtrivedi/artha.git
+git clone https://github.com/artha-apps/artha.git
 cd artha
 npm install            # installs all workspaces + rebuilds native modules (see below)
 npm run dev            # renderer (Vite) + main (tsc watch) + Electron, concurrently

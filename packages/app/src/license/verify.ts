@@ -57,7 +57,10 @@ const VALID_TIERS: ReadonlySet<Tier> = new Set<Tier>(['free', 'pro', 'enterprise
  * for routine churn, prefer short `--days` so keys lapse on their own.
  */
 export const REVOKED_LICENSE_IDS: ReadonlySet<string> = new Set<string>([
-  // 'd1f0...': revoked 2026-06-04, refunded — example, no live revocations yet
+  // ravitoor@truthtribe.ca — revoked 2026-06-17, replaced by a fresh 1-year key
+  // (new id e4ac7618-a4c2-4a9a-b5f9-3c055c2d20e0). This id covered both the old
+  // 2099 token and the 180-day reissue, so revoking it kills both at once.
+  '967ba9ab-7a05-4049-b7c2-a88de26b7f9d',
 ]);
 
 /** Verify signature + shape + expiry. Returns the payload or null on any

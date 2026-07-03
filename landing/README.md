@@ -29,9 +29,9 @@ Or wire the GitHub repo to Vercel via the dashboard and set **Root Directory** t
 
 ## How downloads work
 
-`app/page.tsx` calls the GitHub Releases API for `Noopurtrivedi/artha` at page load to fetch the latest release's assets and renders OS-specific download buttons. **No rebuild is needed when a new release is cut** — the landing page picks up the new version automatically.
+`app/page.tsx` calls the GitHub Releases API for `artha-apps/artha` at page load to fetch the latest release's assets and renders OS-specific download buttons. **No rebuild is needed when a new release is cut** — the landing page picks up the new version automatically.
 
-If the GitHub API call fails (rate limiting, network), the page falls back to a "See all downloads" link to `https://github.com/Noopurtrivedi/artha/releases/latest`.
+If the GitHub API call fails (rate limiting, network), the page falls back to a "See all downloads" link to `https://github.com/artha-apps/artha/releases/latest`.
 
 ## Production checklist
 

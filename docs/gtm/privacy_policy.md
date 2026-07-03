@@ -178,7 +178,7 @@ Regardless of where you are located, you have the right to:
 
 ### 10.2 Rights for Account Holders (Cloud Features)
 
-If you have an Artha account, you may contact us at [PLACEHOLDER: privacy@artha.app] to:
+If you have an Artha account, you may contact us at privacy@artha.space to:
 
 - **Access** the account-level data we hold about you
 - **Correct** inaccurate account information
@@ -194,7 +194,7 @@ We will respond to verifiable requests within 30 days (or within the timeframe r
 
 If you are located in the European Economic Area (EEA), United Kingdom, or Switzerland, the following additional provisions apply.
 
-**Data Controller**: [PLACEHOLDER: Legal entity name, address]
+**Data Controller**: Shree Labs Inc. (registered address: TO BE COMPLETED)
 
 **Legal Bases for Processing**:
 
@@ -238,13 +238,13 @@ If you are a California resident, the California Consumer Privacy Act (CCPA) as 
 - Right to Opt-Out of Sale/Sharing: We do not sell or share your data, so no opt-out mechanism is required, but you may contact us to confirm.
 - Right to Non-Discrimination: We will not discriminate against you for exercising your CCPA rights.
 
-To exercise these rights, contact us at [PLACEHOLDER: privacy@artha.app] or [PLACEHOLDER: toll-free number if required].
+To exercise these rights, contact us at privacy@artha.space or [PLACEHOLDER: toll-free number if required].
 
 ---
 
 ## 13. Children's Privacy
 
-Artha is not directed to children under the age of 13 (or 16 in certain jurisdictions). We do not knowingly collect personal information from children. If we learn that we have inadvertently collected such data, we will delete it promptly. If you believe a child has provided us with personal information, please contact us at [PLACEHOLDER: privacy@artha.app].
+Artha is not directed to children under the age of 13 (or 16 in certain jurisdictions). We do not knowingly collect personal information from children. If we learn that we have inadvertently collected such data, we will delete it promptly. If you believe a child has provided us with personal information, please contact us at privacy@artha.space.
 
 ---
 
@@ -264,14 +264,14 @@ Your continued use of the Service after the effective date of a revised policy c
 For privacy-related questions, requests, or concerns:
 
 **Privacy Team**
-[PLACEHOLDER: Legal Entity Name]
+Shree Labs Inc.
 [PLACEHOLDER: Street Address]
 [PLACEHOLDER: City, State/Province, Postal Code, Country]
 
-Email: [PLACEHOLDER: privacy@artha.app]
+Email: privacy@artha.space
 Response time: We aim to respond within 5 business days.
 
-For GDPR-specific requests: [PLACEHOLDER: dpo@artha.app] (if a DPO is appointed)
+For GDPR-specific requests: dpo@artha.space (if a DPO is appointed)
 
 ---
 

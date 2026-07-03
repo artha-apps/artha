@@ -3,7 +3,7 @@
   "version": "0.1.24",
   "private": true,
   "description": "Artha — Local-first AI productivity agent. Document workflows, MCP tools, zero cloud.",
-  "author": "Noopur Trivedi <trivedi.noopur@gmail.com>",
+  "author": "Shree Labs Inc. <support@artha.space>",
   "license": "UNLICENSED",
   "main": "packages/app/dist/main.js",
   "workspaces": [
@@ -78,6 +78,11 @@
     "files": [
       "packages/app/dist/**/*",
       "packages/renderer/dist/**/*"
+    ],
+    "extraResources": [
+      { "from": "LICENSE", "to": "LICENSE" },
+      { "from": "NOTICE", "to": "NOTICE" },
+      { "from": "THIRD-PARTY-NOTICES.md", "to": "THIRD-PARTY-NOTICES.md" }
     ],
     "publish": [
       {

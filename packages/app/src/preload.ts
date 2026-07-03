@@ -574,6 +574,10 @@ const api = {
     /** Whether `node` / `npx` are on PATH — npx-based connectors need them. */
     checkRuntime: () =>
       ipcRenderer.invoke('system:checkRuntime') as Promise<{ node: boolean; npx: boolean }>,
+    /** Bundled THIRD-PARTY-NOTICES.md as raw markdown, or null if unavailable.
+     *  Read locally (no network) for the About panel's Open Source Notices. */
+    openSourceNotices: () =>
+      ipcRenderer.invoke('system:openSourceNotices') as Promise<string | null>,
   },
 
   // ── Router ───────────────────────────────────────────────────────────────

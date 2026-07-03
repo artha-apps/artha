@@ -21,7 +21,7 @@ type OS = 'mac' | 'windows' | 'linux' | 'unknown';
 /** Visual size variant — 'xl' is used in the bottom CTA, 'lg' in the Hero. */
 type Size = 'lg' | 'xl';
 
-const GITHUB_OWNER = 'Noopurtrivedi';
+const GITHUB_OWNER = 'artha-apps';
 const GITHUB_REPO = 'artha';
 
 /** Minimal shape of a GitHub release asset returned by the REST API. */

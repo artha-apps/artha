@@ -815,6 +815,38 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     platform: `${process.platform} ${process.arch}`,
   }));
 
+  /**
+   * Open-source notices — the bundled `THIRD-PARTY-NOTICES.md`. Referenced by
+   * the Terms of Service ("available within the application"), so it must load
+   * fully offline: no network, read straight off disk.
+   *
+   * Packaged: electron-builder copies the file into `process.resourcesPath`
+   * (see `extraResources` in the root package.json). Dev: it lives at the repo
+   * root. Because dev launches Electron with a direct file path
+   * (`electron packages/app/dist/main.js`), `app.getAppPath()` is not a
+   * reliable pointer to the root, so we probe the likely locations and return
+   * the first that reads. Returns `null` if none exist, so the UI degrades to
+   * the GitHub link rather than throwing.
+   */
+  ipcMain.handle('system:openSourceNotices', () => {
+    const fs = require('fs') as typeof import('fs');
+    const FILE = 'THIRD-PARTY-NOTICES.md';
+    const candidates = [
+      path.join(process.resourcesPath, FILE),        // packaged (extraResources)
+      path.join(app.getAppPath(), FILE),             // app root when it resolves
+      path.join(__dirname, '..', '..', '..', '..', FILE), // dev: dist/ipc → repo root
+      path.join(process.cwd(), FILE),                // dev launched from repo root
+    ];
+    for (const p of candidates) {
+      try {
+        return fs.readFileSync(p, 'utf-8');
+      } catch {
+        /* try next candidate */
+      }
+    }
+    return null;
+  });
+
   /** Sessions belonging to one project (or `null` for general/no-project).
    *  Drives the Project home page's "Recent chats" list. Same shape as
    *  `sessions:list` for a drop-in render. */

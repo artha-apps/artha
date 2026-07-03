@@ -91,6 +91,11 @@ Artha_Pitch_Deck.*
 Artha_Cost_Revenue_Model.*
 Artha_Monetization_Plan.*
 
+# Legal scoping artifacts — PDF exports of LICENSE/NOTICE/PROVENANCE/THIRD-PARTY
+# for lawyer review. The .md sources are the canonical, tracked versions; these
+# binary duplicates stay local and are NOT committed to the public repo.
+legal-scoping-pdfs/
+
 # Office lock / temp files
 ~$*
 .~lock.*#

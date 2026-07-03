@@ -10,7 +10,7 @@
 
 // Duplicated from page.tsx because NavBar is a standalone component that may
 // be used independently; import from a shared constants module if this grows.
-const GITHUB_OWNER = 'Noopurtrivedi';
+const GITHUB_OWNER = 'artha-apps';
 const GITHUB_REPO = 'artha';
 
 /** Props accepted by NavBar. */

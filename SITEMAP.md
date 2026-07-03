@@ -148,7 +148,7 @@
 | **components/ExecutionLog/** | |
 | `ExecutionLog.tsx` | Live step-by-step view of the ReAct loop's actions |
 | `Settings/GuidePanel.tsx` | "How to use Artha" — Workspace Settings ▸ User Guide. Feature list; selecting one floats that feature's card (steps + example prompt). Opened by the TabBar `?` button and once after onboarding |
-| `Settings/AboutPanel.tsx` | Workspace Settings ▸ About — version/release + Electron/Chromium/Node/platform (via `system:appInfo`), check-for-updates, release-notes link, Shree Labs credit |
+| `Settings/AboutPanel.tsx` | Workspace Settings ▸ About — version/release + Electron/Chromium/Node/platform (via `system:appInfo`), check-for-updates, release-notes link, Open Source Notices viewer (bundled `THIRD-PARTY-NOTICES.md` via `system:openSourceNotices`), Shree Labs credit |
 | **components/Onboarding/** | |
 | `Onboarding.tsx` | First-run setup — persona picker (Individual vs Organization admin), then Ollama+model flow for individuals with optional Pro-license paste; routes organization admins to `OrgSetup` |
 | `OrgSetup.tsx` | Three-step admin sub-flow — paste org license, start the LAN/hub server, provision seats (mints a `team_members` row + bound API key per teammate, renders copyable connection cards) |

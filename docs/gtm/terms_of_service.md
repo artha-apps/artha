@@ -7,7 +7,7 @@
 
 ## 1. Agreement to Terms
 
-These Terms of Service ("Terms") constitute a legally binding agreement between you ("User," "you," or "your") and [PLACEHOLDER: Legal Entity Name] ("Artha," "we," "us," or "our") governing your access to and use of the Artha desktop application and any related services (collectively, the "Service").
+These Terms of Service ("Terms") constitute a legally binding agreement between you ("User," "you," or "your") and Shree Labs Inc. ("Artha," "we," "us," or "our") governing your access to and use of the Artha desktop application and any related services (collectively, the "Service").
 
 By downloading, installing, or using Artha, you agree to be bound by these Terms. If you do not agree, do not install or use the Service. If you are using Artha on behalf of an organization, you represent that you have authority to bind that organization to these Terms, and "you" refers to that organization.
 
@@ -42,7 +42,7 @@ You are responsible for:
 - Providing accurate account information and keeping it current
 - Maintaining the confidentiality of your account credentials
 - All activity that occurs under your account
-- Promptly notifying us at [PLACEHOLDER: support@artha.app] if you suspect unauthorized access
+- Promptly notifying us at support@artha.space if you suspect unauthorized access
 
 We reserve the right to suspend or terminate accounts that violate these Terms.
 
@@ -111,11 +111,11 @@ All content you create, import, or process using Artha — including conversatio
 
 Artha and its licensors own all right, title, and interest in the Artha application software, including its source code, design, user interface, documentation, and all associated intellectual property ("Artha IP"). These Terms do not transfer any ownership of Artha IP to you.
 
-The Artha name, logo, and associated marks are trademarks of [PLACEHOLDER: Legal Entity Name]. You may not use these marks without our prior written consent.
+The Artha name, logo, and associated marks are trademarks of Shree Labs Inc.. You may not use these marks without our prior written consent.
 
 ### 6.3 Open Source Components
 
-Artha incorporates open source software. A list of open source components and their respective licenses is available within the application (Help > Open Source Notices) and at [PLACEHOLDER: URL]. Your use of those components is governed by their respective open source licenses.
+Artha incorporates open source software. A list of open source components and their respective licenses is available within the application (Settings > About > Open Source Notices) and at https://github.com/artha-apps/artha/blob/main/THIRD-PARTY-NOTICES.md. Your use of those components is governed by their respective open source licenses.
 
 ### 6.4 Feedback
 
@@ -244,7 +244,7 @@ These Terms are governed by the laws of [PLACEHOLDER: State/Country], without re
 
 ### 14.2 Informal Resolution
 
-Before initiating formal proceedings, you agree to contact us at [PLACEHOLDER: legal@artha.app] and attempt to resolve the dispute informally for at least 30 days.
+Before initiating formal proceedings, you agree to contact us at legal@artha.space and attempt to resolve the dispute informally for at least 30 days.
 
 ### 14.3 Arbitration
 
@@ -297,11 +297,11 @@ We may modify these Terms at any time. We will provide notice of material change
 For questions about these Terms:
 
 **Legal Team**
-[PLACEHOLDER: Legal Entity Name]
+Shree Labs Inc.
 [PLACEHOLDER: Street Address]
 [PLACEHOLDER: City, State/Province, Postal Code, Country]
 
-Email: [PLACEHOLDER: legal@artha.app]
+Email: legal@artha.space
 
 ---
 

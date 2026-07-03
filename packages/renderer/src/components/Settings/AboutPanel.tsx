@@ -4,7 +4,7 @@
  * (app.getVersion()), so it always matches the installed build.
  */
 import { useEffect, useState } from 'react';
-import { Download, ExternalLink } from 'lucide-react';
+import { Download, ExternalLink, ScrollText, X } from 'lucide-react';
 import { BrandWordmark } from '../ui/BrandWordmark';
 
 interface AppInfo {
@@ -15,12 +15,30 @@ interface AppInfo {
   platform: string;
 }
 
+/** GitHub fallback for the notices when the bundled file can't be read. */
+const NOTICES_URL =
+  'https://github.com/artha-apps/artha/blob/main/THIRD-PARTY-NOTICES.md';
+
 export default function AboutPanel() {
   const [info, setInfo] = useState<AppInfo | null>(null);
+  // Open Source Notices modal. `notices`: undefined = not yet loaded,
+  // null = load failed (show GitHub fallback), string = markdown/text.
+  const [noticesOpen, setNoticesOpen] = useState(false);
+  const [notices, setNotices] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
     window.artha.system.getAppInfo().then(setInfo).catch(() => setInfo(null));
   }, []);
+
+  function openNotices() {
+    setNoticesOpen(true);
+    if (notices === undefined) {
+      window.artha.system
+        .openSourceNotices()
+        .then((text) => setNotices(text))
+        .catch(() => setNotices(null));
+    }
+  }
 
   const rows: Array<[string, string]> = info
     ? [
@@ -79,11 +97,64 @@ export default function AboutPanel() {
         >
           <ExternalLink size={14} /> Release notes
         </a>
+        <button
+          onClick={openNotices}
+          className="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-artha-border text-artha-text text-sm hover:border-artha-accent transition-colors"
+        >
+          <ScrollText size={14} /> Open Source Notices
+        </button>
       </div>
 
       <div className="text-xs text-artha-subtle border-t border-artha-border pt-4">
-        © 2026 Artha · Presented by Shree Labs Inc.
+        © 2026 Shree Labs Inc. · Artha™
       </div>
+
+      {noticesOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+          onClick={() => setNoticesOpen(false)}
+        >
+          <div
+            className="flex flex-col w-full max-w-3xl max-h-[80vh] rounded-xl border border-artha-border bg-artha-surface shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-artha-border">
+              <h3 className="text-sm font-semibold text-artha-text">Open Source Notices</h3>
+              <button
+                onClick={() => setNoticesOpen(false)}
+                aria-label="Close"
+                className="text-artha-muted hover:text-artha-text transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-5 py-4">
+              {notices === undefined && (
+                <p className="text-sm text-artha-muted">Loading…</p>
+              )}
+              {notices === null && (
+                <p className="text-sm text-artha-muted">
+                  Notices could not be loaded from this build. View them online at{' '}
+                  <a
+                    href={NOTICES_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-artha-accent hover:underline"
+                  >
+                    THIRD-PARTY-NOTICES.md
+                  </a>
+                  .
+                </p>
+              )}
+              {typeof notices === 'string' && (
+                <pre className="whitespace-pre-wrap break-words font-mono text-xs text-artha-text leading-relaxed">
+                  {notices}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
