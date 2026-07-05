@@ -18,6 +18,7 @@ import {
 import { FeatureGuide } from '../ui/FeatureGuide';
 import { GUIDES } from './guides';
 import { useChatStore } from '../../stores/chat';
+import { createChat } from '../../lib/newChat';
 
 interface Skill {
   skill_id: string;
@@ -340,28 +341,22 @@ export default function SkillsPanel() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // Store actions for the failure "re-run" → opens a fresh chat on the skill.
-  const setActiveSession = useChatStore(s => s.setActiveSession);
-  const setSessions = useChatStore(s => s.setSessions);
-  const setActiveTab = useChatStore(s => s.setActiveTab);
   const closeWorkspaceSettings = useChatStore(s => s.closeWorkspaceSettings);
   const addUserMessage = useChatStore(s => s.addUserMessage);
   const activeProjectId = useChatStore(s => s.activeProjectId);
 
-  /** Re-run a failed task: spin up a new chat, send the skill-prefixed goal so
-   *  it re-resolves the skill explicitly, then jump the user to that chat.
-   *  Order matters: setActiveSession clears the message list, so addUserMessage
-   *  must follow it; agent:sendMessage also persists the user message server-side
-   *  so it survives a reload. */
+  /** Re-run a failed task: spin up a new chat (shared helper — attaches the
+   *  project root scope so the re-run gets the same sandbox as a normal
+   *  project chat; this entry point used to skip it), send the skill-prefixed
+   *  goal so it re-resolves the skill explicitly, then jump the user there.
+   *  createChat clears the message list, so addUserMessage must follow it;
+   *  agent:sendMessage also persists the user message server-side. */
   const rerun = async (slug: string, goal: string) => {
     const text = `/${slug} ${goal}`.trim();
-    const session = await window.artha.sessions.create(activeProjectId);
-    const updated = await window.artha.sessions.list();
-    setSessions(updated);
-    setActiveSession(session.session_id); // clears messages for the new chat
-    setActiveTab('chat');
+    const sessionId = await createChat(activeProjectId);
     closeWorkspaceSettings();
-    addUserMessage(session.session_id, text);
-    await window.artha.agent.sendMessage(session.session_id, text).catch(() => {});
+    addUserMessage(sessionId, text);
+    await window.artha.agent.sendMessage(sessionId, text).catch(() => {});
   };
 
   const load = async () => {

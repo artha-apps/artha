@@ -5,10 +5,11 @@
  * each entry (name, type, content), delete individual rows, or wipe all.
  */
 import { useEffect, useState } from 'react';
-import { Brain, Trash2, RefreshCw, AlertTriangle, Download, Upload, Check } from 'lucide-react';
+import { Brain, Trash2, RefreshCw, AlertTriangle, Download, Upload, Check, Pin } from 'lucide-react';
 import { FeatureGuide } from '../ui/FeatureGuide';
 import { GUIDES } from './guides';
 import MemoryImport from '../MemoryImport/MemoryImport';
+import { useChatStore } from '../../stores/chat';
 
 interface MemoryEntity {
   entity_id: string;
@@ -17,6 +18,9 @@ interface MemoryEntity {
   content: string;
   tags_json: string;
   origin?: string;
+  /** NULL = global (recalled everywhere); else pinned to one project and only
+   *  recalled inside that project's chats. Pin/unpin lives in ProjectHome. */
+  project_id?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -45,6 +49,12 @@ export default function MemoryPanel() {
   // ── State ──────────────────────────────────────────────────────────────────
   const [entities, setEntities] = useState<MemoryEntity[]>([]);
   const [loading, setLoading]   = useState(true);
+  // Scope filter: 'all' | 'global' | a project_id. Projects come from the chat
+  // store (already loaded at app boot) — used for badges and the filter row.
+  const [scopeFilter, setScopeFilter] = useState<string>('all');
+  const projects = useChatStore(s => s.projects);
+  const projectName = (id: string) =>
+    projects.find(p => p.project_id === id)?.name ?? 'unknown project';
   // Two-step clear: first click sets confirmClear=true, second click calls handleClear().
   const [confirmClear, setConfirmClear] = useState(false);
   // When true, swap the list for the Bring-Your-Own-Memory importer.
@@ -182,6 +192,31 @@ export default function MemoryPanel() {
         </p>
       </div>
 
+      {/* Scope filter — All / Global / one pill per project that has pins. */}
+      {entities.some(e => e.project_id) && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-4">
+          {[
+            { id: 'all', label: 'All' },
+            { id: 'global', label: 'Global' },
+            ...projects
+              .filter(p => entities.some(e => e.project_id === p.project_id))
+              .map(p => ({ id: p.project_id, label: p.name })),
+          ].map(opt => (
+            <button
+              key={opt.id}
+              onClick={() => setScopeFilter(opt.id)}
+              className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                scopeFilter === opt.id
+                  ? 'bg-artha-accent/15 border-artha-accent/40 text-artha-accent'
+                  : 'border-artha-border text-artha-muted hover:text-artha-text'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Empty state */}
       {!loading && entities.length === 0 && (
         <div className="flex-1 flex flex-col items-center justify-center text-center gap-3">
@@ -196,7 +231,11 @@ export default function MemoryPanel() {
       {/* Memory list */}
       {!loading && entities.length > 0 && (
         <div className="space-y-2">
-          {entities.map(entity => {
+          {entities.filter(e =>
+            scopeFilter === 'all' ? true :
+            scopeFilter === 'global' ? !e.project_id :
+            e.project_id === scopeFilter,
+          ).map(entity => {
             // Parse tags_json inline — gracefully fall back to empty on malformed JSON.
             const tags: string[] = (() => {
               try { return JSON.parse(entity.tags_json) as string[]; } catch { return []; }
@@ -216,6 +255,15 @@ export default function MemoryPanel() {
                   {entity.origin === 'import' && (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-artha-accent/15 text-artha-accent">
                       imported
+                    </span>
+                  )}
+                  {entity.project_id && (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-500/15 text-orange-300 max-w-[9rem]"
+                      title={`Pinned to "${projectName(entity.project_id)}" — only recalled in that project's chats`}
+                    >
+                      <Pin size={9} className="shrink-0" />
+                      <span className="truncate">{projectName(entity.project_id)}</span>
                     </span>
                   )}
                 </div>

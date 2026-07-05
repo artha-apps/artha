@@ -34,11 +34,15 @@
 | `tsconfig.json` | TypeScript config for main process (CommonJS, Node 20 types) |
 | **db/** | |
 | `src/db/schema.ts` | SQLite schema + `getDb()` singleton — all `CREATE TABLE` + additive `ALTER TABLE` migrations; opens/migrates the DB on first call |
-| `src/db/scopes.ts` | Per-chat scope helpers — `getSessionScopes`/`getSessionAllowedRoots`/`getSessionPrimaryFolder`/`recomputePrimaryProject`; backs the folder/file sandbox + context |
+| `src/db/scopes.ts` | Per-chat scope helpers — `getSessionScopes`/`getSessionAllowedRoots`/`getSessionPrimaryFolder`/`recomputePrimaryProject` + `findOrCreateFolderWorkspace` (one workspace/RAG index per folder, shared by scopes IPC + Context Packs); backs the folder/file sandbox + context |
 | `src/db/health.ts` | DB health heartbeat — `startHealthCheckpointing()` writes a `db_health.checkpointed_at` row + Sentry breadcrumb every 30 min (disaster-recovery forensics) |
 | **agent/** | |
-| `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory + live-environment context injection (date/time/timezone/OS/user), tool dispatch |
+| `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory + @-mention + Context Pack + live-environment context injection (date/time/timezone/OS/user), session skill fallback chain (pack skill → project default), tool dispatch |
 | `src/agent/folderTree.ts` | `buildShallowTree()` — renders a shallow, noise-filtered directory tree for the working-scope context block |
+| `src/agent/mentionResolver.ts` | `resolveMentionBlock()` — expands `@chat:"title"` / `@memory:"name"` composer tokens into a REFERENCED CONTEXT prompt block at send time (condensed transcript / memory content, NOTE line for unresolved refs) |
+| `src/agent/mentionResolver.test.ts` | Vitest — mention grammar, 3-ref cap, transcript reversal/clipping, unresolved-NOTE, DB-error degradation |
+| `src/agent/contextPacks.ts` | Context Packs — save/apply/list/delete/detach named context sets (scopes copied on apply; skill + pinned memories injected by reference via `chat_sessions.context_pack_id`); `getPackContextBlock`/`getPackSkillId` for the orchestrator |
+| `src/agent/contextPacks.test.ts` | Vitest — pack save defaults/overrides, apply warnings (missing pack/path/skill/memory), UNIQUE-merge, PINNED CONTEXT rendering |
 | `src/agent/contextGather.ts` | `gatherContext()` — pre-`<think>` local context assembly: top-5 memories by semantic similarity (local Ollama embeddings, keyword fallback) + last-3-turn recap + active scopes → `<context>` block + `contextScore` |
 | **bodhi/** (intelligence layer — internal, never surfaced to users) | |
 | `src/bodhi/index.ts` | Bodhi namespace barrel — the single import surface unifying orchestration, context, memory, router, planning, capabilities, and tasks. Re-exports existing modules (staged refactor: physical relocation is a later mechanical step) |
@@ -120,7 +124,7 @@
 | `src/components/WorkingIndicator.tsx` | "Artha is working…" cue — window-edge accent glow + a bottom-center pill while the agent is acting (`isStreaming`). Pill is `z-[90]` so it stays visible over modals. The baseline in-app signal; desktop control + browser pane add their own specific cues |
 | `src/components/TabBar/ModelPicker.tsx` | Inline searchable model switcher (the top-bar chip). "Find model…" filter over all installed Ollama models + configured cloud models; click to switch (`llm:setActiveModel` upserts any model) and pre-warm via `ensureModel`. Replaces the old click-to-open-Settings chip |
 | **stores/** | |
-| `src/stores/chat.ts` | Zustand store — `ActiveView` + `ActiveTab` unions, messages, pending attachments, clarify state, per-chat `scopes` |
+| `src/stores/chat.ts` | Zustand store — `ActiveView` + `ActiveTab` unions, messages, pending attachments, clarify state, per-chat `scopes`, `Project` (incl. `default_skill_id`) |
 | `src/stores/browser.ts` | Zustand store for the embedded browser pane — URL, driving mode (agent/user), handoff state |
 | `src/stores/delegate.ts` | Zustand store for the Delegate room — single-task lifecycle (status/goal/plan/result), drives plan→approve→execute, persists the current task to localStorage |
 | **services/** | |
@@ -128,8 +132,9 @@
 | **lib/** | |
 | `src/lib/qrcode.ts` | Dependency-free QR encoder (byte mode + Reed-Solomon, v1–10) — `generateQrMatrix` / `qrToSvg` |
 | `src/lib/tabTheme.ts` | Per-tab accent colours (Artha/Workflows/Code/Delegate) as raw values for dynamic inline styles; mirrors the `artha-tab-*` Tailwind/CSS tokens |
+| `src/lib/newChat.ts` | `createChat()` — the ONE new-chat flow (create session → attach project root scope → activate); shared by Sidebar, ProjectHome, CommandPalette, and SkillsPanel rerun so every entry point starts a chat with the same context |
 | **components/Chat/** | |
-| `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file); message bubble list |
+| `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file), Context Pack chips (save/apply/detach), "Continue with context" scope-inheritance chip, `@chat:`/`@memory:` reference tokens; message bubble list |
 | `ClarificationModal.tsx` | Pre-flight Q&A modal (pauses the agent until user answers or skips) |
 | `PlanApproval.tsx` | Approval UI for the ReAct plan before execution |
 | `ToolCallInline.tsx` | Inline, collapsible tool-call + result display within the chat stream |
@@ -154,6 +159,8 @@
 | `OrgSetup.tsx` | Three-step admin sub-flow — paste org license, start the LAN/hub server, provision seats (mints a `team_members` row + bound API key per teammate, renders copyable connection cards) |
 | **components/Sidebar/** | |
 | `Sidebar.tsx` | Flat chat-session list + New Chat; nav icons — Chat, Models, MCP, Skills, Web, RAG, Provenance, Artifacts, Marketplace, Memory, IDE, Cloud, LAN Server, Desktop, Team, Settings (folders are attached per chat in the composer) |
+| **components/ProjectHome/** | |
+| `ProjectHome.tsx` | Project Context Hub — Chat tab's empty state for an active project: inline-editable rolling summary (`projects:updateSummary`), pinned memories (pin/unpin via `memory:setProject`), per-project default skill picker, RAG index status + rebuild, recent chats |
 | **components/Settings/** | |
 | `ModelsPanel.tsx` | Configure LLM models — browse/install + uninstall Ollama models, cloud BYOK keys, context window slider |
 | `MCPToolsPanel.tsx` | MCP servers + tool schemas + tool-audit-log tabs; add / remove servers |
@@ -163,7 +170,7 @@
 | `SchedulerPanel.tsx` | Create / edit / toggle / delete scheduled tasks |
 | `ArtifactsPanel.tsx` | Browse generated artifacts — open, delete |
 | `MarketplacePanel.tsx` | MCP plugin marketplace — search, category filter, install |
-| `MemoryPanel.tsx` | Browse agent memory entities — type badges, delete, clear-all |
+| `MemoryPanel.tsx` | Browse agent memory entities — type badges, project-pin badges + scope filter (All/Global/per-project), delete, clear-all |
 | `IDEIntegrationPanel.tsx` | Generate `.vscode/mcp.json` or `.cursor/mcp.json` for a project folder |
 | `CloudIntegrationsPanel.tsx` | Connect Google Workspace (Gmail/Calendar/Drive) via OAuth — client-id setup, connect/disconnect |
 | `LANServerPanel.tsx` | Start/stop the LAN collaboration server — copyable URL, inline QR, curl/fetch examples, autostart |

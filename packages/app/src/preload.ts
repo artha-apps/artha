@@ -63,6 +63,17 @@ export interface SessionScope {
   added_at: number;
 }
 
+/** A Context Pack row (`context_packs` table) — a named, reusable context set.
+ *  scopes_json/memory_ids_json are JSON strings; parse renderer-side. */
+export interface ContextPackRow {
+  pack_id: string;
+  name: string;
+  scopes_json: string;
+  skill_id: string | null;
+  memory_ids_json: string;
+  created_at: number;
+}
+
 /**
  * The preload API surface exposed on `window.artha`.
  *
@@ -201,6 +212,7 @@ const api = {
       root_path: string;
       rag_index_id: string | null;
       summary: string | null;
+      default_skill_id: string | null;
       created_at: number;
     }>>,
     get: (projectId: string) => ipcRenderer.invoke('projects:get', projectId),
@@ -210,6 +222,14 @@ const api = {
      *  relocated so the caller can surface where the history went. */
     delete: (projectId: string) =>
       ipcRenderer.invoke('projects:delete', projectId) as Promise<{ movedChats: number }>,
+    /** Overwrite the rolling "Project memory" summary (Project Context Hub
+     *  inline edit). Capped at 4000 chars main-side. */
+    updateSummary: (projectId: string, summary: string) =>
+      ipcRenderer.invoke('projects:updateSummary', projectId, summary) as Promise<boolean>,
+    /** Set (or clear with null) the skill auto-activated in this project's
+     *  chats when no explicit /slug or auto-match fires. */
+    setDefaultSkill: (projectId: string, skillId: string | null) =>
+      ipcRenderer.invoke('projects:setDefaultSkill', projectId, skillId) as Promise<boolean>,
   },
 
   // ── Filesystem reads (renderer-safe, read-only) ──────────────────────────
@@ -255,6 +275,30 @@ const api = {
     remove: (scopeId: string) => ipcRenderer.invoke('scopes:remove', scopeId) as Promise<boolean>,
     // Rebuild a folder scope's RAG index. Returns chunk count.
     reindex: (scopeId: string) => ipcRenderer.invoke('scopes:reindex', scopeId) as Promise<number>,
+    /** "Continue with context" — merge every scope of one chat into another
+     *  (already-attached paths skipped). Resolves to the target's scope list. */
+    copyFrom: (fromSessionId: string, toSessionId: string) =>
+      ipcRenderer.invoke('scopes:copyFrom', fromSessionId, toSessionId) as Promise<SessionScope[]>,
+  },
+
+  // ── Context Packs ─────────────────────────────────────────────────────────
+  // Named, reusable context sets: scopes (copied on apply) + skill + pinned
+  // memories (injected by reference at run time). See agent/contextPacks.ts.
+  packs: {
+    list: () => ipcRenderer.invoke('packs:list') as Promise<ContextPackRow[]>,
+    /** Snapshot a chat's context as a new pack. Overrides replace the derived
+     *  defaults (most recent skill run / project pins). */
+    save: (sessionId: string, name: string, overrides?: { skillId?: string | null; memoryIds?: string[] }) =>
+      ipcRenderer.invoke('packs:save', sessionId, name, overrides) as Promise<ContextPackRow>,
+    /** Apply to a chat. Resolves to human-readable warnings for anything the
+     *  pack references that no longer exists (surfaced as a toast). */
+    apply: (packId: string, sessionId: string) =>
+      ipcRenderer.invoke('packs:apply', packId, sessionId) as Promise<{ warnings: string[] }>,
+    /** The pack applied to a chat, or null. Drives the active-pack chip. */
+    get: (sessionId: string) => ipcRenderer.invoke('packs:get', sessionId) as Promise<ContextPackRow | null>,
+    /** Stop the by-reference injection; copied scopes stay. */
+    detach: (sessionId: string) => ipcRenderer.invoke('packs:detach', sessionId) as Promise<boolean>,
+    delete: (packId: string) => ipcRenderer.invoke('packs:delete', packId) as Promise<boolean>,
   },
 
   // ── LLM / Models ────────────────────────────────────────────────────────
@@ -500,8 +544,13 @@ const api = {
     list: () => ipcRenderer.invoke('memory:list') as Promise<{
       entity_id: string; name: string; entity_type: string;
       content: string; tags_json: string; origin: string;
+      project_id: string | null; is_shared: number;
       created_at: number; updated_at: number;
     }[]>,
+    /** Pin a memory to a project (null = back to global). A pin MOVES the
+     *  memory — it stops being injected outside that project. */
+    setProject: (entityId: string, projectId: string | null) =>
+      ipcRenderer.invoke('memory:setProject', entityId, projectId) as Promise<boolean>,
     delete: (entityId: string) => ipcRenderer.invoke('memory:delete', entityId) as Promise<boolean>,
     clear: () => ipcRenderer.invoke('memory:clear') as Promise<boolean>,
     // Bring-Your-Own-Memory: parse a paste from another AI (preview = no write),

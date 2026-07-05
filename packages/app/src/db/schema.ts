@@ -566,6 +566,21 @@ export async function initDatabase(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_crm_interaction_contact ON crm_interactions(contact_id);
 
+    -- Context Packs: named, reusable context sets a user can apply to any chat.
+    -- scopes_json = [{path, kind}] (copied physically into session_scopes on
+    -- apply); skill_id + memory_ids_json are injected BY REFERENCE at run time
+    -- (pack edits propagate; deleted skills/memories degrade gracefully). A
+    -- session records the applied pack in chat_sessions.context_pack_id
+    -- (migration v16→v17) so the UI can show an active-pack chip.
+    CREATE TABLE IF NOT EXISTS context_packs (
+      pack_id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name            TEXT NOT NULL,
+      scopes_json     TEXT NOT NULL DEFAULT '[]',
+      skill_id        TEXT,
+      memory_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
 
@@ -897,6 +912,32 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] tools conn_status/conn_error migration skipped:', err);
+  }
+
+  // Migration v15→v16: default_skill_id on projects — a per-project default
+  // skill that auto-activates in the project's chats when the user didn't
+  // invoke one explicitly (/slug) and auto-match found nothing. Nullable;
+  // NULL = no default (existing behaviour). Part of the Project Context Hub.
+  try {
+    const projCols2 = db.prepare(`PRAGMA table_info(projects)`).all() as { name: string }[];
+    if (projCols2.length && !projCols2.some(c => c.name === 'default_skill_id')) {
+      db.exec(`ALTER TABLE projects ADD COLUMN default_skill_id TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] projects default_skill_id migration skipped:', err);
+  }
+
+  // Migration v16→v17: context_pack_id on chat_sessions — which Context Pack
+  // (if any) is applied to this chat. By-reference: the orchestrator reads the
+  // pack's skill + pinned memories through this id at run time; scopes were
+  // copied physically at apply time. Nullable; NULL = no pack.
+  try {
+    const sessCols2 = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
+    if (sessCols2.length && !sessCols2.some(c => c.name === 'context_pack_id')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN context_pack_id TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] chat_sessions context_pack_id migration skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

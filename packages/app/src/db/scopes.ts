@@ -14,7 +14,10 @@
  * keyed on `chat_sessions.project_id` — we keep that column pointing at the
  * chat's *primary* (first) folder workspace via `recomputePrimaryProject`.
  */
+import * as path from 'path';
+import * as crypto from 'crypto';
 import { getDb } from './schema';
+import { getDefaultRagIndexer } from '../rag/indexer';
 
 /**
  * Minimal scope descriptor passed to the filesystem sandbox and RAG search.
@@ -84,4 +87,38 @@ export function recomputePrimaryProject(sessionId: string): void {
     projectId = p?.project_id ?? null;
   }
   db.prepare(`UPDATE chat_sessions SET project_id=? WHERE session_id=?`).run(projectId, sessionId);
+}
+
+/**
+ * One workspace (projects row + RAG index) per folder path — find it or create
+ * it, kicking off a background index build for new/index-less folders. Shared
+ * by the scopes IPC handlers and Context Pack application so every folder
+ * attachment goes through the same dedupe + auto-index path.
+ * (Moved here from ipc/handlers.ts so non-IPC callers can use it.)
+ */
+export function findOrCreateFolderWorkspace(rootPath: string): { projectId: string; ragIndexId: string } {
+  const db = getDb();
+  const ragIndexer = getDefaultRagIndexer();
+  const existing = db.prepare(`SELECT project_id, rag_index_id FROM projects WHERE root_path=? ORDER BY created_at ASC LIMIT 1`)
+    .get(rootPath) as { project_id: string; rag_index_id: string | null } | undefined;
+  if (existing) {
+    let indexId = existing.rag_index_id;
+    if (!indexId) {
+      indexId = crypto.randomUUID();
+      const name = path.basename(rootPath) || rootPath;
+      db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`).run(indexId, `Folder: ${name}`, rootPath);
+      db.prepare(`UPDATE projects SET rag_index_id=? WHERE project_id=?`).run(indexId, existing.project_id);
+      ragIndexer.buildIndex(indexId, rootPath).catch(err => console.warn('[Artha] folder index build failed:', err));
+    }
+    return { projectId: existing.project_id, ragIndexId: indexId };
+  }
+  const name = path.basename(rootPath) || rootPath;
+  const projectId = crypto.randomUUID();
+  const indexId = crypto.randomUUID();
+  db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`).run(indexId, `Folder: ${name}`, rootPath);
+  db.prepare(`INSERT INTO projects (project_id, name, root_path, rag_index_id) VALUES (?,?,?,?)`).run(projectId, name, rootPath, indexId);
+  // Build in the background — embedding a large folder is slow and we don't
+  // want to block the caller returning.
+  ragIndexer.buildIndex(indexId, rootPath).catch(err => console.warn('[Artha] folder index build failed:', err));
+  return { projectId, ragIndexId: indexId };
 }

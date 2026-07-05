@@ -147,13 +147,16 @@ export type ActiveTab = 'chat' | 'workflows' | 'code' | 'delegate';
 export type WorkflowsSection = 'runs' | 'scheduled' | 'artifacts' | 'receipts' | 'provenance' | 'timetravel';
 
 /** A project as exposed by the `projects:*` IPC. Mirrors the `projects`
- *  table on disk (created by migrations v3→v6). */
+ *  table on disk (created by migrations v3→v6, v15→v16). */
 export interface Project {
   project_id: string;
   name: string;
   root_path: string;
   rag_index_id: string | null;
   summary: string | null;
+  /** Skill auto-activated in this project's chats when no /slug or auto-match
+   *  fires. null = no default. Managed from the Project Context Hub. */
+  default_skill_id: string | null;
   created_at: number;
 }
 

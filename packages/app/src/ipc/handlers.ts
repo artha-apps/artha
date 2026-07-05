@@ -59,7 +59,11 @@ import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
-import { recomputePrimaryProject } from '../db/scopes';
+import { recomputePrimaryProject, getSessionScopes, findOrCreateFolderWorkspace } from '../db/scopes';
+import {
+  listPacks, savePackFromSession, applyPackToSession,
+  getPackForSession, detachPackFromSession, deletePack,
+} from '../agent/contextPacks';
 import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } from '../sentry';
 import { ensureModelReady, getModelStatus } from '../llm/ollamaRuntime';
 import { Entitlements, FREE_ENTITLEMENTS } from '../license/entitlements';
@@ -778,7 +782,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
    *  sidebar Projects section. */
   ipcMain.handle('projects:list', () => {
     return getDb().prepare(
-      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+      `SELECT project_id, name, root_path, rag_index_id, summary, default_skill_id, created_at
        FROM projects ORDER BY created_at DESC`
     ).all();
   });
@@ -787,9 +791,31 @@ export function registerIpcHandlers(window: BrowserWindow): void {
    *  resolution. Returns null if the id is unknown. */
   ipcMain.handle('projects:get', (_e, projectId: string) => {
     return getDb().prepare(
-      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+      `SELECT project_id, name, root_path, rag_index_id, summary, default_skill_id, created_at
        FROM projects WHERE project_id=?`
     ).get(projectId) ?? null;
+  });
+
+  /** User-edited project summary ("Project memory"). Same 4000-char cap as the
+   *  LLM-maintained rolling summary (orchestrator.updateProjectSummary), which
+   *  keeps merging user edits with new sessions afterwards. */
+  ipcMain.handle('projects:updateSummary', (_e, projectId: string, summary: string) => {
+    const text = String(summary ?? '').trim().slice(0, 4000);
+    const info = getDb().prepare(
+      `UPDATE projects SET summary=? WHERE project_id=?`
+    ).run(text || null, projectId);
+    return info.changes > 0;
+  });
+
+  /** Per-project default skill — auto-activated in this project's chats when
+   *  no explicit /slug or auto-match fires (see orchestrator.handleMessage).
+   *  null clears the default. The id is not FK-validated: a later-deleted
+   *  skill simply stops resolving (getById miss → no skill). */
+  ipcMain.handle('projects:setDefaultSkill', (_e, projectId: string, skillId: string | null) => {
+    const info = getDb().prepare(
+      `UPDATE projects SET default_skill_id=? WHERE project_id=?`
+    ).run(skillId, projectId);
+    return info.changes > 0;
   });
 
   /** Shallow, depth-2 directory tree for a folder. Drives the Code tab's
@@ -872,7 +898,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const rootPath = res.filePaths[0];
     const { projectId } = findOrCreateFolderWorkspace(rootPath);
     return getDb().prepare(
-      `SELECT project_id, name, root_path, rag_index_id, summary, created_at
+      `SELECT project_id, name, root_path, rag_index_id, summary, default_skill_id, created_at
        FROM projects WHERE project_id=?`
     ).get(projectId) ?? null;
   });
@@ -985,31 +1011,8 @@ export function registerIpcHandlers(window: BrowserWindow): void {
    * Deduplication is by exact `root_path` — two chats that open the same
    * folder reuse the same project + index, sharing context and memory.
    */
-  function findOrCreateFolderWorkspace(rootPath: string): { projectId: string; ragIndexId: string } {
-    const db = getDb();
-    const existing = db.prepare(`SELECT project_id, rag_index_id FROM projects WHERE root_path=? ORDER BY created_at ASC LIMIT 1`)
-      .get(rootPath) as { project_id: string; rag_index_id: string | null } | undefined;
-    if (existing) {
-      let indexId = existing.rag_index_id;
-      if (!indexId) {
-        indexId = crypto.randomUUID();
-        const name = path.basename(rootPath) || rootPath;
-        db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`).run(indexId, `Folder: ${name}`, rootPath);
-        db.prepare(`UPDATE projects SET rag_index_id=? WHERE project_id=?`).run(indexId, existing.project_id);
-        ragIndexer.buildIndex(indexId, rootPath).catch(err => console.warn('[Artha] folder index build failed:', err));
-      }
-      return { projectId: existing.project_id, ragIndexId: indexId };
-    }
-    const name = path.basename(rootPath) || rootPath;
-    const projectId = crypto.randomUUID();
-    const indexId = crypto.randomUUID();
-    db.prepare(`INSERT INTO rag_indexes (index_id, name, directory_path) VALUES (?,?,?)`).run(indexId, `Folder: ${name}`, rootPath);
-    db.prepare(`INSERT INTO projects (project_id, name, root_path, rag_index_id) VALUES (?,?,?,?)`).run(projectId, name, rootPath, indexId);
-    // Build in the background — embedding a large folder is slow and we don't
-    // want to block the picker returning.
-    ragIndexer.buildIndex(indexId, rootPath).catch(err => console.warn('[Artha] folder index build failed:', err));
-    return { projectId, ragIndexId: indexId };
-  }
+  // findOrCreateFolderWorkspace moved to db/scopes.ts (imported above) so
+  // Context Packs and the scope handlers share the same dedupe + auto-index.
 
   ipcMain.handle('scopes:list', (_e, sessionId: string) => {
     return getDb().prepare(`SELECT * FROM session_scopes WHERE session_id=? ORDER BY added_at ASC, rowid ASC`).all(sessionId);
@@ -1083,6 +1086,47 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (row) recomputePrimaryProject(row.session_id);
     return true;
   });
+
+  /** Copy every scope of one chat into another ("Continue with context").
+   *  Folders go through findOrCreateFolderWorkspace so they carry a LIVE rag
+   *  index id (the source row's may be stale); files copy as-is. UNIQUE
+   *  violations (already attached — e.g. the shared project root) are
+   *  skipped, so this merges rather than duplicates. Returns the target's
+   *  full scope list. The caller should have attached the project root FIRST
+   *  (createChat does) so recomputePrimaryProject keeps it as the primary. */
+  ipcMain.handle('scopes:copyFrom', (_e, fromSessionId: string, toSessionId: string) => {
+    if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) {
+      return getSessionScopes(toSessionId);
+    }
+    const db = getDb();
+    for (const s of getSessionScopes(fromSessionId)) {
+      const scopeId = crypto.randomUUID();
+      try {
+        if (s.kind === 'folder') {
+          const { ragIndexId } = findOrCreateFolderWorkspace(s.path);
+          db.prepare(`INSERT INTO session_scopes (scope_id, session_id, path, kind, rag_index_id) VALUES (?,?,?,?,?)`)
+            .run(scopeId, toSessionId, s.path, 'folder', ragIndexId);
+        } else {
+          db.prepare(`INSERT INTO session_scopes (scope_id, session_id, path, kind) VALUES (?,?,?,?)`)
+            .run(scopeId, toSessionId, s.path, 'file');
+        }
+      } catch { /* UNIQUE(session_id, path) — already attached, skip */ }
+    }
+    recomputePrimaryProject(toSessionId);
+    return getSessionScopes(toSessionId);
+  });
+
+  // ── Context Packs ────────────────────────────────────────────────────────
+  // Named, reusable context sets (scopes + skill + pinned memories). Logic in
+  // agent/contextPacks.ts; these handlers are thin pass-throughs.
+  ipcMain.handle('packs:list', () => listPacks());
+  ipcMain.handle('packs:save', (_e, sessionId: string, name: string, overrides?: { skillId?: string | null; memoryIds?: string[] }) =>
+    savePackFromSession(sessionId, name, overrides ?? {}));
+  ipcMain.handle('packs:apply', (_e, packId: string, sessionId: string) =>
+    applyPackToSession(packId, sessionId));
+  ipcMain.handle('packs:get', (_e, sessionId: string) => getPackForSession(sessionId));
+  ipcMain.handle('packs:detach', (_e, sessionId: string) => { detachPackFromSession(sessionId); return true; });
+  ipcMain.handle('packs:delete', (_e, packId: string) => { deletePack(packId); return true; });
 
   // Rebuild the RAG index for a folder scope. Returns the chunk count.
   ipcMain.handle('scopes:reindex', async (_e, scopeId: string) => {
@@ -1971,9 +2015,21 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('memory:list', () => {
     const db = getDb();
     return db.prepare(
-      `SELECT entity_id, name, entity_type, content, tags_json, origin, created_at, updated_at
+      `SELECT entity_id, name, entity_type, content, tags_json, origin, project_id, is_shared, created_at, updated_at
        FROM memory_entities ORDER BY updated_at DESC`
     ).all();
+  });
+
+  /** Pin a memory to a project (or unpin with null). Pinning MOVES the memory
+   *  out of the global pool — recall filters `project_id IS NULL OR = current`,
+   *  so a pinned memory is only injected inside that project's chats. The UI
+   *  must communicate this (it's a move, not a copy). */
+  ipcMain.handle('memory:setProject', (_e, entityId: string, projectId: string | null) => {
+    const db = getDb();
+    const info = db.prepare(
+      `UPDATE memory_entities SET project_id=?, updated_at=unixepoch() WHERE entity_id=?`
+    ).run(projectId, entityId);
+    return info.changes > 0;
   });
 
   ipcMain.handle('memory:delete', (_e, entityId: string) => {

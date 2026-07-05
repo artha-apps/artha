@@ -14,6 +14,7 @@
 import { useEffect, useState } from 'react';
 import { MessageSquare, Plus, Settings as SettingsIcon, ChevronDown, ChevronRight, Folder, Trash2, Search, Pin, X } from 'lucide-react';
 import { useChatStore, type Session } from '../../stores/chat';
+import { createChat } from '../../lib/newChat';
 import { Tooltip } from '../ui/Tooltip';
 import { BrandWordmark } from '../ui/BrandWordmark';
 import ThemeToggle from '../ui/ThemeToggle';
@@ -113,25 +114,10 @@ export default function Sidebar() {
     }
   }
 
-  /** Create a new session inside the active project and activate it. When
-   *  the chat belongs to a project, auto-attach the project's root folder
-   *  as a session scope — that's what "inside this project" should mean. */
-  const newChat = async () => {
-    const session = await window.artha.sessions.create(activeProjectId);
-    // Auto-attach the project root so the agent's filesystem sandbox + context
-    // injection align with the visible project chip. Idempotent on the IPC.
-    if (activeProjectId) {
-      const proj = projects.find(p => p.project_id === activeProjectId);
-      if (proj) {
-        await window.artha.scopes.addFolderPath(session.session_id, proj.root_path).catch(() => { /* non-fatal */ });
-      }
-    }
-    const updated = await window.artha.sessions.list();
-    setSessions(updated);
-    setActiveSession(session.session_id);
-    setMessages([]);
-    setActiveTab('chat');
-  };
+  /** Create a new session inside the active project and activate it. Shared
+   *  helper — attaches the project root scope, consistent with every other
+   *  new-chat entry point (see lib/newChat.ts). */
+  const newChat = () => createChat(activeProjectId);
 
   /** Switch to an existing session: load its messages and ensure Chat tab. */
   const openSession = async (id: string) => {

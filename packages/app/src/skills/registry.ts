@@ -107,6 +107,15 @@ export class SkillRegistry {
       .get(slug) as Skill | undefined;
   }
 
+  /** Look up a skill by primary key. Used by per-project default skills
+   *  (projects.default_skill_id), which reference by id so slug edits don't
+   *  break the binding. */
+  getById(skillId: string): Skill | undefined {
+    return getDb()
+      .prepare(`SELECT * FROM skills WHERE skill_id = ?`)
+      .get(skillId) as Skill | undefined;
+  }
+
   /** Persist a new user-created skill. The slug is normalised; `is_builtin` is
    *  always 0 for caller-created rows. */
   create(input: SkillInput): Skill {
@@ -275,8 +284,10 @@ export class SkillRegistry {
 }
 
 /** Project a DB Skill row into the leaner ActiveSkill shape used at runtime.
- *  Silently treats a missing or malformed allowed_tools_json as "no filter". */
-function toActive(skill: Skill): ActiveSkill {
+ *  Silently treats a missing or malformed allowed_tools_json as "no filter".
+ *  Exported for the orchestrator's project-default-skill path, which loads a
+ *  row by id (outside SkillRegistry.resolve) and needs the same projection. */
+export function toActive(skill: Skill): ActiveSkill {
   let allowedTools: string[] = [];
   try {
     const parsed = JSON.parse(skill.allowed_tools_json);

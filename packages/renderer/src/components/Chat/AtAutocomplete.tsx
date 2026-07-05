@@ -1,8 +1,9 @@
 /**
  * AtAutocomplete — `@` reference popover for the composer. Triggers when the
  * user types `@` at a word boundary, lists projects + folders + files in the
- * current scope + tool tokens (`@web`, `@memory`), and inserts the picked
- * reference back into the textarea on Enter / click.
+ * current scope + cross-chat/memory references (`@chat:"…"`, `@memory:"…"`)
+ * + tool tokens (`@web`, `@memory`), and inserts the picked reference back
+ * into the textarea on Enter / click.
  *
  * Reference syntax — one `@` for everything, matching Cursor / GitHub /
  * Linear / Notion. Don't split into `@`/`#`/`!`; users have one mental slot
@@ -13,18 +14,23 @@
  *     so the rest of the chat lands in the right scope automatically.
  *   - Picking a FILE or FOLDER inserts the path; the orchestrator's
  *     sandbox + scope block already make those references meaningful.
+ *   - Picking a CHAT or MEMORY inserts a compact `@chat:"title"` /
+ *     `@memory:"name"` token — the main process expands it into real content
+ *     at send time (agent/mentionResolver.ts), so the message stays short.
  *   - Picking @web / @memory inserts the bare token; the agent reads it
  *     as a hint to use that capability for this turn.
+ *
+ * Typing `chat:` or `memory:` after the `@` narrows the list to that group.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Folder, FileText, Globe, Brain, Star } from 'lucide-react';
+import { Folder, FileText, Globe, Brain, Star, MessagesSquare } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
 /** One row in the popover. The `id` is opaque to the menu — the parent uses
  *  `value` to decide what to splice into the textarea. */
 export interface AtSuggestion {
   id: string;
-  kind: 'project' | 'folder' | 'file' | 'tool';
+  kind: 'project' | 'folder' | 'file' | 'chat' | 'memory' | 'tool';
   label: string;
   value: string;
   /** Optional second line — root path for projects, etc. */
@@ -34,6 +40,10 @@ export interface AtSuggestion {
   /** Side-effect to run when this row is picked (e.g. switch project). */
   onPick?: () => void;
 }
+
+/** Caps so reference groups never drown the list. */
+const MAX_CHAT_SUGGESTIONS = 8;
+const MAX_MEMORY_SUGGESTIONS = 8;
 
 interface AtAutocompleteProps {
   /** Free-text query after the `@` (without the `@`). Empty = show all. */
@@ -52,9 +62,28 @@ function matches(s: AtSuggestion, q: string): boolean {
 }
 
 export default function AtAutocomplete({ query, onSelect, onClose }: AtAutocompleteProps) {
-  const { projects, activeProjectId, scopes, setActiveProjectId } = useChatStore();
+  const { projects, activeProjectId, scopes, setActiveProjectId, sessions, activeSessionId } = useChatStore();
   const [selectedIdx, setSelectedIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Memory names for `@memory:"…"` — fetched once per mount (the popover is
+  // ephemeral, so "on mount" is effectively "on open"). Scoped global ∪ active
+  // project to mirror what recall will actually inject.
+  const [memories, setMemories] = useState<Array<{ entity_id: string; name: string; content: string; project_id: string | null }>>([]);
+  useEffect(() => {
+    window.artha.memory.list()
+      .then(rows => setMemories(rows.filter(r => !r.project_id || r.project_id === activeProjectId)))
+      .catch(() => setMemories([]));
+  }, [activeProjectId]);
+
+  // `chat:`/`memory:` prefixes narrow the popover to that reference group,
+  // matching the token grammar the resolver parses. Quotes are stripped so
+  // matching keeps working while the user types `@chat:"my ti…`.
+  const kindFilter: 'chat' | 'memory' | null =
+    query.startsWith('chat:') ? 'chat' : query.startsWith('memory:') ? 'memory' : null;
+  const effectiveQuery = kindFilter
+    ? query.slice(kindFilter.length + 1).replace(/"/g, '')
+    : query;
 
   // Build the suggestion list every render — projects/scopes change rarely.
   const items = useMemo<AtSuggestion[]>(() => {
@@ -85,14 +114,45 @@ export default function AtAutocomplete({ query, onSelect, onClose }: AtAutocompl
       });
     }
 
+    // Other chats — same-project first (most relevant), then the rest; both
+    // buckets keep their recency order (sessions arrive last_activity DESC).
+    const otherChats = sessions.filter(s => s.session_id !== activeSessionId);
+    const orderedChats = [
+      ...otherChats.filter(s => s.project_id === activeProjectId),
+      ...otherChats.filter(s => s.project_id !== activeProjectId),
+    ].slice(0, MAX_CHAT_SUGGESTIONS);
+    for (const s of orderedChats) {
+      all.push({
+        id: `chat:${s.session_id}`,
+        kind: 'chat',
+        label: s.title,
+        value: `@chat:"${s.title}"`,
+        hint: 'Pull that chat’s context into this one',
+      });
+    }
+
+    // Specific memories — inserts a reference to ONE remembered fact.
+    for (const m of memories.slice(0, MAX_MEMORY_SUGGESTIONS)) {
+      all.push({
+        id: `memory:${m.entity_id}`,
+        kind: 'memory',
+        label: m.name,
+        value: `@memory:"${m.name}"`,
+        hint: m.content,
+      });
+    }
+
     // Tools — always last so they don't drown out the project list
     all.push(
       { id: 'tool:web',    kind: 'tool', label: 'web',    value: '@web',    hint: 'Search the live web' },
       { id: 'tool:memory', kind: 'tool', label: 'memory', value: '@memory', hint: 'Recall facts I told you before' },
     );
 
-    return all.filter(s => matches(s, query));
-  }, [projects, activeProjectId, scopes, query, setActiveProjectId]);
+    return all.filter(s => {
+      if (kindFilter && s.kind !== kindFilter) return false;
+      return matches(s, effectiveQuery);
+    });
+  }, [projects, activeProjectId, scopes, sessions, activeSessionId, memories, kindFilter, effectiveQuery, setActiveProjectId]);
 
   // Reset highlight when the suggestion set shrinks/changes.
   useEffect(() => { setSelectedIdx(0); }, [query, items.length]);
@@ -146,6 +206,8 @@ export default function AtAutocomplete({ query, onSelect, onClose }: AtAutocompl
   };
   pushGroup('Projects', 'project');
   pushGroup('In this scope', 'folderOrFile');
+  pushGroup('Chats', 'chat');
+  pushGroup('Memories', 'memory');
   pushGroup('Tools', 'tool');
 
   return (
@@ -159,13 +221,12 @@ export default function AtAutocomplete({ query, onSelect, onClose }: AtAutocompl
             {group.label}
           </div>
           {group.rows.map(({ item, idx }) => {
-            const Icon = item.kind === 'project'
-              ? Folder
-              : item.kind === 'folder'
-                ? Folder
-                : item.kind === 'file'
-                  ? FileText
-                  : item.kind === 'tool' && item.id === 'tool:web' ? Globe : Brain;
+            const Icon =
+              item.kind === 'project' || item.kind === 'folder' ? Folder
+              : item.kind === 'file' ? FileText
+              : item.kind === 'chat' ? MessagesSquare
+              : item.kind === 'memory' ? Brain
+              : item.id === 'tool:web' ? Globe : Brain;
             return (
               <button
                 key={item.id}

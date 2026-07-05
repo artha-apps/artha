@@ -1,17 +1,24 @@
 /**
  * ProjectHome — the Chat tab's empty state when an active project is selected
- * but no session is open. Surfaces the things Artha already tracks per project
- * but had no UI for: the rolling cross-session memory (`projects.summary`),
- * the RAG index status, the folder path, and recent chats inside this project.
+ * but no session is open. The project's CONTEXT HUB: everything Artha carries
+ * across this project's chats, in one editable place —
+ *   - rolling cross-session memory (`projects.summary`, inline-editable)
+ *   - pinned memories (memory_entities.project_id — pin/unpin here)
+ *   - default skill (projects.default_skill_id — auto-activates in chats)
+ *   - RAG index status + rebuild, folder path, recent chats.
  *
- * Phase 2A of the IA reshuffle. Renders nothing if no project is active —
- * ChatWindow's normal empty state covers the no-project case.
+ * Renders nothing if no project is active — ChatWindow's normal empty state
+ * covers the no-project case.
  */
 import { useEffect, useState } from 'react';
-import { Folder, FolderOpen, Plus, MessageSquare, Brain, ArrowRight, Database } from 'lucide-react';
+import {
+  Folder, FolderOpen, Plus, MessageSquare, Brain, ArrowRight, Database,
+  Pencil, Check, X, Pin, PinOff, Sparkles, RefreshCw,
+} from 'lucide-react';
 import { useChatStore, type Session } from '../../stores/chat';
+import { createChat } from '../../lib/newChat';
+import { toast } from '../../stores/toast';
 
-/** Shape returned by sessions:list — extended with a snippet for preview. */
 function fmtRelative(ts: number): string {
   const now = Date.now() / 1000;
   const delta = Math.max(0, now - ts);
@@ -21,25 +28,62 @@ function fmtRelative(ts: number): string {
   return `${Math.floor(delta / 86400)}d ago`;
 }
 
+/** Row shape from memory.list — only the fields this view touches. */
+interface MemoryRow {
+  entity_id: string;
+  name: string;
+  content: string;
+  project_id: string | null;
+}
+
+/** Row shape from skills.listEnabled — only the fields this view touches. */
+interface SkillRow {
+  skill_id: string;
+  name: string;
+  icon: string;
+}
+
 export default function ProjectHome() {
   const {
-    projects, activeProjectId, setActiveSession, setMessages, sessions, setSessions,
-    setActiveTab,
+    projects, activeProjectId, setActiveSession, setMessages, sessions,
+    setActiveTab, setProjects,
   } = useChatStore();
 
   const project = projects.find(p => p.project_id === activeProjectId) ?? null;
 
-  // RAG index status — chunk count surfaces "is it ready / how much do I know?"
-  // without the user having to open the RAG settings panel.
+  // RAG index status — name + chunk count surface "is it ready / how much do I
+  // know?" without opening the RAG settings panel.
+  const [indexName, setIndexName] = useState<string | null>(null);
   const [chunkCount, setChunkCount] = useState<number | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
+
+  // Inline summary edit (Project memory card).
+  const [editingSummary, setEditingSummary] = useState(false);
+  const [summaryDraft, setSummaryDraft] = useState('');
+
+  // Pinned-memories card: memories scoped to this project + globals to pin.
+  const [memories, setMemories] = useState<MemoryRow[]>([]);
+  const [showPinnable, setShowPinnable] = useState(false);
+
+  // Default-skill dropdown.
+  const [skills, setSkills] = useState<SkillRow[]>([]);
 
   useEffect(() => {
-    if (!project?.rag_index_id) { setChunkCount(null); return; }
+    if (!project?.rag_index_id) { setChunkCount(null); setIndexName(null); return; }
     window.artha.rag.listIndexes().then(rows => {
-      const row = (rows as Array<{ index_id: string; doc_count: number }>).find(r => r.index_id === project.rag_index_id);
+      const row = (rows as Array<{ index_id: string; name: string; doc_count: number }>)
+        .find(r => r.index_id === project.rag_index_id);
       setChunkCount(row?.doc_count ?? 0);
-    }).catch(() => setChunkCount(null));
+      setIndexName(row?.name ?? null);
+    }).catch(() => { setChunkCount(null); setIndexName(null); });
   }, [project?.rag_index_id]);
+
+  const projectId = project?.project_id ?? null;
+  useEffect(() => {
+    if (!projectId) return;
+    window.artha.memory.list().then(rows => setMemories(rows as MemoryRow[])).catch(() => setMemories([]));
+    window.artha.skills.listEnabled().then(rows => setSkills(rows as SkillRow[])).catch(() => setSkills([]));
+  }, [projectId]);
 
   if (!project) return null;
 
@@ -48,6 +92,9 @@ export default function ProjectHome() {
   const projectChats = sessions.filter(s => s.project_id === project.project_id);
   const recentChats = projectChats.slice(0, 8);
 
+  const pinned = memories.filter(m => m.project_id === project.project_id);
+  const pinnable = memories.filter(m => m.project_id === null);
+
   const openChat = async (s: Session) => {
     setActiveSession(s.session_id);
     const msgs = await window.artha.sessions.getMessages(s.session_id);
@@ -55,15 +102,49 @@ export default function ProjectHome() {
     setActiveTab('chat');
   };
 
-  const newChatHere = async () => {
-    const session = await window.artha.sessions.create(project.project_id);
-    // Same auto-attach as Sidebar.newChat — keep the project root in scope.
-    await window.artha.scopes.addFolderPath(session.session_id, project.root_path).catch(() => { /* non-fatal */ });
-    const updated = await window.artha.sessions.list();
-    setSessions(updated);
-    setActiveSession(session.session_id);
-    setMessages([]);
-    setActiveTab('chat');
+  // Shared helper — attaches the project root scope (see lib/newChat.ts).
+  const newChatHere = () => createChat(project.project_id);
+
+  const refreshProjects = async () => {
+    const fresh = await window.artha.projects.list();
+    setProjects(fresh);
+  };
+
+  const saveSummary = async () => {
+    await window.artha.projects.updateSummary(project.project_id, summaryDraft);
+    setEditingSummary(false);
+    await refreshProjects();
+    toast.success('Project memory updated');
+  };
+
+  const setPin = async (m: MemoryRow, pin: boolean) => {
+    await window.artha.memory.setProject(m.entity_id, pin ? project.project_id : null);
+    setMemories(prev => prev.map(r =>
+      r.entity_id === m.entity_id ? { ...r, project_id: pin ? project.project_id : null } : r,
+    ));
+  };
+
+  const setDefaultSkill = async (skillId: string | null) => {
+    await window.artha.projects.setDefaultSkill(project.project_id, skillId);
+    await refreshProjects();
+    toast.success(skillId ? 'Default skill set for this project' : 'Default skill cleared');
+  };
+
+  const rebuildIndex = async () => {
+    if (!project.rag_index_id || rebuilding) return;
+    setRebuilding(true);
+    try {
+      await window.artha.rag.rebuildIndex(project.rag_index_id);
+      const rows = await window.artha.rag.listIndexes();
+      const row = (rows as Array<{ index_id: string; doc_count: number }>)
+        .find(r => r.index_id === project.rag_index_id);
+      setChunkCount(row?.doc_count ?? 0);
+      toast.success('Knowledge index rebuilt');
+    } catch {
+      toast.error('Index rebuild failed');
+    } finally {
+      setRebuilding(false);
+    }
   };
 
   return (
@@ -103,10 +184,24 @@ export default function ProjectHome() {
                 <div className="flex items-center gap-2">
                   <Database size={14} className="text-artha-accent" />
                   <h2 className="text-sm font-semibold text-artha-text">Knowledge index</h2>
+                  {indexName && <span className="text-[10px] text-artha-subtle font-mono truncate max-w-[10rem]">{indexName}</span>}
                 </div>
-                {chunkCount !== null && chunkCount > 0 && (
-                  <span className="text-[10px] font-semibold text-gradient-emerald">{chunkCount.toLocaleString()} chunks</span>
-                )}
+                <div className="flex items-center gap-2">
+                  {chunkCount !== null && chunkCount > 0 && (
+                    <span className="text-[10px] font-semibold text-gradient-emerald">{chunkCount.toLocaleString()} chunks</span>
+                  )}
+                  {project.rag_index_id && (
+                    <button
+                      onClick={rebuildIndex}
+                      disabled={rebuilding}
+                      title="Re-scan the folder and rebuild the index"
+                      className="inline-flex items-center gap-1 text-[10px] text-artha-muted hover:text-artha-accent transition-colors disabled:opacity-50"
+                    >
+                      <RefreshCw size={10} className={rebuilding ? 'animate-spin' : ''} />
+                      {rebuilding ? 'Rebuilding…' : 'Rebuild'}
+                    </button>
+                  )}
+                </div>
               </div>
               <p className="text-xs text-artha-muted leading-relaxed">
                 {chunkCount === null
@@ -155,14 +250,44 @@ export default function ProjectHome() {
             </div>
           </div>
 
-          {/* Right col — rolling memory (1/3 width) ------------------------- */}
-          <div className="md:col-span-1">
-            <div className="card-artha bg-artha-surface2/50 p-4 h-full">
+          {/* Right col — context hub (1/3 width) ----------------------------- */}
+          <div className="md:col-span-1 space-y-6">
+
+            {/* Rolling memory — inline editable */}
+            <div className="card-artha bg-artha-surface2/50 p-4">
               <div className="flex items-center gap-2 mb-2">
                 <Brain size={14} className="text-artha-accent" />
-                <h2 className="text-sm font-semibold text-artha-text">Project memory</h2>
+                <h2 className="text-sm font-semibold text-artha-text flex-1">Project memory</h2>
+                {!editingSummary && (
+                  <button
+                    onClick={() => { setSummaryDraft(project.summary ?? ''); setEditingSummary(true); }}
+                    title="Edit project memory"
+                    className="text-artha-subtle hover:text-artha-accent transition-colors"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                )}
               </div>
-              {project.summary ? (
+              {editingSummary ? (
+                <div>
+                  <textarea
+                    value={summaryDraft}
+                    onChange={e => setSummaryDraft(e.target.value)}
+                    maxLength={4000}
+                    rows={8}
+                    autoFocus
+                    className="w-full text-xs bg-artha-surface border border-artha-border rounded-lg p-2 text-artha-text leading-relaxed resize-y focus:outline-none focus:border-artha-accent"
+                    placeholder="Durable facts, decisions, and preferences for this project…"
+                  />
+                  <div className="flex items-center justify-between mt-1.5">
+                    <span className="text-[10px] text-artha-subtle">{summaryDraft.length}/4000 · Artha keeps merging new sessions into this</span>
+                    <div className="flex gap-1">
+                      <button onClick={saveSummary} title="Save" className="p-1 rounded text-artha-accent hover:bg-artha-surface transition-colors"><Check size={13} /></button>
+                      <button onClick={() => setEditingSummary(false)} title="Cancel" className="p-1 rounded text-artha-muted hover:bg-artha-surface transition-colors"><X size={13} /></button>
+                    </div>
+                  </div>
+                </div>
+              ) : project.summary ? (
                 <div className="text-xs text-artha-text leading-relaxed whitespace-pre-wrap">
                   {project.summary}
                 </div>
@@ -170,8 +295,84 @@ export default function ProjectHome() {
                 <p className="text-xs text-artha-muted leading-relaxed">
                   Artha will write a short, rolling summary of this project here as you chat.
                   It carries durable facts, decisions, and your preferences across sessions —
-                  so a new chat already knows what happened last time.
+                  so a new chat already knows what happened last time. Click the pencil to seed it yourself.
                 </p>
+              )}
+            </div>
+
+            {/* Default skill */}
+            <div className="card-artha p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles size={14} className="text-artha-accent" />
+                <h2 className="text-sm font-semibold text-artha-text">Default skill</h2>
+              </div>
+              <select
+                value={project.default_skill_id ?? ''}
+                onChange={e => setDefaultSkill(e.target.value || null)}
+                className="w-full text-xs bg-artha-surface border border-artha-border rounded-lg px-2 py-1.5 text-artha-text focus:outline-none focus:border-artha-accent"
+              >
+                <option value="">None — match automatically</option>
+                {skills.map(s => (
+                  <option key={s.skill_id} value={s.skill_id}>{s.icon} {s.name}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-artha-subtle mt-1.5 leading-relaxed">
+                Auto-activates in this project&apos;s chats when you don&apos;t invoke a /skill yourself.
+              </p>
+            </div>
+
+            {/* Pinned memories */}
+            <div className="card-artha p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Pin size={14} className="text-artha-accent" />
+                <h2 className="text-sm font-semibold text-artha-text flex-1">Pinned memories</h2>
+                <span className="text-[10px] text-artha-subtle">{pinned.length}</span>
+              </div>
+              {pinned.length === 0 ? (
+                <p className="text-xs text-artha-muted leading-relaxed mb-2">
+                  Pin a remembered fact to keep it scoped to this project&apos;s chats.
+                </p>
+              ) : (
+                <ul className="space-y-1.5 mb-2">
+                  {pinned.map(m => (
+                    <li key={m.entity_id} className="flex items-start gap-1.5 group">
+                      <span className="text-xs text-artha-text leading-snug flex-1 min-w-0 truncate" title={m.content}>{m.name}</span>
+                      <button
+                        onClick={() => setPin(m, false)}
+                        title="Unpin — memory returns to the global pool"
+                        className="opacity-0 group-hover:opacity-100 text-artha-subtle hover:text-artha-accent transition-all shrink-0"
+                      >
+                        <PinOff size={11} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {pinnable.length > 0 && (
+                <div>
+                  <button
+                    onClick={() => setShowPinnable(v => !v)}
+                    className="text-[10px] text-artha-accent hover:underline"
+                  >
+                    {showPinnable ? 'Hide global memories' : `Pin from global (${pinnable.length})…`}
+                  </button>
+                  {showPinnable && (
+                    <ul className="space-y-1.5 mt-2 max-h-40 overflow-y-auto pr-1">
+                      {pinnable.map(m => (
+                        <li key={m.entity_id} className="flex items-start gap-1.5 group">
+                          <span className="text-xs text-artha-muted leading-snug flex-1 min-w-0 truncate" title={m.content}>{m.name}</span>
+                          <button
+                            onClick={() => setPin(m, true)}
+                            title="Pin to this project — MOVES the memory: it will only be recalled inside this project's chats"
+                            className="opacity-0 group-hover:opacity-100 text-artha-subtle hover:text-artha-accent transition-all shrink-0"
+                          >
+                            <Pin size={11} />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               )}
             </div>
           </div>

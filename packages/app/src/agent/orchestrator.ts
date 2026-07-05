@@ -19,7 +19,9 @@ import * as os from 'os';
 import { sendNotification } from '../notify';
 import { getActiveLLMClient, type StreamedMessage, type TaskType } from '../llm/client';
 import { MCPRegistry, type ToolContext } from '../mcp/registry';
-import { SkillRegistry, type ActiveSkill } from '../skills/registry';
+import { SkillRegistry, toActive, type ActiveSkill } from '../skills/registry';
+import { resolveMentionBlock } from './mentionResolver';
+import { getPackContextBlock, getPackSkillId } from './contextPacks';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
@@ -210,7 +212,12 @@ export class AgentOrchestrator {
 
     // Resolve a skill (explicit "/slug" or auto-match). `goal` has any leading
     // "/slug" stripped, so the rest of the loop never sees the invocation prefix.
-    const { skill, goal } = await this.skills.resolve(userContent);
+    // `skill` is mutable: the project default skill may fill it AFTER the intent
+    // gate (a default must not force greetings into the tool loop the way an
+    // explicit/auto skill deliberately does).
+    const resolved = await this.skills.resolve(userContent);
+    let skill = resolved.skill;
+    const goal = resolved.goal;
     if (skill) {
       this.emit('agent:skillActive', { slug: skill.slug, name: skill.name, icon: skill.icon });
     }
@@ -235,6 +242,17 @@ export class AgentOrchestrator {
       }
     }
     // ── End intent gate ──────────────────────────────────────────────────────
+
+    // Session-level skill fallbacks: when nothing explicit or auto-matched,
+    // walk the precedence chain — the chat's Context Pack skill first, then
+    // the project default (Project Context Hub). Placed after the gate on
+    // purpose — see the comment on `skill`.
+    if (!skill) {
+      skill = this.resolveSkillForSession(sessionId);
+      if (skill) {
+        this.emit('agent:skillActive', { slug: skill.slug, name: skill.name, icon: skill.icon });
+      }
+    }
 
     // ── Clarification check ──────────────────────────────────────────────────
     // Ask the LLM whether the goal needs clarification before planning.
@@ -296,6 +314,35 @@ export class AgentOrchestrator {
     }
 
     await this.executePlan(plan);
+  }
+
+  /** Session-level skill fallback chain, consulted only when the message
+   *  itself resolved nothing (no /slug, no auto-match):
+   *    1. the chat's Context Pack skill (chat_sessions.context_pack_id),
+   *    2. the project default (projects.default_skill_id).
+   *  Null when neither applies or the referenced skill was deleted/disabled
+   *  since being pinned (silent no-skill — bindings are not FK-validated by
+   *  design). */
+  private resolveSkillForSession(sessionId: string): ActiveSkill | null {
+    try {
+      const load = (id: string | null | undefined): ActiveSkill | null => {
+        if (!id) return null;
+        const row = this.skills.getById(id);
+        return row && row.is_enabled ? toActive(row) : null;
+      };
+
+      const fromPack = load(getPackSkillId(sessionId));
+      if (fromPack) return fromPack;
+
+      const proj = getDb().prepare(
+        `SELECT p.default_skill_id AS id
+         FROM chat_sessions s JOIN projects p ON p.project_id = s.project_id
+         WHERE s.session_id = ? AND p.default_skill_id IS NOT NULL`
+      ).get(sessionId) as { id: string } | undefined;
+      return load(proj?.id);
+    } catch {
+      return null; // never let a fallback-skill lookup break a run
+    }
   }
 
   /** Decide whether a message is casual conversation / a general question
@@ -370,6 +417,10 @@ Reply with ONLY the single word "chat" or "task" — nothing else.`,
     const memoryBlock = getMemoryContext(projectId);
     const projectBlock = this.getSessionScopeBlock(sessionId);
     const envBlock = this.buildEnvironmentContext();
+    // `@chat:`/`@memory:` references in the user's message → injected context.
+    const mentionBlock = resolveMentionBlock(goal, sessionId);
+    // Context Pack pinned memories (by-reference; '' when no pack).
+    const packBlock = getPackContextBlock(sessionId);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
@@ -378,7 +429,7 @@ Reply with ONLY the single word "chat" or "task" — nothing else.`,
 
 Right now you're just talking. Answer naturally and concisely in plain English — you do NOT need a tool for everything, and you must NEVER refuse merely because no tool fits. If the user wants you to actually DO something on their computer (organise files, fetch a page, make a document), invite them to ask and you'll take it from there.
 
-${memoryBlock}${projectBlock}
+${mentionBlock}${memoryBlock}${packBlock}${projectBlock}
 
 ${envBlock}`,
       },
@@ -864,6 +915,10 @@ Rules:
     const memoryBlock = getMemoryContext(projectId);
     const projectBlock = this.getSessionScopeBlock(plan.sessionId);
     const envBlock = this.buildEnvironmentContext();
+    // `@chat:`/`@memory:` references in the user's message → injected context.
+    const mentionBlock = resolveMentionBlock(plan.goal, plan.sessionId);
+    // Context Pack pinned memories (by-reference; '' when no pack).
+    const packBlock = getPackContextBlock(plan.sessionId);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
@@ -876,7 +931,7 @@ The SAME act-don't-describe rule governs the browser. When the user asks you to 
 
 Only write a plain-English reply once the task is COMPLETE (or you are genuinely blocked and must ask one specific question).
 
-${memoryBlock}${skillBlock}${projectBlock}
+${mentionBlock}${memoryBlock}${packBlock}${skillBlock}${projectBlock}
 
 ${envBlock}
 
@@ -2035,14 +2090,17 @@ Rules:
   }
 
   /** Pull the last N messages of this session into an OpenAI message array.
-   *  Capped at 20 entries so very long sessions don't blow the context window. */
+   *  Capped at 20 entries so very long sessions don't blow the context window.
+   *  DESC + reverse: grab the 20 MOST RECENT rows, then restore chronological
+   *  order (plain ASC LIMIT would return the oldest 20 — the start of the chat,
+   *  not its tail). */
   private getSessionHistory(sessionId: string): OpenAI.ChatCompletionMessageParam[] {
     const db = getDb();
     const rows = db.prepare(
       `SELECT sender_type, content FROM messages
-       WHERE session_id=? ORDER BY timestamp ASC LIMIT 20`
+       WHERE session_id=? ORDER BY timestamp DESC LIMIT 20`
     ).all(sessionId) as { sender_type: string; content: string }[];
-    return rows.map(r => ({
+    return rows.reverse().map(r => ({
       role: r.sender_type === 'user' ? 'user' : 'assistant',
       content: r.content,
     } as OpenAI.ChatCompletionMessageParam));

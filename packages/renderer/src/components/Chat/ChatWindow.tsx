@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw, Bot, Pencil } from 'lucide-react';
+import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw, Bot, Pencil, History, Package } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore, type ReasoningStep } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -283,7 +283,7 @@ export default function ChatWindow() {
     messages, streamingContent, isStreaming, activeSessionId,
     addUserMessage, activeWorkflowId, setStreaming, pendingCitations, activeSkill,
     pendingAttachments, setPendingAttachments, scopes, setScopes,
-    projects, activeProjectId, pendingToolEvents,
+    projects, activeProjectId, pendingToolEvents, sessions,
     liveReasoning, showReasoning, setLiveReasoning,
     lastError, setLastError, openWorkspaceSettings,
   } = useChatStore();
@@ -408,16 +408,20 @@ export default function ChatWindow() {
   // `@`-autocomplete trigger: input ends with `@partial` at a word boundary.
   // v1 fires only at the trailing edge of input — full cursor-aware insertion
   // can come later. `showAt` is suppressed while the slash menu owns the keys.
-  const atMatch = input.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+  // Two token shapes: plain `@word` (may include `:` for the chat:/memory:
+  // group prefixes) and `@chat:"quoted title…` — quoted titles contain spaces,
+  // so they need their own alternative that keeps matching mid-quote.
+  const atMatch = input.match(/(?:^|\s)@((?:chat|memory):"[^"]*"?|[a-zA-Z0-9_:-]*)$/);
   const atQuery: string | null = atMatch ? (atMatch[1] ?? '') : null;
   const showAt = atQuery !== null && !showSlash && !atDismissed;
 
   /** Splice the picked reference back into the textarea, replacing the
    *  trailing `@partial` token with the value + a trailing space. Preserves
-   *  any leading whitespace that anchored the match. */
+   *  any leading whitespace that anchored the match. Mirrors the trigger
+   *  regex above — keep the two in sync. */
   const pickAtSuggestion = (s: AtSuggestion): void => {
     setInput(prev => prev.replace(
-      /(^|\s)@[a-zA-Z0-9_-]*$/,
+      /(^|\s)@(?:(?:chat|memory):"[^"]*"?|[a-zA-Z0-9_:-]*)$/,
       (_full, lead: string) => `${lead}${s.value} `,
     ));
     setAtDismissed(false);
@@ -550,6 +554,97 @@ export default function ChatWindow() {
     if (!activeSessionId) { setScopes([]); return; }
     window.artha.scopes.list(activeSessionId).then(setScopes).catch(() => setScopes([]));
   }, [activeSessionId, setScopes]);
+
+  // ── "Continue with context" (one-tap scope inheritance) ─────────────────
+  // On an EMPTY project chat, offer to copy the extra scopes the most recent
+  // sibling chat had beyond this chat's own. A suggestion chip, never a silent
+  // inherit — scopes are the agent's filesystem sandbox, so widening it stays
+  // an explicit user action (tool policies key on what's outside these roots).
+  const [inheritSuggestion, setInheritSuggestion] = useState<{
+    sessionId: string; title: string; extraCount: number;
+  } | null>(null);
+  const [inheritDismissed, setInheritDismissed] = useState(false);
+
+  useEffect(() => { setInheritDismissed(false); }, [activeSessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setInheritSuggestion(null);
+    // Only for a fresh, empty chat inside a project.
+    if (!activeSessionId || !activeProjectId || messages.length > 0) return;
+    const sibling = sessions.find(
+      s => s.session_id !== activeSessionId && s.project_id === activeProjectId,
+    ); // sessions are last_activity DESC — first hit is the most recent sibling
+    if (!sibling) return;
+    window.artha.scopes.list(sibling.session_id).then(sibScopes => {
+      if (cancelled) return;
+      const current = new Set(scopes.map(sc => sc.path));
+      const extra = sibScopes.filter(sc => !current.has(sc.path));
+      if (extra.length > 0) {
+        setInheritSuggestion({
+          sessionId: sibling.session_id,
+          title: sibling.title,
+          extraCount: extra.length,
+        });
+      }
+    }).catch(() => { /* sibling gone — no suggestion */ });
+    return () => { cancelled = true; };
+  }, [activeSessionId, activeProjectId, messages.length, sessions, scopes]);
+
+  const applyInheritedScopes = async () => {
+    if (!activeSessionId || !inheritSuggestion) return;
+    const updated = await window.artha.scopes.copyFrom(inheritSuggestion.sessionId, activeSessionId);
+    setScopes(updated);
+    setInheritSuggestion(null);
+  };
+
+  // ── Context Packs (named, reusable context sets) ─────────────────────────
+  // The active pack renders as a chip (detach ×); "+ Pack" opens a picker of
+  // saved packs; "Save as pack" snapshots the current chat's context.
+  const [activePack, setActivePack] = useState<{ pack_id: string; name: string } | null>(null);
+  const [packList, setPackList] = useState<Array<{ pack_id: string; name: string }>>([]);
+  const [showPackMenu, setShowPackMenu] = useState(false);
+  const [packNameDraft, setPackNameDraft] = useState<string | null>(null); // non-null = save dialog open
+
+  useEffect(() => {
+    setShowPackMenu(false);
+    setPackNameDraft(null);
+    if (!activeSessionId) { setActivePack(null); return; }
+    window.artha.packs.get(activeSessionId)
+      .then(p => setActivePack(p ? { pack_id: p.pack_id, name: p.name } : null))
+      .catch(() => setActivePack(null));
+  }, [activeSessionId]);
+
+  const openPackMenu = async () => {
+    if (!showPackMenu) {
+      const rows = await window.artha.packs.list().catch(() => []);
+      setPackList(rows.map(p => ({ pack_id: p.pack_id, name: p.name })));
+    }
+    setShowPackMenu(v => !v);
+  };
+
+  const applyPack = async (packId: string, name: string) => {
+    if (!activeSessionId) return;
+    setShowPackMenu(false);
+    const { warnings } = await window.artha.packs.apply(packId, activeSessionId);
+    setScopes(await window.artha.scopes.list(activeSessionId));
+    setActivePack({ pack_id: packId, name });
+    if (warnings.length) toast.warning('Pack applied with warnings', warnings.join(' '));
+    else toast.success(`Pack “${name}” applied`);
+  };
+
+  const saveCurrentAsPack = async () => {
+    if (!activeSessionId || !packNameDraft?.trim()) return;
+    const pack = await window.artha.packs.save(activeSessionId, packNameDraft.trim());
+    setPackNameDraft(null);
+    toast.success(`Saved pack “${pack.name}”`);
+  };
+
+  const detachPack = async () => {
+    if (!activeSessionId) return;
+    await window.artha.packs.detach(activeSessionId);
+    setActivePack(null);
+  };
 
   const addFolderScope = async () => {
     if (!activeSessionId || scopeBusy) return;
@@ -940,6 +1035,99 @@ export default function ChatWindow() {
                 <FilePlus2 size={11} /> File
               </button>
             </Tooltip>
+            {/* Context Packs — active-pack chip, apply picker, save snapshot. */}
+            {activePack && (
+              <Tooltip content={`Context pack “${activePack.name}” is active — its skill and pinned memories apply to this chat`}>
+                <span className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-artha-accent/10 border border-artha-accent/40 text-xs text-artha-text">
+                  <Package size={11} className="shrink-0 text-artha-accent" />
+                  <span className="truncate max-w-[140px]">{activePack.name}</span>
+                  <button
+                    onClick={detachPack}
+                    title="Detach pack (keeps the folders/files it added)"
+                    className="text-artha-muted hover:text-artha-danger transition-colors"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              </Tooltip>
+            )}
+            <span className="relative">
+              <Tooltip content="Apply a saved context pack — folders/files + skill + pinned memories in one tap">
+                <button
+                  onClick={openPackMenu}
+                  className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-artha-border text-xs text-artha-muted hover:text-artha-text hover:border-artha-accent transition-colors"
+                >
+                  <Package size={11} /> Pack
+                </button>
+              </Tooltip>
+              {showPackMenu && (
+                <div className="absolute bottom-full left-0 mb-1 w-56 max-h-48 overflow-y-auto rounded-lg border border-artha-border bg-artha-surface shadow-modal py-1 z-20">
+                  {packList.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-artha-subtle">
+                      No packs yet — add folders/files to a chat, then “Save pack”.
+                    </div>
+                  ) : packList.map(p => (
+                    <button
+                      key={p.pack_id}
+                      onClick={() => applyPack(p.pack_id, p.name)}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-artha-muted hover:bg-artha-surface2 hover:text-artha-text transition-colors"
+                    >
+                      <Package size={11} className="shrink-0 text-artha-accent" />
+                      <span className="truncate">{p.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </span>
+            {scopes.length > 0 && !activePack && (
+              packNameDraft === null ? (
+                <Tooltip content="Save this chat's folders/files + skill + pinned memories as a reusable pack">
+                  <button
+                    onClick={() => setPackNameDraft('')}
+                    className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-artha-border text-xs text-artha-muted hover:text-artha-text hover:border-artha-accent transition-colors"
+                  >
+                    <Package size={11} /> Save pack
+                  </button>
+                </Tooltip>
+              ) : (
+                <span className="flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full border border-artha-accent/40 bg-artha-surface text-xs">
+                  <Package size={11} className="shrink-0 text-artha-accent" />
+                  <input
+                    autoFocus
+                    value={packNameDraft}
+                    onChange={e => setPackNameDraft(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') { e.preventDefault(); saveCurrentAsPack(); }
+                      if (e.key === 'Escape') setPackNameDraft(null);
+                    }}
+                    placeholder="Pack name…"
+                    className="w-28 bg-transparent text-xs text-artha-text focus:outline-none placeholder:text-artha-subtle"
+                  />
+                  <button onClick={saveCurrentAsPack} title="Save" className="text-artha-accent hover:text-artha-accent transition-colors"><Check size={11} /></button>
+                  <button onClick={() => setPackNameDraft(null)} title="Cancel" className="text-artha-muted hover:text-artha-danger transition-colors"><X size={11} /></button>
+                </span>
+              )
+            )}
+            {/* One-tap scope inheritance from the most recent sibling chat. */}
+            {inheritSuggestion && !inheritDismissed && messages.length === 0 && (
+              <span className="flex items-center gap-1 pl-2 pr-1 py-1 rounded-full border border-dashed border-artha-accent/50 bg-artha-accent/5 text-xs text-artha-muted">
+                <History size={11} className="shrink-0 text-artha-accent" />
+                <button
+                  onClick={applyInheritedScopes}
+                  className="hover:text-artha-accent transition-colors"
+                  title={`Copy the folders/files "${inheritSuggestion.title}" was using into this chat`}
+                >
+                  Continue with context from “<span className="text-artha-text">{inheritSuggestion.title}</span>” (+{inheritSuggestion.extraCount})
+                </button>
+                <button
+                  onClick={() => setInheritDismissed(true)}
+                  className="text-artha-muted hover:text-artha-danger transition-colors"
+                  title="Dismiss"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            )}
           </div>
 
           {/* RAG index status — tells the user whether /ask has files to search */}

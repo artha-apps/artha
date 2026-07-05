@@ -12,9 +12,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search, MessageSquarePlus, SunMoon, Cpu, FolderOpen, MessagesSquare,
-  Settings as SettingsIcon, ArrowRight, LayoutGrid, Undo2, Brain, FileText,
+  Settings as SettingsIcon, ArrowRight, LayoutGrid, Undo2, Brain, FileText, Package,
 } from 'lucide-react';
 import { useChatStore, type ActiveView, type ActiveTab, type WorkflowsSection } from '../../stores/chat';
+import { createChat } from '../../lib/newChat';
 import { useThemeStore } from '../../stores/theme';
 import { toast } from '../../stores/toast';
 
@@ -68,6 +69,7 @@ export default function CommandPalette() {
   const [sel, setSel] = useState(0);
   const [models, setModels] = useState<{ name: string }[]>([]);
   const [undoables, setUndoables] = useState<{ id: string; label: string }[]>([]);
+  const [packs, setPacks] = useState<{ pack_id: string; name: string }[]>([]);
   const [results, setResults] = useState<SearchHit[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -102,6 +104,9 @@ export default function CommandPalette() {
     window.artha.undo.list()
       .then((u) => setUndoables(u.map((x) => ({ id: x.id, label: x.label }))))
       .catch(() => setUndoables([]));
+    window.artha.packs.list()
+      .then((p) => setPacks(p.map((x) => ({ pack_id: x.pack_id, name: x.name }))))
+      .catch(() => setPacks([]));
   }, [open]);
 
   // Debounced global content search across chats / memory / artifacts. Uses the
@@ -129,13 +134,9 @@ export default function CommandPalette() {
     // Quick actions
     cmds.push({
       id: 'new-chat', group: 'Actions', label: 'New chat', icon: MessageSquarePlus,
-      run: async () => {
-        const s = await window.artha.sessions.create(store.activeProjectId ?? null);
-        store.setSessions(await window.artha.sessions.list());
-        store.setActiveTab('chat');
-        store.setActiveSession(s.session_id);
-        store.setMessages([]);
-      },
+      // Shared helper — attaches the project root scope, consistent with the
+      // Sidebar/ProjectHome buttons (this entry point used to skip it).
+      run: async () => { await createChat(store.activeProjectId ?? null); },
     });
     cmds.push({ id: 'toggle-theme', group: 'Actions', label: 'Toggle light / dark theme', icon: SunMoon, run: () => toggleTheme() });
     // Undo recent agent file actions (move/copy/create-folder/trash).
@@ -148,6 +149,20 @@ export default function CommandPalette() {
           else toast.error('Couldn’t undo', r.error);
         },
       });
+    }
+    // Context packs — apply a saved context set to the current chat.
+    if (store.activeSessionId) {
+      for (const p of packs) {
+        cmds.push({
+          id: `pack-${p.pack_id}`, group: 'Context packs', label: `Apply pack: ${p.name}`, icon: Package, keywords: 'context pack scope apply',
+          run: async () => {
+            const { warnings } = await window.artha.packs.apply(p.pack_id, store.activeSessionId!);
+            store.setScopes(await window.artha.scopes.list(store.activeSessionId!));
+            if (warnings.length) toast.warning('Pack applied with warnings', warnings.join(' '));
+            else toast.success(`Pack “${p.name}” applied`);
+          },
+        });
+      }
     }
     // Tabs
     for (const t of TABS) {
@@ -178,7 +193,7 @@ export default function CommandPalette() {
     }
     return cmds;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [models, undoables, store.projects, store.sessions, store.activeProjectId]);
+  }, [models, undoables, packs, store.projects, store.sessions, store.activeProjectId, store.activeSessionId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
