@@ -63,6 +63,7 @@ import { recomputePrimaryProject, getSessionScopes, findOrCreateFolderWorkspace 
 import {
   listPacks, savePackFromSession, applyPackToSession,
   getPackForSession, detachPackFromSession, deletePack,
+  setPackShared, describeSharedPacks,
 } from '../agent/contextPacks';
 import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } from '../sentry';
 import { ensureModelReady, getModelStatus } from '../llm/ollamaRuntime';
@@ -354,6 +355,14 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
       return;
     }
 
+    // Shared context packs — the hub's curated context sets teammates can
+    // apply to their /chat runs via { packId }. Only is_shared=1 packs are
+    // listed; scope paths are hub-local by design (the run executes here).
+    if (req.method === 'GET' && url.pathname === '/packs') {
+      json(200, describeSharedPacks());
+      return;
+    }
+
     if (req.method === 'POST' && url.pathname === '/chat') {
       // Rate-limit per authenticated identity — one /chat = one full agent run,
       // so an unthrottled caller could exhaust CPU or run up cloud-model spend.
@@ -393,8 +402,22 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
         const db = getDb();
         let sid: string;
         try {
-          const parsed = JSON.parse(body || '{}') as { message?: string; sessionId?: string };
+          const parsed = JSON.parse(body || '{}') as { message?: string; sessionId?: string; packId?: string };
           if (!parsed.message) { json(400, { error: 'Request body must include a "message" field.' }); return; }
+
+          // Optional shared context pack. Validated BEFORE any writes so a bad
+          // id is a clean 400: the pack must exist AND be shared — the
+          // is_shared re-check here means un-sharing wins any race with a
+          // client that listed the pack earlier.
+          if (parsed.packId) {
+            const pack = db.prepare(`SELECT pack_id, is_shared FROM context_packs WHERE pack_id=?`)
+              .get(parsed.packId) as { pack_id: string; is_shared: number } | undefined;
+            if (!pack || !pack.is_shared) {
+              json(400, { error: 'Unknown or non-shared pack id.' });
+              return;
+            }
+          }
+
           sid = parsed.sessionId ?? '';
           if (!sid) {
             sid = crypto.randomUUID();
@@ -402,6 +425,18 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
           }
 
           res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
+
+          // Apply the pack AFTER the headers: warnings (missing paths, deleted
+          // skill/pins) stream as a `meta` NDJSON line rather than failing the
+          // request — same degrade-gracefully semantics as the desktop. The
+          // run then picks up the pack's skill + SHARED pins through the
+          // normal getPackForSession path (pins are is_shared-filtered on LAN).
+          if (parsed.packId) {
+            const { warnings } = applyPackToSession(parsed.packId, sid);
+            if (warnings.length) {
+              res.write(JSON.stringify({ type: 'meta', content: `Pack applied with warnings: ${warnings.join(' ')}` }) + '\n');
+            }
+          }
           // Snapshot the max rowid before the run so we can retrieve only the
           // new agent messages afterwards (the orchestrator streams to the
           // desktop UI but writes final messages to the DB synchronously).
@@ -1136,6 +1171,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('packs:get', (_e, sessionId: string) => getPackForSession(sessionId));
   ipcMain.handle('packs:detach', (_e, sessionId: string) => { detachPackFromSession(sessionId); return true; });
   ipcMain.handle('packs:delete', (_e, packId: string) => { deletePack(packId); return true; });
+  /** Toggle LAN sharing. Gated on ENABLE only — un-sharing is always allowed
+   *  (mirrors memory:setShared), so a downgraded license can still lock
+   *  things back down. */
+  ipcMain.handle('packs:setShared', (_e, packId: string, shared: boolean) => {
+    if (shared && !currentEntitlements().sharedPacks) {
+      throw new Error('Shared context packs require a Team or Business license.');
+    }
+    setPackShared(packId, shared);
+    return true;
+  });
 
   // Rebuild the RAG index for a folder scope. Returns the chunk count.
   ipcMain.handle('scopes:reindex', async (_e, scopeId: string) => {

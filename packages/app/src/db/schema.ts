@@ -571,13 +571,16 @@ export async function initDatabase(): Promise<void> {
     -- apply); skill_id + memory_ids_json are injected BY REFERENCE at run time
     -- (pack edits propagate; deleted skills/memories degrade gracefully). A
     -- session records the applied pack in chat_sessions.context_pack_id
-    -- (migration v16→v17) so the UI can show an active-pack chip.
+    -- (migration v16→v17) so the UI can show an active-pack chip. is_shared=1
+    -- lists the pack on the LAN hub (GET /packs, POST /chat {packId}) — gated
+    -- by the sharedPacks (Team/Business) entitlement.
     CREATE TABLE IF NOT EXISTS context_packs (
       pack_id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
       name            TEXT NOT NULL,
       scopes_json     TEXT NOT NULL DEFAULT '[]',
       skill_id        TEXT,
       memory_ids_json TEXT NOT NULL DEFAULT '[]',
+      is_shared       INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
@@ -952,6 +955,19 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] memory embedding migration skipped:', err);
+  }
+
+  // Migration v18→v19: is_shared on context_packs — when 1, the pack is listed
+  // on the LAN hub's GET /packs and can be applied to LAN sessions via
+  // POST /chat { packId }. Gated by the sharedPacks (Team/Business)
+  // entitlement. Mirrors the memory_entities is_shared migration (v6→v7).
+  try {
+    const packCols = db.prepare(`PRAGMA table_info(context_packs)`).all() as { name: string }[];
+    if (packCols.length && !packCols.some(c => c.name === 'is_shared')) {
+      db.exec(`ALTER TABLE context_packs ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0`);
+    }
+  } catch (err) {
+    console.warn('[Artha] context_packs is_shared migration skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

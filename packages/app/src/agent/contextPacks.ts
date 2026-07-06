@@ -29,6 +29,9 @@ export interface ContextPack {
   scopes_json: string;
   skill_id: string | null;
   memory_ids_json: string;
+  /** 1 = listed on the LAN hub (GET /packs) and applicable to LAN sessions.
+   *  Gated by the sharedPacks (Team/Business) entitlement on the enable path. */
+  is_shared: number;
   created_at: number;
 }
 
@@ -57,6 +60,28 @@ function parseMemoryIds(json: string): string[] {
 
 export function listPacks(): ContextPack[] {
   return getDb().prepare(`SELECT * FROM context_packs ORDER BY created_at DESC`).all() as ContextPack[];
+}
+
+/** Toggle LAN sharing for a pack. Entitlement gating lives at the IPC layer
+ *  (packs:setShared) — mirroring memory:setShared. */
+export function setPackShared(packId: string, shared: boolean): void {
+  getDb().prepare(`UPDATE context_packs SET is_shared=? WHERE pack_id=?`).run(shared ? 1 : 0, packId);
+}
+
+/** Packs visible to LAN teammates. */
+export function listSharedPacks(): ContextPack[] {
+  return getDb().prepare(`SELECT * FROM context_packs WHERE is_shared=1 ORDER BY created_at DESC`).all() as ContextPack[];
+}
+
+/** JSON-safe summaries of the shared packs for the LAN GET /packs route —
+ *  keeps scopes_json parsing in this module rather than the HTTP handler. */
+export function describeSharedPacks(): Array<{ pack_id: string; name: string; scopes: PackScope[]; has_skill: boolean }> {
+  return listSharedPacks().map(p => ({
+    pack_id: p.pack_id,
+    name: p.name,
+    scopes: parseScopes(p.scopes_json),
+    has_skill: !!p.skill_id,
+  }));
 }
 
 /**

@@ -126,3 +126,30 @@ curl -H "Authorization: Bearer <BEARER_KEY>" \
 The response is NDJSON; the agent reply comes back as `{ "type": "token", "content": "..." }` lines terminated by `{ "type": "done" }`.
 
 A polished in-app "Connect to team hub" client mode that routes the desktop app's chat into the hub is on the Phase 2 roadmap; the curl/IDE/MCP endpoints work today via the published LAN protocol.
+
+## Shared context packs
+
+A **context pack** is a named context set the hub admin saves from a chat — the
+attached folders/files, a skill, and pinned memories. Marking a pack **Shared**
+(Settings → Team → Shared Packs; requires a Team or Business license) publishes
+it to the hub so teammates can run with the same working context:
+
+```bash
+# List the packs the hub shares
+curl -H "Authorization: Bearer <BEARER_KEY>" http://<hub-host-ip>:7842/packs
+
+# Run a chat WITH a pack applied — the run executes on the hub inside the
+# pack's folders, with its skill active
+curl -H "Authorization: Bearer <BEARER_KEY>" \
+     -d '{"message":"summarise the latest contracts","packId":"<pack_id>"}' \
+     http://<hub-host-ip>:7842/chat
+```
+
+Notes:
+- Pack folders are **hub-local paths** — the run executes on the hub, which is
+  the whole org-hub model. Packs are not synced to teammate machines.
+- **Privacy:** only the pack's *shared* pinned memories are injected into LAN
+  runs. Private memories — pinned or otherwise — never travel to teammates.
+- Applying a pack merges its folders into the LAN session's scope; an unknown
+  or un-shared `packId` returns HTTP 400. Warnings (e.g. a folder deleted since
+  the pack was saved) stream back as a `{ "type": "meta" }` NDJSON line.

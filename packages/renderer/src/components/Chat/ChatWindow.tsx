@@ -613,8 +613,8 @@ export default function ChatWindow() {
   // ── Context Packs (named, reusable context sets) ─────────────────────────
   // The active pack renders as a chip (detach ×); "+ Pack" opens a picker of
   // saved packs; "Save as pack" snapshots the current chat's context.
-  const [activePack, setActivePack] = useState<{ pack_id: string; name: string } | null>(null);
-  const [packList, setPackList] = useState<Array<{ pack_id: string; name: string }>>([]);
+  const [activePack, setActivePack] = useState<{ pack_id: string; name: string; is_shared?: number } | null>(null);
+  const [packList, setPackList] = useState<Array<{ pack_id: string; name: string; is_shared?: number }>>([]);
   const [showPackMenu, setShowPackMenu] = useState(false);
   const [packNameDraft, setPackNameDraft] = useState<string | null>(null); // non-null = save dialog open
 
@@ -623,14 +623,14 @@ export default function ChatWindow() {
     setPackNameDraft(null);
     if (!activeSessionId) { setActivePack(null); return; }
     window.artha.packs.get(activeSessionId)
-      .then(p => setActivePack(p ? { pack_id: p.pack_id, name: p.name } : null))
+      .then(p => setActivePack(p ? { pack_id: p.pack_id, name: p.name, is_shared: p.is_shared } : null))
       .catch(() => setActivePack(null));
   }, [activeSessionId]);
 
   const openPackMenu = async () => {
     if (!showPackMenu) {
       const rows = await window.artha.packs.list().catch(() => []);
-      setPackList(rows.map(p => ({ pack_id: p.pack_id, name: p.name })));
+      setPackList(rows.map(p => ({ pack_id: p.pack_id, name: p.name, is_shared: p.is_shared })));
     }
     setShowPackMenu(v => !v);
   };
@@ -1090,6 +1090,9 @@ export default function ChatWindow() {
                 <span className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-artha-accent/10 border border-artha-accent/40 text-xs text-artha-text">
                   <Package size={11} className="shrink-0 text-artha-accent" />
                   <span className="truncate max-w-[140px]">{activePack.name}</span>
+                  {!!activePack.is_shared && (
+                    <span className="text-[9px] uppercase tracking-wide text-artha-accent border border-artha-accent/30 rounded px-1 shrink-0" title="Shared with your team's LAN hub">shared</span>
+                  )}
                   <button
                     onClick={detachPack}
                     title="Detach pack (keeps the folders/files it added)"
@@ -1123,6 +1126,9 @@ export default function ChatWindow() {
                     >
                       <Package size={11} className="shrink-0 text-artha-accent" />
                       <span className="truncate">{p.name}</span>
+                      {!!p.is_shared && (
+                        <span className="ml-auto text-[9px] uppercase tracking-wide text-artha-accent border border-artha-accent/30 rounded px-1 shrink-0" title="Shared with your team's LAN hub">shared</span>
+                      )}
                     </button>
                   ))}
                 </div>

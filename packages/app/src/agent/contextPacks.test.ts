@@ -11,7 +11,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 interface FakeDb {
-  packRow?: unknown;              // context_packs SELECT
+  packRow?: unknown;              // context_packs SELECT (single)
+  packsRows?: unknown[];          // context_packs SELECT (list)
   skillRun?: unknown;             // skill_runs latest
   sessionProject?: unknown;       // chat_sessions project_id
   projectMemories?: unknown[];    // memory_entities by project
@@ -19,14 +20,16 @@ interface FakeDb {
   memoryExists?: boolean;         // memory_entities existence probe
   memoryRows?: unknown[];         // memory_entities IN (...) fetch
   packSession?: unknown;          // LEFT JOIN pack-for-session
+  sqls: string[];                 // every prepared SQL, for shape assertions
   runs: Array<{ sql: string; args: unknown[] }>;
   throwOnScopeInsert?: boolean;
 }
-const { state } = vi.hoisted(() => ({ state: { db: { runs: [] } as FakeDb } }));
+const { state } = vi.hoisted(() => ({ state: { db: { runs: [], sqls: [] } as FakeDb } }));
 
 vi.mock('../db/schema', () => ({
   getDb: () => ({
     prepare: (sql: string) => ({
+      ...(state.db.sqls.push(sql), {}),
       get: (..._args: unknown[]) => {
         if (sql.includes('LEFT JOIN context_packs')) return state.db.packSession;
         if (sql.includes('FROM context_packs')) return state.db.packRow;
@@ -41,6 +44,7 @@ vi.mock('../db/schema', () => ({
       all: (..._args: unknown[]) => {
         if (sql.includes('FROM memory_entities') && sql.includes('IN (')) return state.db.memoryRows ?? [];
         if (sql.includes('FROM memory_entities')) return state.db.projectMemories ?? [];
+        if (sql.includes('FROM context_packs')) return state.db.packsRows ?? [];
         return [];
       },
       run: (...args: unknown[]) => {
@@ -67,9 +71,10 @@ vi.mock('fs', () => ({ existsSync: (p: string) => !String(p).includes('missing')
 
 import {
   savePackFromSession, applyPackToSession, getPackContextBlock, getPackSkillId,
+  setPackShared, listSharedPacks, describeSharedPacks,
 } from './contextPacks';
 
-beforeEach(() => { state.db = { runs: [] }; });
+beforeEach(() => { state.db = { runs: [], sqls: [] }; });
 
 describe('savePackFromSession', () => {
   it('snapshots scopes and derives skill + memory defaults from the session', () => {
@@ -168,5 +173,36 @@ describe('run-time injection', () => {
     };
     expect(getPackContextBlock('s1')).toBe('');
     expect(getPackSkillId('s1')).toBe('sk5');
+  });
+});
+
+describe('shared packs (LAN)', () => {
+  it('setPackShared writes 1/0 and listSharedPacks selects only shared rows', () => {
+    setPackShared('pk1', true);
+    let update = state.db.runs.find(r => r.sql.includes('SET is_shared'));
+    expect(update?.args).toEqual([1, 'pk1']);
+
+    state.db.runs = [];
+    setPackShared('pk1', false);
+    update = state.db.runs.find(r => r.sql.includes('SET is_shared'));
+    expect(update?.args).toEqual([0, 'pk1']);
+
+    listSharedPacks();
+    const select = state.db.sqls.find(s => s.includes('FROM context_packs') && s.includes('WHERE'));
+    expect(select).toContain('is_shared=1');
+  });
+
+  it('describeSharedPacks returns JSON-safe summaries (scopes parsed, has_skill)', () => {
+    state.db.packsRows = [{
+      pack_id: 'pk9', name: 'Legal room',
+      scopes_json: JSON.stringify([{ path: '/hub/contracts', kind: 'folder' }]),
+      skill_id: 'sk1', memory_ids_json: '[]', is_shared: 1, created_at: 1,
+    }];
+    const out = describeSharedPacks();
+    expect(out).toEqual([{
+      pack_id: 'pk9', name: 'Legal room',
+      scopes: [{ path: '/hub/contracts', kind: 'folder' }],
+      has_skill: true,
+    }]);
   });
 });

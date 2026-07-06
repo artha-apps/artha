@@ -290,8 +290,12 @@ export class AgentOrchestrator {
     ).get(sessionId) as { n: number }).n;
     const isFollowUp = msgCount > 1;
     const hasMentionRef = /@(chat|memory):/i.test(goal);
+    // LAN / unattended runs have no human to answer the modal — asking would
+    // stall the run for the full 90s timeout, so skip straight to planning.
+    const rc = getRunContext();
+    const noAnswerer = !!rc?.lan || !!rc?.unattended;
 
-    if (wordCount > 6 && !userContent.startsWith('/') && !skill && !isFollowUp && !hasMentionRef) {
+    if (wordCount > 6 && !userContent.startsWith('/') && !skill && !isFollowUp && !hasMentionRef && !noAnswerer) {
       const questions = await this.detectClarificationNeeded(goal);
       if (questions.length > 0) {
         db.prepare(`UPDATE agent_states SET status='awaiting_approval' WHERE workflow_id=?`).run(workflowId);

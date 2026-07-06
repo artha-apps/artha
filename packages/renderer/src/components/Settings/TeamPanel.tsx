@@ -7,9 +7,9 @@
  *   Shared Memory — toggle which memory entities remote teammates can see
  */
 import { useEffect, useState } from 'react';
-import { Users, Key, Brain, Plus, Trash2, Copy, Check, Eye, EyeOff, Shield, User, AlertTriangle, Loader } from 'lucide-react';
+import { Users, Key, Brain, Plus, Trash2, Copy, Check, Eye, EyeOff, Shield, User, AlertTriangle, Loader, Package } from 'lucide-react';
 
-type Tab = 'members' | 'keys' | 'memory';
+type Tab = 'members' | 'keys' | 'memory' | 'packs';
 
 interface Member {
   member_id: string;
@@ -326,19 +326,102 @@ function SharedMemoryTab() {
   );
 }
 
+/**
+ * Which context packs are visible on the LAN hub. Shared packs are listed on
+ * GET /packs and teammates can apply them to their /chat runs (packId) — the
+ * pack's folders/skill run ON THE HUB, and only its *shared* pinned memories
+ * are injected on LAN. Mirrors SharedMemoryTab.
+ */
+function SharedPacksTab() {
+  const [packs, setPacks] = useState<Array<{
+    pack_id: string; name: string; scopes_json: string; skill_id: string | null; is_shared: number;
+  }>>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    const all = await window.artha.packs.list();
+    setPacks(all.map(p => ({ ...p, is_shared: p.is_shared ?? 0 })));
+  };
+
+  useEffect(() => { load().catch(() => {}); }, []);
+
+  const scopeCount = (json: string): number => {
+    try { const v = JSON.parse(json) as unknown[]; return Array.isArray(v) ? v.length : 0; } catch { return 0; }
+  };
+
+  const toggle = async (p: { pack_id: string; is_shared: number }) => {
+    setBusy(p.pack_id);
+    setError('');
+    try {
+      await window.artha.packs.setShared(p.pack_id, p.is_shared === 0);
+      await load();
+    } catch (err) {
+      // License gate (Team/Business) surfaces here.
+      setError(err instanceof Error ? err.message : 'Could not update sharing.');
+    } finally { setBusy(null); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-artha-muted">
+        Shared packs appear on the team hub — teammates can apply them to their LAN chats
+        (folders, skill, and <em>shared</em> pinned memories; private pins never travel).
+      </p>
+      {error && <p className="text-xs text-artha-danger">{error}</p>}
+      {packs.length === 0 ? (
+        <p className="text-center text-sm text-artha-muted py-8">
+          No context packs yet. Save one from a chat's scope row ("Save pack"), then share it here.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {packs.map(p => (
+            <div key={p.pack_id}
+              className="flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-s2 border border-artha-border">
+              <Package size={14} className={`mt-0.5 shrink-0 ${p.is_shared ? 'text-artha-accent' : 'text-artha-muted'}`} />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-artha-text truncate">{p.name}</p>
+                <p className="text-xs text-artha-muted">
+                  {scopeCount(p.scopes_json)} scope{scopeCount(p.scopes_json) === 1 ? '' : 's'}
+                  {p.skill_id ? ' · skill attached' : ''}
+                </p>
+              </div>
+              <button
+                onClick={() => toggle(p)}
+                disabled={busy === p.pack_id}
+                className={`shrink-0 relative w-10 h-5.5 rounded-full transition-colors disabled:opacity-50 ${
+                  p.is_shared ? 'bg-artha-accent' : 'bg-artha-text/15'
+                }`}
+                role="switch"
+                aria-checked={p.is_shared === 1}
+                title={p.is_shared ? 'Shared with team' : 'Private'}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                  p.is_shared ? 'translate-x-4.5' : ''
+                }`} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 /**
- * Team panel shell — renders the three sub-components (MembersTab, ApiKeysTab,
- * SharedMemoryTab) inside a shared header and tab bar.
+ * Team panel shell — renders the four sub-components (MembersTab, ApiKeysTab,
+ * SharedMemoryTab, SharedPacksTab) inside a shared header and tab bar.
  */
 export default function TeamPanel() {
   const [tab, setTab] = useState<Tab>('members');
 
   const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
-    { id: 'members', label: 'Members',       icon: Users  },
-    { id: 'keys',    label: 'API Keys',      icon: Key    },
-    { id: 'memory',  label: 'Shared Memory', icon: Brain  },
+    { id: 'members', label: 'Members',       icon: Users   },
+    { id: 'keys',    label: 'API Keys',      icon: Key     },
+    { id: 'memory',  label: 'Shared Memory', icon: Brain   },
+    { id: 'packs',   label: 'Shared Packs',  icon: Package },
   ];
 
   return (
@@ -350,7 +433,7 @@ export default function TeamPanel() {
           <div>
             <h2 className="text-lg font-semibold text-artha-text">Team</h2>
             <p className="text-sm text-artha-muted">
-              Manage teammates, issue LAN API keys, and choose which memories to share
+              Manage teammates, issue LAN API keys, and choose which memories and context packs to share
             </p>
           </div>
         </div>
@@ -370,6 +453,7 @@ export default function TeamPanel() {
         {tab === 'members' && <MembersTab />}
         {tab === 'keys'    && <ApiKeysTab />}
         {tab === 'memory'  && <SharedMemoryTab />}
+        {tab === 'packs'   && <SharedPacksTab />}
       </div>
     </div>
   );

@@ -15,7 +15,7 @@
 | `scripts/sign-license.mjs` | Offline seller-side CLI — `--genkeys` mints the Ed25519 keypair once; `--tier/--seats/--org/--days` issues a signed license token. Private key stays in `~/.artha-license-key.pem` (gitignored) and never ships |
 | `.github/workflows/ci.yml` | CI: typecheck + lint + test on push/PR |
 | `.github/workflows/release.yml` | Release: build DMG/EXE/DEB, code-sign + notarize macOS (via `CSC_*`/`APPLE_*` secrets), and publish to `artha-apps/artha` GitHub Releases on tag push |
-| `docs/deploy/org-hub.md` | Runbook for standing up the Enterprise org hub — dedicated-host (Option A, recommended) + interim Docker (Option B), sizing, network, updates, backups, license issuance, member quick-connect |
+| `docs/deploy/org-hub.md` | Runbook for standing up the org hub (Team/Business) — dedicated-host (Option A, recommended) + interim Docker (Option B), sizing, network, updates, backups, license issuance, member quick-connect, shared context packs (GET /packs, /chat packId) |
 | `docs/user-guide.md` | Non-technical end-user guide: quick-start (install → first task) + Part 2 "every feature, step by step" (numbered steps + Try-this per feature). Mirrors the in-app guide copy |
 | `docs/user-guide-slides.html` | Self-contained HTML slide deck of the user guide — one feature per slide, keyboard/click/swipe nav, print-to-PDF. Same copy as `user-guide.md` |
 
@@ -175,7 +175,7 @@
 | `CloudIntegrationsPanel.tsx` | Connect Google Workspace (Gmail/Calendar/Drive) via OAuth — client-id setup, connect/disconnect |
 | `LANServerPanel.tsx` | Start/stop the LAN collaboration server — copyable URL, inline QR, curl/fetch examples, autostart |
 | `DesktopControlPanel.tsx` | Toggle desktop control (mouse/keyboard/screenshot), test-screenshot preview, tool list |
-| `TeamPanel.tsx` | Team mode — members, LAN API keys, shared memories |
+| `TeamPanel.tsx` | Team mode — members, LAN API keys, shared memories, shared context packs (LAN-published, Team/Business-gated) |
 | `LicensePanel.tsx` | Apply / replace / clear the offline-signed license key; renders current tier, seats, org, expiry. Surfaces under Workspace Settings → Team → License |
 | `SettingsPanel.tsx` | App settings — notifications toggle |
 | `ProvenancePanel.tsx` | Source attribution for agent answers (`.artha-receipt.json` sidecar) |

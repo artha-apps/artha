@@ -91,6 +91,8 @@ export interface ContextPackRow {
   scopes_json: string;
   skill_id: string | null;
   memory_ids_json: string;
+  /** 1 = shared to the LAN hub (Team/Business feature). */
+  is_shared: number;
   created_at: number;
 }
 
@@ -328,6 +330,9 @@ const api = {
     /** Stop the by-reference injection; copied scopes stay. */
     detach: (sessionId: string) => ipcRenderer.invoke('packs:detach', sessionId) as Promise<boolean>,
     delete: (packId: string) => ipcRenderer.invoke('packs:delete', packId) as Promise<boolean>,
+    /** Share/unshare a pack with the LAN hub (Team/Business; un-share always allowed). */
+    setShared: (packId: string, shared: boolean) =>
+      ipcRenderer.invoke('packs:setShared', packId, shared) as Promise<boolean>,
   },
 
   // ── LLM / Models ────────────────────────────────────────────────────────
