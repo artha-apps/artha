@@ -15,7 +15,10 @@
 
 import { createPrivateKey, sign, randomUUID } from 'crypto';
 
-export type Tier = 'free' | 'pro' | 'enterprise';
+/** Wire tiers (must match packages/app/src/license/entitlements.ts):
+ *  pro = "Personal" (full solo) · team = "Team" (LAN hub, shared context)
+ *  · enterprise = "Business" (adds audit/RBAC/org hub). */
+export type Tier = 'free' | 'pro' | 'team' | 'enterprise';
 
 export interface LicensePayload {
   /** Unique license ID (UUID v4). */

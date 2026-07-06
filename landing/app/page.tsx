@@ -4,13 +4,12 @@ import Image from 'next/image';
 import { useEffect, useState } from 'react';
 
 /**
- * Public pricing visibility. `false` HIDES the pricing section + the "Pricing"
- * nav link from the marketing site while the monetization model (monthly vs
- * annual) is being decided. The Stripe checkout, webhook, license issuance, and
- * the app's licensing all stay fully functional — the price just isn't
- * advertised. Flip back to `true` to re-show it.
+ * Public pricing visibility. The four-tier model (Free capped / Personal
+ * annual / Team per-seat / Business per-seat) is live — see
+ * docs/gtm/pricing_page_copy.md for the canonical copy and
+ * /api/stripe/price for the authoritative amounts.
  */
-const SHOW_PRICING = false;
+const SHOW_PRICING = true;
 
 type Platform = 'mac-arm64' | 'mac-intel' | 'windows' | 'linux' | 'unknown';
 
@@ -136,7 +135,28 @@ function downloadHref(p: Platform): string {
   return `/api/download/${p}`;
 }
 
-type PriceInfo = { configured: boolean; display?: string; oneTime?: boolean } | null;
+/** Per-SKU price from /api/stripe/price. unitAmount is cents (seat totals). */
+type SkuPrice = { display: string; unitAmount: number | null; interval: string | null; perSeat: boolean } | null;
+type PriceInfo = {
+  configured: boolean;
+  testMode?: boolean;
+  personalAnnual?: SkuPrice;
+  personal6mo?: SkuPrice;
+  team?: SkuPrice;
+  business?: SkuPrice;
+} | null;
+
+type PlanId = 'personal-annual' | 'personal-6mo' | 'team' | 'business';
+
+/** Live seat total for a per-seat SKU ("$840/year for 5 seats"). */
+function seatTotal(sku: SkuPrice, seats: number): string | null {
+  if (!sku?.unitAmount) return null;
+  const total = (sku.unitAmount * seats) / 100;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD',
+    minimumFractionDigits: total % 1 === 0 ? 0 : 2,
+  }).format(total);
+}
 
 export default function Page() {
   const [platform, setPlatform] = useState<Platform>('unknown');
@@ -144,8 +164,12 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
 
   const [price, setPrice] = useState<PriceInfo>(null);
-  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  // Personal card interval + per-seat steppers (min 5 per the plan).
+  const [personalInterval, setPersonalInterval] = useState<'annual' | '6mo'>('annual');
+  const [teamSeats, setTeamSeats] = useState(5);
+  const [bizSeats, setBizSeats] = useState(5);
 
   useEffect(() => {
     setPlatform(detectPlatform());
@@ -164,25 +188,25 @@ export default function Page() {
       .catch(() => setPrice({ configured: false }));
   }, []);
 
-  async function handleProCheckout() {
-    setCheckoutLoading(true);
+  async function handleCheckout(plan: PlanId, seats?: number) {
+    setCheckoutLoading(plan);
     setCheckoutError(null);
     try {
       const res = await fetch('/api/stripe/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ plan, seats }),
       });
       const data = await res.json();
       if (data.url) {
         window.location.href = data.url;
       } else {
         setCheckoutError(data.error ?? 'Something went wrong — please try again.');
-        setCheckoutLoading(false);
+        setCheckoutLoading(null);
       }
     } catch {
       setCheckoutError('Network error — please try again.');
-      setCheckoutLoading(false);
+      setCheckoutLoading(null);
     }
   }
 
@@ -342,50 +366,147 @@ export default function Page() {
         <section className="pricing" id="pricing">
           <div className="container">
             <div className="section-header">
-              <h2>One purchase. Yours forever.</h2>
+              <h2>Local-first, honestly priced.</h2>
               <p>
-                Artha is a one-time purchase — no subscription, no accounts.
-                Buy a license, run it locally on your machine, and own it forever.
+                Everything runs on your machine on every plan — your files never leave it.
+                License keys verify offline; no account, no phone-home, ever.
               </p>
             </div>
-            <div className="price-grid single">
-              <div className="price-card highlight">
-                <div className="price-tier">Artha License</div>
-                <div className="price-amount">
-                  {price?.configured && price.display ? (
-                    <>{price.display}</>
-                  ) : price === null ? (
-                    <span className="price-loading">—</span>
-                  ) : (
-                    <span className="price-loading">Soon</span>
-                  )}
-                  {price?.oneTime && <span className="price-suffix">one-time</span>}
-                </div>
+            <div className="price-grid quad">
+
+              {/* Free — the capped on-ramp */}
+              <div className="price-card">
+                <div className="price-tier">Free</div>
+                <div className="price-amount">$0<span className="price-suffix">forever</span></div>
                 <p className="price-desc">
-                  A perpetual license to run Artha locally. Pay once, use forever —
-                  your key is delivered by email instantly.
+                  Try the local AI coworker for real — no account, no card.
                 </p>
                 <ul className="price-features">
-                  <li>Run Artha locally on your machine</li>
-                  <li>Perpetual license key — never expires</li>
-                  <li>Local AI, document generation &amp; RAG</li>
-                  <li>Fully offline · zero telemetry</li>
+                  <li>Chat, tools, local RAG &amp; memory</li>
+                  <li>BYOK cloud models (your key)</li>
+                  <li>5 generated documents / month</li>
+                  <li>1 saved context pack</li>
+                  <li>Community support</li>
+                </ul>
+                <a className="price-cta secondary" href={downloadHref(primaryPlatform)}>
+                  Download free
+                </a>
+              </div>
+
+              {/* Personal — the primary B2C product */}
+              <div className="price-card highlight">
+                <div className="price-tier">Personal</div>
+                <div className="price-amount">
+                  {personalInterval === 'annual'
+                    ? (price?.personalAnnual?.display ?? <span className="price-loading">—</span>)
+                    : (price?.personal6mo?.display ?? <span className="price-loading">—</span>)}
+                </div>
+                {price?.personal6mo && price?.personalAnnual && (
+                  <div className="price-interval-toggle" role="tablist" aria-label="Billing interval">
+                    <button
+                      className={personalInterval === 'annual' ? 'active' : ''}
+                      onClick={() => setPersonalInterval('annual')}
+                    >Annual</button>
+                    <button
+                      className={personalInterval === '6mo' ? 'active' : ''}
+                      onClick={() => setPersonalInterval('6mo')}
+                    >6 months</button>
+                  </div>
+                )}
+                <p className="price-desc">
+                  The full solo experience — a fresh offline key on every renewal.
+                </p>
+                <ul className="price-features">
+                  <li>Everything in Free, uncapped</li>
+                  <li>Unlimited document generation</li>
+                  <li>Scheduled tasks &amp; unlimited packs</li>
+                  <li>Starter skill templates (legal · finance · ops)</li>
                   <li>Priority email support</li>
                 </ul>
                 <button
                   className="price-cta primary"
-                  onClick={handleProCheckout}
-                  disabled={checkoutLoading || !price?.configured}
+                  onClick={() => handleCheckout(personalInterval === 'annual' ? 'personal-annual' : 'personal-6mo')}
+                  disabled={checkoutLoading !== null || !(personalInterval === 'annual' ? price?.personalAnnual : price?.personal6mo)}
                 >
-                  {checkoutLoading
-                    ? 'Redirecting to checkout…'
-                    : price?.configured
-                      ? 'Buy a license'
+                  {checkoutLoading?.startsWith('personal')
+                    ? 'Redirecting…'
+                    : (personalInterval === 'annual' ? price?.personalAnnual : price?.personal6mo)
+                      ? 'Get Personal'
                       : 'Coming soon'}
                 </button>
-                {checkoutError && <p className="price-error">{checkoutError}</p>}
+              </div>
+
+              {/* Team — the collaboration tier */}
+              <div className="price-card">
+                <div className="price-tier">Team</div>
+                <div className="price-amount">
+                  {price?.team?.display ?? <span className="price-loading">—</span>}
+                  {price?.team && <span className="price-suffix">per seat</span>}
+                </div>
+                <div className="seat-stepper" aria-label="Team seats">
+                  <button onClick={() => setTeamSeats(s => Math.max(5, s - 1))} disabled={teamSeats <= 5} aria-label="Fewer seats">−</button>
+                  <span className="seat-count">{teamSeats} seats</span>
+                  <button onClick={() => setTeamSeats(s => Math.min(500, s + 1))} aria-label="More seats">+</button>
+                  {seatTotal(price?.team ?? null, teamSeats) && (
+                    <span>= {seatTotal(price?.team ?? null, teamSeats)}/yr</span>
+                  )}
+                </div>
+                <p className="price-desc">
+                  One hub machine, your whole team working with shared context. Min 5 seats.
+                </p>
+                <ul className="price-features">
+                  <li>Everything in Personal</li>
+                  <li>LAN team hub — data stays in your office</li>
+                  <li>Shared memories &amp; shared context packs</li>
+                  <li>Seat-capped roster + API keys</li>
+                </ul>
+                <button
+                  className="price-cta primary"
+                  onClick={() => handleCheckout('team', teamSeats)}
+                  disabled={checkoutLoading !== null || !price?.team}
+                >
+                  {checkoutLoading === 'team' ? 'Redirecting…' : price?.team ? 'Get Team' : 'Coming soon'}
+                </button>
+              </div>
+
+              {/* Business — compliance tier; air-gapped Enterprise via sales */}
+              <div className="price-card">
+                <div className="price-tier">Business</div>
+                <div className="price-amount">
+                  {price?.business?.display ?? <span className="price-loading">—</span>}
+                  {price?.business && <span className="price-suffix">per seat</span>}
+                </div>
+                <div className="seat-stepper" aria-label="Business seats">
+                  <button onClick={() => setBizSeats(s => Math.max(5, s - 1))} disabled={bizSeats <= 5} aria-label="Fewer seats">−</button>
+                  <span className="seat-count">{bizSeats} seats</span>
+                  <button onClick={() => setBizSeats(s => Math.min(500, s + 1))} aria-label="More seats">+</button>
+                  {seatTotal(price?.business ?? null, bizSeats) && (
+                    <span>= {seatTotal(price?.business ?? null, bizSeats)}/yr</span>
+                  )}
+                </div>
+                <p className="price-desc">
+                  For regulated teams that must prove what their AI did. Min 5 seats.
+                </p>
+                <ul className="price-features">
+                  <li>Everything in Team</li>
+                  <li>Audit-log export — every tool call, attributable</li>
+                  <li>Org hub deployment + role controls</li>
+                  <li>Security-questionnaire support</li>
+                </ul>
+                <button
+                  className="price-cta primary"
+                  onClick={() => handleCheckout('business', bizSeats)}
+                  disabled={checkoutLoading !== null || !price?.business}
+                >
+                  {checkoutLoading === 'business' ? 'Redirecting…' : price?.business ? 'Get Business' : 'Coming soon'}
+                </button>
+                <p className="price-desc" style={{ marginTop: 12, marginBottom: 0 }}>
+                  Air-gapped / on-prem Enterprise from $7,500/yr —{' '}
+                  <a href="mailto:support@artha.space?subject=Artha%20Enterprise">talk to us</a>.
+                </p>
               </div>
             </div>
+            {checkoutError && <p className="price-error">{checkoutError}</p>}
           </div>
         </section>
         )}

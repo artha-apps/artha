@@ -633,6 +633,75 @@ code {
   max-width: 420px;
 }
 
+/* Four-tier layout — Free / Personal / Team / Business. */
+.price-grid.quad {
+  grid-template-columns: repeat(4, 1fr);
+  max-width: 1200px;
+}
+@media (max-width: 1080px) {
+  .price-grid.quad {
+    grid-template-columns: repeat(2, 1fr);
+    max-width: 840px;
+  }
+}
+@media (max-width: 560px) {
+  .price-grid.quad {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Seat stepper on per-seat cards. */
+.seat-stepper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.seat-stepper button {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.seat-stepper button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.seat-stepper .seat-count {
+  min-width: 64px;
+  text-align: center;
+  color: var(--text);
+  font-weight: 600;
+}
+.price-interval-toggle {
+  display: inline-flex;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.price-interval-toggle button {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.price-interval-toggle button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 .price-card {
   position: relative;
   display: flex;
