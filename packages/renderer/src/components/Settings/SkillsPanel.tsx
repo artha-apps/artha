@@ -325,6 +325,119 @@ function SkillInsights({
   );
 }
 
+/** A curated starter template — one click creates a real (editable) skill.
+ *  These are the "vertical packs" seed: proven playbooks for the professional
+ *  niches Artha targets (legal, finance, operations), written against the
+ *  agent's actual tool names so the allowlists work out of the box. */
+interface SkillTemplate {
+  slug: string;
+  name: string;
+  icon: string;
+  vertical: 'Legal' | 'Finance' | 'Operations';
+  description: string;
+  instructions: string;
+  allowedTools: string[];
+}
+
+const SKILL_TEMPLATES: SkillTemplate[] = [
+  {
+    slug: 'contract-review',
+    name: 'Contract Reviewer',
+    icon: '⚖️',
+    vertical: 'Legal',
+    description: 'Read a contract and produce a structured review memo — parties, key dates, obligations, unusual clauses, red flags. Use when the user asks to review, analyse, or summarise a contract or agreement.',
+    instructions: [
+      'You are operating as the Contract Reviewer skill. Everything stays local — never send contract text to the web.',
+      '1. Locate the contract: use the attached file/folder scope, or rag_search / fs_search_files when the user names it loosely. Read it fully with fs_read_file before any analysis.',
+      '2. Extract, verbatim where possible: the parties, effective date, term & renewal, payment terms, termination rights, liability caps, indemnities, confidentiality, and governing law.',
+      '3. Flag anything unusual or one-sided (auto-renewals, unilateral changes, unlimited liability, broad IP assignment) in its own "Red flags" section, quoting the clause.',
+      '4. If the user wants a document, call docs_generate (docx) with a structured review memo; otherwise answer inline with short sections.',
+      '5. Never invent clause text. If a section is missing from the document, say "not present" — that itself is a finding.',
+    ].join('\n'),
+    allowedTools: ['fs_read_file', 'fs_list_directory', 'fs_search_files', 'rag_search', 'rag_list_indexes', 'docs_generate', 'memory_store'],
+  },
+  {
+    slug: 'client-intake',
+    name: 'Client Intake Organizer',
+    icon: '🗂️',
+    vertical: 'Legal',
+    description: 'Organize new-client documents into a clean matter folder and log the client in the CRM. Use when the user mentions onboarding a client, opening a matter, or organising intake documents.',
+    instructions: [
+      'You are operating as the Client Intake Organizer skill.',
+      '1. List the intake folder first (fs_list_directory). Never assume its contents.',
+      '2. Create a tidy structure (e.g. 01-engagement, 02-identity, 03-correspondence, 04-working) with fs_create_directory and move files with fs_move_batch — one batch call, then re-list to verify.',
+      '3. Register the client with crm_add_contact (name, email, company if present in the documents) and log the intake as a crm_log_interaction note.',
+      '4. Store durable facts (matter name, key dates) with memory_store so future chats know this client.',
+      '5. Finish with a short summary: files organised (counts per folder), client logged, anything missing that the user should chase.',
+    ].join('\n'),
+    allowedTools: ['fs_', 'crm_add_contact', 'crm_log_interaction', 'crm_find', 'memory_store'],
+  },
+  {
+    slug: 'expense-audit',
+    name: 'Expense Auditor',
+    icon: '🧾',
+    vertical: 'Finance',
+    description: 'Scan a folder of receipts/statements, categorise spending, flag anomalies, and produce a spreadsheet. Use when the user asks to audit, categorise, or reconcile expenses or receipts.',
+    instructions: [
+      'You are operating as the Expense Auditor skill. All analysis is local.',
+      '1. fs_list_directory the expenses folder; read each statement/receipt you can parse (fs_read_file; PDFs may arrive as attachments).',
+      '2. Categorise each line item (travel, software, meals, office, other) and total per category.',
+      '3. Flag anomalies explicitly: duplicates, round-number outliers, missing dates, spend spikes vs the other months you saw. Quote the line, never guess.',
+      '4. Produce an xlsx via docs_generate with columns: date, vendor, amount, category, flag. Pass every extracted row in "context" so nothing is fabricated.',
+      '5. Close with the 3-5 findings a reviewer should look at first.',
+    ].join('\n'),
+    allowedTools: ['fs_read_file', 'fs_list_directory', 'fs_search_files', 'rag_search', 'docs_generate', 'memory_store'],
+  },
+  {
+    slug: 'invoice-chase',
+    name: 'Invoice Follow-up',
+    icon: '💸',
+    vertical: 'Finance',
+    description: 'Track outstanding invoices and draft polite follow-up emails, logging each chase in the CRM. Use when the user asks who owes them money or wants payment reminders drafted.',
+    instructions: [
+      'You are operating as the Invoice Follow-up skill.',
+      '1. Find the invoices (attached folder, rag_search, or fs_search_files) and read them — extract client, amount, issue date, due date.',
+      '2. Work out which are overdue relative to today (the environment context gives you the date). Sort by most overdue.',
+      '3. Draft a follow-up email per overdue invoice: courteous, one short paragraph, restating amount + due date + payment method if known. Present drafts in chat — do NOT send anything unless the user explicitly says to.',
+      '4. Log each drafted chase with crm_log_interaction against the contact (create the contact with crm_add_contact if missing).',
+      '5. Summarise: total outstanding, count overdue, oldest invoice.',
+    ].join('\n'),
+    allowedTools: ['fs_read_file', 'fs_list_directory', 'fs_search_files', 'rag_search', 'crm_', 'kg_query', 'memory_store'],
+  },
+  {
+    slug: 'meeting-brief',
+    name: 'Meeting Brief Builder',
+    icon: '📋',
+    vertical: 'Operations',
+    description: 'Build a one-page brief before a meeting — who they are, history from the CRM, open items from your notes. Use when the user asks to prep for a meeting or call with someone.',
+    instructions: [
+      'You are operating as the Meeting Brief Builder skill.',
+      '1. Identify the person/company: crm_find + kg_query for relationship history and past interactions; rag_search your notes for recent mentions.',
+      '2. Recall relevant memory with memory_recall (decisions, preferences, commitments made to them).',
+      '3. Compose a one-page brief: who they are, relationship history (last 3 interactions), open items/commitments, and 3 suggested talking points grounded in what you found.',
+      '4. Deliver inline by default; docs_generate (docx) only if the user asked for a document.',
+      '5. Only state facts that came from the CRM, notes, or memory — mark anything uncertain as "unverified".',
+    ].join('\n'),
+    allowedTools: ['crm_find', 'crm_list', 'kg_query', 'kg_search', 'rag_search', 'memory_recall', 'fs_read_file', 'docs_generate'],
+  },
+  {
+    slug: 'weekly-report',
+    name: 'Weekly Status Compiler',
+    icon: '📅',
+    vertical: 'Operations',
+    description: 'Compile a weekly status update from what changed in the project folder and your notes. Use when the user asks for a weekly report, status update, or "what happened this week".',
+    instructions: [
+      'You are operating as the Weekly Status Compiler skill.',
+      '1. fs_list_directory the project folder and identify files modified in the last 7 days (fs_get_file_info when timestamps matter).',
+      '2. rag_search notes/documents for this week\'s decisions and progress; memory_recall for commitments made.',
+      '3. Structure the update: Done · In progress · Blocked · Next week. Every bullet must trace to a file, note, or memory you actually read.',
+      '4. Produce a docx via docs_generate when the user wants a shareable report; otherwise answer inline.',
+      '5. Keep it under a page. No filler, no invented progress.',
+    ].join('\n'),
+    allowedTools: ['fs_list_directory', 'fs_read_file', 'fs_get_file_info', 'fs_search_files', 'rag_search', 'memory_recall', 'docs_generate'],
+  },
+];
+
 /** Skills list + editor panel. Renders the editor in-place when `editing` is set,
  *  otherwise shows the full list view. */
 export default function SkillsPanel() {
@@ -339,6 +452,10 @@ export default function SkillsPanel() {
   const [sortBy, setSortBy] = useState<SortKey>('usage');
   // skill_id of the card whose insights drawer is open (only one at a time).
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Starter-templates gallery (vertical packs): collapsed by default; slug
+  // currently being added (disables its button).
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [addingTemplate, setAddingTemplate] = useState<string | null>(null);
 
   // Store actions for the failure "re-run" → opens a fresh chat on the skill.
   const closeWorkspaceSettings = useChatStore(s => s.closeWorkspaceSettings);
@@ -357,6 +474,29 @@ export default function SkillsPanel() {
     closeWorkspaceSettings();
     addUserMessage(sessionId, text);
     await window.artha.agent.sendMessage(sessionId, text).catch(() => {});
+  };
+
+  /** One-click template install — creates a normal editable skill. */
+  const addTemplate = async (t: SkillTemplate) => {
+    if (addingTemplate) return;
+    setAddingTemplate(t.slug);
+    setError('');
+    try {
+      await window.artha.skills.create({
+        slug: t.slug,
+        name: t.name,
+        icon: t.icon,
+        description: t.description,
+        instructions: t.instructions,
+        allowedTools: t.allowedTools,
+        isEnabled: true,
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add template');
+    } finally {
+      setAddingTemplate(null);
+    }
   };
 
   const load = async () => {
@@ -654,6 +794,55 @@ export default function SkillsPanel() {
             <Plus size={13} /> New Skill
           </button>
         </div>
+      </div>
+
+      {/* Starter templates — curated vertical playbooks (legal / finance / ops).
+          One click creates a normal, fully editable skill. */}
+      <div className="rounded-xl border border-artha-border bg-artha-s2 mb-4 overflow-hidden">
+        <button
+          onClick={() => setShowTemplates(v => !v)}
+          className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-artha-text/5 transition-colors"
+        >
+          <Sparkles size={13} className="text-artha-accent shrink-0" />
+          <span className="text-xs font-semibold text-artha-text flex-1">
+            Starter templates
+            <span className="ml-2 font-normal text-artha-muted">legal · finance · operations</span>
+          </span>
+          <span className="text-[10px] text-artha-subtle">
+            {showTemplates ? 'Hide' : `${SKILL_TEMPLATES.length} playbooks`}
+          </span>
+        </button>
+        {showTemplates && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 px-3 pb-3">
+            {SKILL_TEMPLATES.map(t => {
+              const installed = skills.some(s => s.slug === t.slug);
+              return (
+                <div key={t.slug} className="rounded-lg border border-artha-border bg-artha-surface p-3 flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base leading-none">{t.icon}</span>
+                    <span className="text-xs font-medium text-artha-text flex-1 truncate">{t.name}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-artha-accent/10 text-artha-accent shrink-0">{t.vertical}</span>
+                  </div>
+                  <p className="text-[11px] text-artha-muted leading-snug line-clamp-2">{t.description}</p>
+                  <div className="flex items-center justify-between mt-auto pt-1">
+                    <code className="text-[10px] text-artha-subtle font-mono">/{t.slug}</code>
+                    {installed ? (
+                      <span className="text-[10px] text-artha-success">Added ✓</span>
+                    ) : (
+                      <button
+                        onClick={() => addTemplate(t)}
+                        disabled={!!addingTemplate}
+                        className="text-[11px] px-2 py-0.5 rounded-md bg-artha-accent/15 hover:bg-artha-accent/25 text-artha-accent font-medium transition-colors disabled:opacity-40"
+                      >
+                        {addingTemplate === t.slug ? 'Adding…' : 'Add'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Dashboard summary — only meaningful once skills have actually run. */}

@@ -15,6 +15,8 @@ root [`README.md`](../README.md); for how the pieces fit together see
   - **`nomic-embed-text`** for RAG embeddings → `ollama pull nomic-embed-text`
     - Without it, semantic `rag_search` returns nothing; scoped chats fall back to reading files directly.
 - **macOS / Windows / Linux.** Native modules are compiled against Electron's ABI on install.
+  - Release installers: macOS DMGs are signed + notarized by Apple. The Windows `.exe` is **unsigned during the beta** (no Authenticode cert yet) — SmartScreen shows "Windows protected your PC" once; click **More info → Run anyway**. The Linux `.deb` needs no signature.
+  - The app auto-pulls `nomic-embed-text` in the background on first ready boot (see `llm/ollamaRuntime.ts ensureEmbedModel`) — the manual pull above is only needed for dev setups where Ollama never reaches ready.
 - *(optional)* Docker Desktop — for sandboxed tool execution.
 - *(optional)* Poppler (`brew install poppler`) — enables PDF page rendering for vision attachments.
 

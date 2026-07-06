@@ -154,6 +154,41 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
   set({ phase: 'warming', model: m.name });
   await warm(m.name, m.numCtx);
   set({ phase: 'ready', model: m.name });
+
+  // The window is usable now — provision the embedding model in the
+  // background. Without it, semantic memory ranking and RAG indexing silently
+  // degrade to keyword matching and nothing ever tells the user.
+  void ensureEmbedModel();
+}
+
+/** The embedding model every semantic feature depends on (memory ranking,
+ *  RAG indexes — see agent/contextGather.ts and rag/indexer.ts). */
+const EMBED_MODEL = 'nomic-embed-text';
+
+/**
+ * Ensure the embedding model is installed, pulling it in the background if
+ * missing (~270 MB, one-time). Fire-and-forget + best-effort: a failed pull
+ * leaves the existing keyword fallback exactly as it was. Exported so
+ * onboarding / RAG panel flows can also trigger it explicitly.
+ */
+export async function ensureEmbedModel(): Promise<boolean> {
+  try {
+    const res = await fetch(`${OLLAMA_HOST}/api/tags`);
+    const json = await res.json() as { models?: { name: string }[] };
+    const installed = (json.models ?? []).some(t => t.name === EMBED_MODEL || t.name.startsWith(`${EMBED_MODEL}:`));
+    if (installed) return true;
+    console.log(`[Artha] Embedding model ${EMBED_MODEL} missing — pulling in background…`);
+    const pull = await fetch(`${OLLAMA_HOST}/api/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: EMBED_MODEL, stream: false }),
+    });
+    const ok = pull.ok;
+    console.log(`[Artha] Embedding model pull ${ok ? 'completed' : 'failed'}.`);
+    return ok;
+  } catch {
+    return false; // Ollama down / offline — keyword fallback carries on
+  }
 }
 
 /** Evict the active model from memory (`keep_alive: 0`). Best-effort; called on

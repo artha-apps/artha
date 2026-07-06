@@ -1253,6 +1253,11 @@ RULES — follow exactly, no exceptions:
 
     const messages = args.messages;
     const mutations: TrackedMutation[] = [];
+    // Verify-before-claim tallies: every executed tool call, and how many of
+    // them errored. When ALL of a run's tool calls failed, the final prose is
+    // annotated deterministically — the model cannot talk its way past it.
+    let toolCallsTotal = 0;
+    let toolCallErrors = 0;
     const reasoningSteps: ReasoningStep[] = [];
     // Resolved once for the whole loop: showReasoningEnabled() hits SQLite, so it
     // must not be called per token inside the throttled onReasoning callback.
@@ -1550,6 +1555,9 @@ RULES — follow exactly, no exceptions:
           }
           }
 
+          toolCallsTotal++;
+          if (toolStatus !== 'ok' || toolResult.startsWith('Error:')) toolCallErrors++;
+
           // Anti-hallucination: only count a mutation as having happened when it
           // actually executed AND succeeded — a blocked or dry-run call must
           // never be reported as done.
@@ -1653,6 +1661,7 @@ RULES — follow exactly, no exceptions:
           // The user-facing text is a verified summary, not the model's prose.
           finalText = await this.generateVerifiedSummary(args.goal, mutations);
         } else {
+          // (mutation-free path — annotated below if every tool call failed)
           finalText = rawContent
             .replace(/\{[\s\S]*?"name":\s*"fs_[^}]*\}/g, '')
             .replace(/^\s*\{[\s\S]*?\}\s*$/gm, '')
@@ -1667,6 +1676,14 @@ RULES — follow exactly, no exceptions:
               if (typeof pick === 'string') finalText = pick;
             } catch { /* keep as-is */ }
           }
+        }
+
+        // Verify-before-claim backstop: if the model called tools and EVERY
+        // one of them failed (and nothing mutated — that path already gets the
+        // verified summary), its prose cannot be trusted to admit it. Append a
+        // deterministic caution derived from the tool tallies, not the model.
+        if (mutations.length === 0 && toolCallsTotal > 0 && toolCallErrors === toolCallsTotal) {
+          finalText = `${finalText}\n\n⚠️ Heads up: every tool call in this run failed (${toolCallErrors}/${toolCallsTotal}), so the answer above isn't grounded in real results. Treat it as unverified.`;
         }
 
         // The raw content was already streamed live. Only re-emit if the final

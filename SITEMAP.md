@@ -63,7 +63,7 @@
 | `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, lan, cloud, …) |
 | **llm/** | |
 | `src/llm/client.ts` | `getActiveLLMClient()` — returns an OpenAI-compat client for the active model; respects context_window |
-| `src/llm/ollamaRuntime.ts` | Ollama lifecycle — `ensureModelReady()` (auto-start the server if down + pre-warm the active model at matching num_ctx on launch, emitting `model:status`), `unloadActiveModel()` (keep_alive 0 on quit), `stopOllamaIfStarted()` (only a server WE spawned). Never instructs the user to run terminal commands; only stops what it started |
+| `src/llm/ollamaRuntime.ts` | Ollama lifecycle — `ensureModelReady()` (auto-start the server if down + pre-warm the active model at matching num_ctx on launch, emitting `model:status`), `ensureEmbedModel()` (background-pulls `nomic-embed-text` when missing so semantic memory/RAG never silently degrade to keyword), `unloadActiveModel()` (keep_alive 0 on quit), `stopOllamaIfStarted()` (only a server WE spawned). Never instructs the user to run terminal commands; only stops what it started |
 | `src/llm/streamMerge.ts` | Merges streamed tool-call deltas (id+name on first chunk, args appended after) into complete tool calls |
 | **mcp/** | |
 | `src/mcp/registry.ts` | `MCPRegistry` — manages MCP server processes, tool schemas, invocations; injects decrypted connector credentials via `spawnEnv` (augmented PATH) and records per-server `conn_status` |
@@ -164,7 +164,7 @@
 | **components/Settings/** | |
 | `ModelsPanel.tsx` | Configure LLM models — browse/install + uninstall Ollama models, cloud BYOK keys, context window slider, Model Fit cards (measured-here speed + per-task quality from `model_profiles`, plain-language label, ⭐ Recommended pick, auto-benchmark after install) |
 | `MCPToolsPanel.tsx` | MCP servers + tool schemas + tool-audit-log tabs; add / remove servers |
-| `SkillsPanel.tsx` | Create / edit / delete agent skill files |
+| `SkillsPanel.tsx` | Create / edit / delete agent skill files; Starter-templates gallery (curated legal/finance/operations playbooks, one-click install as editable skills) |
 | `WebPanel.tsx` | Web search config — Brave key, SearXNG instances, provider status |
 | `RAGPanel.tsx` | Index local documents for RAG retrieval |
 | `SchedulerPanel.tsx` | Create / edit / toggle / delete scheduled tasks |

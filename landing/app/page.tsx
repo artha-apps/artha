@@ -415,12 +415,14 @@ export default function Page() {
                 <div className="num">02</div>
                 <div className="body">
                   <p>
-                    Installers are currently <strong>unsigned</strong>.
+                    macOS builds are <strong>signed &amp; notarized by Apple</strong>.
                   </p>
                   <p>
-                    On macOS, right-click the app and choose Open. On Windows,
-                    click &ldquo;More info&rdquo; → &ldquo;Run anyway&rdquo;.
-                    Signed builds are on the roadmap.
+                    They install like any Mac app — no warnings. The Windows
+                    installer is unsigned during the beta, so SmartScreen asks
+                    once: click &ldquo;More info&rdquo; →
+                    &ldquo;Run anyway&rdquo;. A signed Windows build ships when
+                    we leave beta.
                   </p>
                 </div>
               </li>
