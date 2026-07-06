@@ -254,14 +254,35 @@ export class AgentOrchestrator {
       }
     }
 
+    // Instant acknowledgment: the message is now committed to the task path,
+    // and everything between here and the first streamed token is model time
+    // (plan, think phase, first tool call). Tell the user what's happening so
+    // the working pill shows signal instead of a generic "Thinking…".
+    this.emit('agent:status', 'Planning the steps…');
+
     // ── Clarification check ──────────────────────────────────────────────────
-    // Ask the LLM whether the goal needs clarification before planning.
-    // Short messages (≤6 words) and "/slug" invocations skip this to avoid
-    // annoying interruptions on simple commands.
+    // Ask the LLM whether the goal needs clarification before planning. This is
+    // a full extra model round-trip, so it runs only when its answer could
+    // plausibly change the plan. Skipped for:
+    //   - short messages (≤6 words) and "/slug" invocations — simple commands;
+    //   - any resolved skill (explicit, auto, pack, or project default) — the
+    //     skill's playbook already disambiguates intent;
+    //   - follow-up messages (session has history) — prior turns are the context
+    //     a clarifying question would ask for;
+    //   - messages carrying @-mention references — the user has already been
+    //     maximally specific about what they mean.
     const wordCount = goal.trim().split(/\s+/).length;
     let enrichedGoal = goal;
 
-    if (wordCount > 6 && !userContent.startsWith('/')) {
+    // The current user message is persisted BEFORE handleMessage runs (see
+    // agent:sendMessage in ipc/handlers.ts), so "has history" means >1 rows.
+    const msgCount = (getDb().prepare(
+      `SELECT COUNT(*) AS n FROM messages WHERE session_id=?`
+    ).get(sessionId) as { n: number }).n;
+    const isFollowUp = msgCount > 1;
+    const hasMentionRef = /@(chat|memory):/i.test(goal);
+
+    if (wordCount > 6 && !userContent.startsWith('/') && !skill && !isFollowUp && !hasMentionRef) {
       const questions = await this.detectClarificationNeeded(goal);
       if (questions.length > 0) {
         db.prepare(`UPDATE agent_states SET status='awaiting_approval' WHERE workflow_id=?`).run(workflowId);
@@ -289,6 +310,16 @@ export class AgentOrchestrator {
 
     const plan = await this.generatePlan(workflowId, sessionId, enrichedGoal, history, skill);
     plan.skill = skill;
+
+    // Plan landed — replace the generic "Planning…" status with the actual
+    // first steps ("Plan: list ~/Desktop → move screenshots → verify"), so the
+    // remaining pre-first-token wait reads as progress, not dead air.
+    if (plan.steps.length) {
+      const brief = plan.steps.slice(0, 3)
+        .map(s => s.description.replace(/\s+/g, ' ').slice(0, 60))
+        .join(' → ');
+      this.emit('agent:status', `Plan: ${brief}${plan.steps.length > 3 ? ' → …' : ''}`);
+    }
     // Explicit only when the user's own "/slug" resolved to THIS skill; a bare
     // "/" or a slug that fell through to auto-match counts as 'auto'. Mirrors the
     // exact condition resolve() used, so the dashboard split is accurate.
@@ -361,8 +392,22 @@ export class AgentOrchestrator {
 
     // Fast-path 2: an explicit action verb almost always means a real task —
     // skip the classifier round-trip and go straight to the planner.
-    const ACTION = /\b(move|moving|rename|delete|remove|create|make|organi[sz]e|copy|open|find|search|download|fetch|read|write|summari[sz]e|generate|build|convert|list|sort|clean|email|send|browse|navigate|click|screenshot|install|run|edit|update|fix|deploy)\b/i;
+    const ACTION = /\b(move|moving|rename|delete|remove|create|make|organi[sz]e|copy|open|find|search|download|fetch|read|write|summari[sz]e|generate|build|convert|list|sort|clean|email|send|browse|navigate|click|screenshot|install|run|edit|update|fix|deploy|draft|save|export|import|compress|zip|unzip|extract|merge|translate|schedule|remind|book|fill|submit|post|reply|upload|print|look up|google|visit|go to)\b/i;
     if (ACTION.test(text)) return 'task';
+
+    // Fast-path 3: web/file/desktop markers imply acting on something even
+    // without a verb match — "@web latest AI news", "the report in ~/Documents".
+    if (/@web\b|https?:\/\/|[~/](?:Users|Desktop|Documents|Downloads|tmp)\b|\.(pdf|docx?|xlsx?|pptx?|csv|txt|md|png|jpe?g|zip)\b/i.test(text)) {
+      return 'task';
+    }
+
+    // Fast-path 4: pure question shape with no file/web/desktop markers is a
+    // conversational ask ("why is the sky blue?", "what's a good name for…").
+    // The markers were ruled out above, so answering in plain chat is safe —
+    // and a rare miss self-corrects: the user rephrases with an action verb.
+    if (/^(what|who|when|where|why|how|is|are|was|were|does|do|did|can you tell|could you explain|explain|tell me about)\b/i.test(text) && text.endsWith('?')) {
+      return 'chat';
+    }
 
     // Ambiguous middle: ask the model to label it. Use the SAME model that will
     // answer a conversational reply ('synthesis' → active model) rather than the

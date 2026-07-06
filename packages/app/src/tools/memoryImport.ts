@@ -17,6 +17,7 @@
  */
 import { getDb } from '../db/schema';
 import { getActiveLLMClient } from '../llm/client';
+import { backfillMemoryEmbeddings } from '../agent/contextGather';
 
 /** A single parsed memory, ready for review and (after edits) insertion. */
 export interface ParsedEntry {
@@ -263,6 +264,10 @@ export function importMemories(entries: ParsedEntry[], origin = 'import'): Impor
     }
   });
   tx(entries);
+
+  // Embed the new rows off the hot path so semantic ranking can score them
+  // from cache instead of re-embedding per message. Best-effort.
+  if (created > 0) void backfillMemoryEmbeddings(Math.max(created, 50));
 
   return { created, skipped };
 }

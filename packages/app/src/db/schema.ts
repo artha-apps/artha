@@ -940,5 +940,19 @@ export function runMigrations(): void {
     console.warn('[Artha] chat_sessions context_pack_id migration skipped:', err);
   }
 
+  // Migration v17→v18: embedding on memory_entities — cached nomic-embed-text
+  // vector (JSON float array) computed once at write time. Semantic memory
+  // ranking previously re-embedded every candidate on EVERY message (up to 40
+  // sequential Ollama calls per turn); with the cache each turn embeds only
+  // the query. NULL = not yet embedded (lazily backfilled during ranking).
+  try {
+    const memCols4 = db.prepare(`PRAGMA table_info(memory_entities)`).all() as { name: string }[];
+    if (memCols4.length && !memCols4.some(c => c.name === 'embedding')) {
+      db.exec(`ALTER TABLE memory_entities ADD COLUMN embedding TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] memory embedding migration skipped:', err);
+  }
+
   console.log('[Artha] Database migrations applied.');
 }

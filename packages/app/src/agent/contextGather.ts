@@ -42,11 +42,16 @@ interface MemoryRow {
   entity_type: string;
   content: string;
   updated_at: number;
+  /** Cached JSON vector from the v17→v18 column; null = not yet embedded. */
+  embedding: string | null;
 }
 
 /** Embed `text` via the local Ollama embeddings endpoint. Returns null on any
- *  failure (Ollama down, model not pulled) so callers fall back gracefully. */
-async function embed(text: string): Promise<number[] | null> {
+ *  failure (Ollama down, model not pulled) so callers fall back gracefully.
+ *  Exported so memory WRITE paths (memory_store, BYOM import) can compute the
+ *  cached embedding once at write time instead of ranking re-embedding every
+ *  candidate per message. */
+export async function embedText(text: string): Promise<number[] | null> {
   try {
     const res = await fetch(OLLAMA_EMBED_URL, {
       method: 'POST',
@@ -60,6 +65,41 @@ async function embed(text: string): Promise<number[] | null> {
   }
 }
 
+/** Canonical text a memory row is embedded as — write paths and ranking MUST
+ *  agree on this or cached vectors won't match query semantics. */
+export function memoryEmbeddingText(name: string, content: string): string {
+  return `${name}: ${content}`;
+}
+
+/**
+ * Embed-and-persist every memory row missing a cached vector (newest first,
+ * bounded). Fire-and-forget from the synchronous write paths (memory_store,
+ * BYOM import): `void backfillMemoryEmbeddings()` — a failed/slow embed never
+ * blocks the write, and rankMemories' lazy backfill covers any stragglers.
+ * Stops at the first embed failure (Ollama down) rather than hammering a dead
+ * endpoint. Returns the number of rows embedded.
+ */
+export async function backfillMemoryEmbeddings(limit = 50): Promise<number> {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT entity_id, name, content FROM memory_entities
+       WHERE embedding IS NULL ORDER BY updated_at DESC LIMIT ?`,
+    ).all(limit) as { entity_id: string; name: string; content: string }[];
+    let done = 0;
+    for (const r of rows) {
+      const vec = await embedText(memoryEmbeddingText(r.name, r.content));
+      if (!vec) break; // embedder unavailable — retry on a future write/rank
+      db.prepare(`UPDATE memory_entities SET embedding=? WHERE entity_id=?`)
+        .run(JSON.stringify(vec), r.entity_id);
+      done++;
+    }
+    return done;
+  } catch {
+    return 0;
+  }
+}
+
 /** Cosine similarity; 0 for mismatched/empty vectors. */
 function cosine(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
@@ -68,8 +108,14 @@ function cosine(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
 
-/** Candidate memories for a session's project bucket (global + project), newest
- *  first, capped so embedding stays cheap.
+/** Candidate memories for a session's project bucket (global + project),
+ *  newest first, capped.
+ *
+ *  Rows already covered by the LONG-TERM MEMORY recency preamble (the 20 most
+ *  recent — see tools/memory.ts getMemoryContext) are EXCLUDED: both blocks
+ *  land in the same system prompt, so semantically ranking them again just
+ *  duplicated the same facts and wasted prompt tokens. The semantic block now
+ *  only surfaces OLDER memories the preamble missed.
  *
  *  When the run originates from the LAN server, only memories explicitly marked
  *  `is_shared=1` are eligible — a remote teammate's agent turn must never see
@@ -78,21 +124,35 @@ function loadCandidateMemories(projectId: string | null, cap = 40): MemoryRow[] 
   const db = getDb();
   // LAN runs are restricted to shared memories; local runs see everything.
   const sharedOnly = getRunContext()?.lan === true ? 'AND is_shared=1' : '';
-  const rows = (projectId
-    ? db.prepare(
-        `SELECT entity_id, name, entity_type, content, updated_at FROM memory_entities
-         WHERE (project_id IS NULL OR project_id = ?) ${sharedOnly} ORDER BY updated_at DESC LIMIT ?`,
-      ).all(projectId, cap)
-    : db.prepare(
-        `SELECT entity_id, name, entity_type, content, updated_at FROM memory_entities
-         WHERE project_id IS NULL ${sharedOnly} ORDER BY updated_at DESC LIMIT ?`,
-      ).all(cap)) as MemoryRow[];
+  const scope = projectId ? `(project_id IS NULL OR project_id = ?)` : `project_id IS NULL`;
+  const params: unknown[] = projectId ? [projectId, cap] : [cap];
+  // OFFSET 20 mirrors getMemoryContext's LIMIT 20 recency preamble (same scope,
+  // same ordering) — everything before the offset is already in the prompt.
+  const rows = db.prepare(
+    `SELECT entity_id, name, entity_type, content, updated_at, embedding FROM memory_entities
+     WHERE ${scope} ${sharedOnly}
+     ORDER BY updated_at DESC LIMIT ? OFFSET 20`,
+  ).all(...params) as MemoryRow[];
   return rows;
 }
 
-/** Top-N memories by semantic similarity to `goal`. Falls back to keyword
- *  overlap + recency when embeddings aren't available, so this never throws and
- *  always returns the best it can. Returns the rows plus their scores. */
+/** Parse a cached embedding column value; null on missing/corrupt. */
+function parseEmbedding(json: string | null): number[] | null {
+  if (!json) return null;
+  try {
+    const v = JSON.parse(json) as unknown;
+    return Array.isArray(v) && v.length && typeof v[0] === 'number' ? (v as number[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Top-N memories by semantic similarity to `goal`, scored against CACHED
+ *  per-row embeddings — each turn embeds only the query (1 Ollama call), not
+ *  every candidate. Rows without a cached vector (pre-migration writes) are
+ *  embedded once here and persisted, so the backfill amortises to zero.
+ *  Falls back to keyword overlap + recency when embeddings aren't available,
+ *  so this never throws and always returns the best it can. */
 async function rankMemories(
   goal: string,
   projectId: string | null,
@@ -101,11 +161,22 @@ async function rankMemories(
   const candidates = loadCandidateMemories(projectId);
   if (!candidates.length) return [];
 
-  const goalVec = await embed(goal);
+  const goalVec = await embedText(goal);
   if (goalVec) {
+    const db = getDb();
     const scored: { row: MemoryRow; score: number }[] = [];
     for (const row of candidates) {
-      const vec = await embed(`${row.name}: ${row.content}`);
+      let vec = parseEmbedding(row.embedding);
+      if (!vec) {
+        // Lazy backfill: embed once, persist, never re-embed this row again.
+        vec = await embedText(memoryEmbeddingText(row.name, row.content));
+        if (vec) {
+          try {
+            db.prepare(`UPDATE memory_entities SET embedding=? WHERE entity_id=?`)
+              .run(JSON.stringify(vec), row.entity_id);
+          } catch { /* cache miss next turn — harmless */ }
+        }
+      }
       scored.push({ row, score: vec ? cosine(goalVec, vec) : 0 });
     }
     return scored.sort((a, b) => b.score - a.score).slice(0, topN).filter(s => s.score > 0);

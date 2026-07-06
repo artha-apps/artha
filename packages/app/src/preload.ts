@@ -103,6 +103,13 @@ const api = {
       ipcRenderer.on('agent:toolCall', (_e, c) => cb(c));
       return () => ipcRenderer.removeAllListeners('agent:toolCall');
     },
+    /** Short human status line for the pre-first-token phase ("Planning the
+     *  steps…", "Plan: list folder → move files → verify"). Drives the working
+     *  pill so the wait shows signal instead of a generic spinner. */
+    onStatus: (cb: (status: string) => void) => {
+      ipcRenderer.on('agent:status', (_e, s) => cb(s));
+      return () => ipcRenderer.removeAllListeners('agent:status');
+    },
     onPlanReady: (cb: (plan: unknown) => void) => {
       ipcRenderer.on('agent:planReady', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:planReady');

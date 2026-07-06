@@ -13,6 +13,7 @@
  */
 import OpenAI from 'openai';
 import { getDb } from '../db/schema';
+import { backfillMemoryEmbeddings } from '../agent/contextGather';
 
 /** Row shape of the `memory_entities` SQLite table. Kept as a local type rather
  *  than importing from schema.ts so this module stays self-contained and testable. */
@@ -150,15 +151,19 @@ export function invokeMemoryTool(
       `SELECT entity_id FROM memory_entities WHERE name=? AND IFNULL(project_id,'')=IFNULL(?,'') LIMIT 1`
     ).get(memName, projectId) as { entity_id: string } | undefined;
     if (existing) {
+      // embedding=NULL: the content changed, so the cached vector is stale —
+      // the fire-and-forget backfill below re-embeds it off the hot path.
       db.prepare(
-        `UPDATE memory_entities SET content=?, entity_type=?, tags_json=?, updated_at=unixepoch() WHERE entity_id=?`
+        `UPDATE memory_entities SET content=?, entity_type=?, tags_json=?, embedding=NULL, updated_at=unixepoch() WHERE entity_id=?`
       ).run(content, entType, JSON.stringify(tags), existing.entity_id);
+      void backfillMemoryEmbeddings();
       return `Memory updated (id: ${existing.entity_id}): "${memName}"`;
     }
     const row = db.prepare(
       `INSERT INTO memory_entities (name, entity_type, content, tags_json, source_session_id, project_id)
        VALUES (?, ?, ?, ?, ?, ?) RETURNING entity_id`
     ).get(memName, entType, content, JSON.stringify(tags), sessionId ?? null, projectId) as { entity_id: string };
+    void backfillMemoryEmbeddings();
     return `Memory stored (id: ${row.entity_id}): "${memName}"`;
   }
 

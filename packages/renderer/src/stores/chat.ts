@@ -192,6 +192,9 @@ interface ChatState {
   /** Live chain-of-thought for the in-flight run (from the `agent:reasoning`
    *  event). Folded onto the assistant message in `finaliseStream`. */
   liveReasoning: ReasoningStep[] | null;
+  /** Pre-first-token status line from `agent:status` ("Planning the steps…",
+   *  "Plan: a → b → c"). Shown in the working pill; cleared on stream end. */
+  agentStatus: string | null;
   /** Mirror of the `show_reasoning` setting reported with the reasoning event —
    *  when false the disclosure is hidden though the phase still ran. */
   showReasoning: boolean;
@@ -233,6 +236,8 @@ interface ChatState {
   addCitations: (citations: Citation[]) => void;
   /** Set the live reasoning trace + visibility for the in-flight run. */
   setLiveReasoning: (steps: ReasoningStep[], show: boolean) => void;
+  /** Set the pre-first-token status line (null clears it). */
+  setAgentStatus: (status: string | null) => void;
   setPendingPlan: (plan: AgentPlan | null) => void;
   setPendingClarify: (req: ClarifyRequest | null) => void;
   setPendingToolApproval: (req: ToolApprovalRequest | null) => void;
@@ -341,6 +346,7 @@ export const useChatStore = create<ChatState>((set) => ({
   pendingToolEvents: [],
   pendingCitations: [],
   liveReasoning: null,
+  agentStatus: null,
   showReasoning: true,
   activeView: 'chat',
   activeTab: loadActiveTab(),
@@ -370,7 +376,7 @@ export const useChatStore = create<ChatState>((set) => ({
       activeSessionId: id, messages: [], streamingContent: '',
       isStreaming: false, executionLog: [], pendingToolEvents: [],
       pendingCitations: [], activeWorkflowId: null, activeSkill: null,
-      scopes: [], liveReasoning: null, lastError: null,
+      scopes: [], liveReasoning: null, lastError: null, agentStatus: null,
     });
   },
   setMessages: (messages) => set({ messages }),
@@ -409,7 +415,7 @@ export const useChatStore = create<ChatState>((set) => ({
       const hasCitations = s.pendingCitations.length > 0;
       // Only skip if there's truly nothing to show and no session
       if ((!hasContent && !hasToolEvents) || !s.activeSessionId) {
-        return { streamingContent: '', isStreaming: false, pendingToolEvents: [], pendingCitations: [], activeWorkflowId: null, activeSkill: null, liveReasoning: null };
+        return { streamingContent: '', isStreaming: false, pendingToolEvents: [], pendingCitations: [], activeWorkflowId: null, activeSkill: null, liveReasoning: null, agentStatus: null };
       }
       return {
         messages: [...s.messages, {
@@ -427,6 +433,7 @@ export const useChatStore = create<ChatState>((set) => ({
         activeWorkflowId: null,
         activeSkill: null,
         liveReasoning: null,
+        agentStatus: null,
       };
     }),
 
@@ -448,6 +455,7 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
 
   setLiveReasoning: (steps, show) => set({ liveReasoning: steps, showReasoning: show }),
+  setAgentStatus: (status) => set({ agentStatus: status }),
 
   setPendingPlan: (plan) => set({ pendingPlan: plan }),
   setPendingClarify: (req) => set({ pendingClarify: req }),

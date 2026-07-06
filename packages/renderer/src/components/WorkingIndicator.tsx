@@ -33,6 +33,7 @@ export default function WorkingIndicator() {
   const pendingToolApproval = useChatStore(s => s.pendingToolApproval);
   const streamingContent = useChatStore(s => s.streamingContent);
   const executionLog = useChatStore(s => s.executionLog);
+  const agentStatus = useChatStore(s => s.agentStatus);
 
   // Elapsed timer (hooks must run before the early return). Resets each run.
   const [elapsed, setElapsed] = useState(0);
@@ -45,13 +46,15 @@ export default function WorkingIndicator() {
 
   if (!isStreaming) return null;
 
-  // Derive the current phase from store state, most-specific first.
+  // Derive the current phase from store state, most-specific first. The
+  // orchestrator's own status line ("Planning the steps…", "Plan: a → b → c")
+  // beats the generic "Thinking…" — the pre-first-token wait shows signal.
   const lastTool = [...executionLog].reverse().find(e => e.name)?.name;
   const phase = pendingToolApproval
     ? 'Waiting for your approval'
     : streamingContent.trim()
       ? 'Responding…'
-      : toolPhase(lastTool) ?? 'Thinking…';
+      : toolPhase(lastTool) ?? agentStatus ?? 'Thinking…';
   const slow = elapsed >= 45 && !pendingToolApproval;
   const mins = Math.floor(elapsed / 60), secs = elapsed % 60;
   const clock = mins ? `${mins}m ${secs}s` : `${secs}s`;
@@ -75,7 +78,8 @@ export default function WorkingIndicator() {
           className="group flex items-center gap-2 pl-3.5 pr-3 py-1.5 text-artha-text text-xs font-medium hover:bg-artha-accent/5 transition-colors"
         >
           <span className={`w-2 h-2 rounded-full shadow-glow-sm animate-pulse ${pendingToolApproval ? 'bg-artha-warn' : 'bg-artha-accent'}`} />
-          <span>{phase}</span>
+          {/* Plan lines can be long — truncate so the pill never spans the window. */}
+          <span className="max-w-[360px] truncate">{phase}</span>
           <span className="text-artha-subtle tabular-nums">· {clock}</span>
           {slow && <span className="text-artha-subtle hidden sm:inline">· taking longer than usual</span>}
           <ArrowUpRight size={12} className="text-artha-subtle group-hover:text-artha-accent transition-colors" />
