@@ -11,8 +11,8 @@ import {
   sign as cryptoSign,
 } from 'crypto';
 
-import { computeEntitlements, parseAndVerify, invalidateEntitlements } from './verify';
-import { FREE_ENTITLEMENTS } from './entitlements';
+import { computeEntitlements, parseAndVerify, invalidateEntitlements, getEntitlements } from './verify';
+import { FREE_ENTITLEMENTS, entitlementsFor } from './entitlements';
 
 function b64url(buf: Buffer): string {
   return buf.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -23,7 +23,7 @@ const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const PUB_PEM = publicKey.export({ type: 'spki', format: 'pem' }) as string;
 
 interface Payload {
-  id: string; org: string; tier: 'free' | 'pro' | 'enterprise';
+  id: string; org: string; tier: 'free' | 'pro' | 'team' | 'enterprise';
   seats: number; iat: number; exp: number;
 }
 
@@ -108,5 +108,88 @@ describe('computeEntitlements', () => {
     // by passing a syntactically-valid token signed with the wrong key.
     const other = generateKeyPairSync('ed25519');
     expect(computeEntitlements(mint(goodPayload, other.privateKey))).toEqual(FREE_ENTITLEMENTS);
+  });
+});
+
+describe('tier restructure (free/pro=Personal/team/enterprise=Business)', () => {
+  it('accepts a team-tier token and grants LAN + shared features', () => {
+    const token = mint({ ...goodPayload, tier: 'team', seats: 5 });
+    const p = parseAndVerify(token, { now, publicKeyPem: PUB_PEM });
+    expect(p?.tier).toBe('team');
+    const ents = entitlementsFor('team', 5, 'Acme', now + 86_400 * 365);
+    expect(ents.lanServer).toBe(true);
+    expect(ents.sharedMemory).toBe(true);
+    expect(ents.sharedPacks).toBe(true);
+    expect(ents.orgHub).toBe(false);
+    expect(ents.rbac).toBe(false);
+    expect(ents.docsPerMonth).toBeNull();
+    expect(ents.scheduler).toBe(true);
+  });
+
+  it('pro (Personal) is a full solo tier with NO team flags', () => {
+    const ents = entitlementsFor('pro', 1, 'someone@x.com', null);
+    expect(ents.lanServer).toBe(false);
+    expect(ents.sharedMemory).toBe(false);
+    expect(ents.sharedPacks).toBe(false);
+    // …but nothing solo is capped.
+    expect(ents.docsPerMonth).toBeNull();
+    expect(ents.scheduler).toBe(true);
+    expect(ents.maxContextPacks).toBeNull();
+    expect(ents.skillTemplates).toBe(true);
+  });
+
+  it('free is capped: 5 docs/month, no scheduler, 1 pack, no templates', () => {
+    expect(FREE_ENTITLEMENTS.docsPerMonth).toBe(5);
+    expect(FREE_ENTITLEMENTS.scheduler).toBe(false);
+    expect(FREE_ENTITLEMENTS.maxContextPacks).toBe(1);
+    expect(FREE_ENTITLEMENTS.skillTemplates).toBe(false);
+    expect(FREE_ENTITLEMENTS.lanServer).toBe(false);
+  });
+
+  it('enterprise (Business) gets everything', () => {
+    const ents = entitlementsFor('enterprise', 25, 'BigCo', now + 86_400 * 365);
+    expect(ents.lanServer).toBe(true);
+    expect(ents.sharedPacks).toBe(true);
+    expect(ents.orgHub).toBe(true);
+    expect(ents.rbac).toBe(true);
+    expect(ents.auditExport).toBe(true);
+  });
+});
+
+describe('getEntitlements cache expiry', () => {
+  it('an expired key lapses to FREE on the next CALL, not the next restart', () => {
+    invalidateEntitlements();
+    const key = mint({ ...goodPayload, tier: 'team', seats: 5, exp: now + 3600 });
+
+    // t0: key valid → Team entitlements, cached.
+    const t0 = getEntitlements(() => key, { now, publicKeyPem: PUB_PEM });
+    expect(t0.tier).toBe('team');
+    expect(t0.lanServer).toBe(true);
+
+    // t0+10s: cache hit, still valid.
+    const t1 = getEntitlements(() => key, { now: now + 10, publicKeyPem: PUB_PEM });
+    expect(t1.tier).toBe('team');
+
+    // t0+2h: SAME key, cache still holds Team — the expiry re-check must
+    // reject the hit and recompute, which falls back to FREE.
+    const t2 = getEntitlements(() => key, { now: now + 7200, publicKeyPem: PUB_PEM });
+    expect(t2.tier).toBe('free');
+    expect(t2.lanServer).toBe(false);
+
+    // And it stays FREE on subsequent hits (expired result cached with null exp).
+    const t3 = getEntitlements(() => key, { now: now + 7300, publicKeyPem: PUB_PEM });
+    expect(t3.tier).toBe('free');
+    invalidateEntitlements();
+  });
+
+  it('perpetual keys (exp far future) are unaffected by the re-check', () => {
+    invalidateEntitlements();
+    const key = mint({ ...goodPayload, tier: 'pro', seats: 1, exp: now + 86_400 * 365 * 50 });
+    const a = getEntitlements(() => key, { now, publicKeyPem: PUB_PEM });
+    const b = getEntitlements(() => key, { now: now + 86_400 * 300, publicKeyPem: PUB_PEM });
+    expect(a.tier).toBe('pro');
+    expect(b.tier).toBe('pro');
+    expect(b).toBe(a); // same cached object — no recompute happened
+    invalidateEntitlements();
   });
 });

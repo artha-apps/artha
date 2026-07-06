@@ -45,7 +45,7 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(padded, 'base64');
 }
 
-const VALID_TIERS: ReadonlySet<Tier> = new Set<Tier>(['free', 'pro', 'enterprise']);
+const VALID_TIERS: ReadonlySet<Tier> = new Set<Tier>(['free', 'pro', 'team', 'enterprise']);
 
 /**
  * Revoked license ids (the `id` field minted by scripts/sign-license.mjs).
@@ -102,10 +102,11 @@ export function parseAndVerify(
   }
 }
 
-/** Compute entitlements from a raw key string. Empty/invalid/expired → Free. */
-export function computeEntitlements(rawKey: string | null | undefined, now?: number): Entitlements {
+/** Compute entitlements from a raw key string. Empty/invalid/expired → Free.
+ *  `publicKeyPem` is a test seam — production callers use the bundled key. */
+export function computeEntitlements(rawKey: string | null | undefined, now?: number, publicKeyPem?: string): Entitlements {
   if (!rawKey) return FREE_ENTITLEMENTS;
-  const payload = parseAndVerify(rawKey, { now });
+  const payload = parseAndVerify(rawKey, { now, publicKeyPem });
   if (!payload) return FREE_ENTITLEMENTS;
   return entitlementsFor(payload.tier, payload.seats, payload.org || null, payload.exp);
 }
@@ -121,10 +122,21 @@ let cached: { key: string | null; ents: Entitlements } | null = null;
  * provides so this module never imports the database. Pass a function that
  * returns `settings_json.license_key` or null.
  */
-export function getEntitlements(readKey: () => string | null | undefined): Entitlements {
+export function getEntitlements(
+  readKey: () => string | null | undefined,
+  opts: { now?: number; publicKeyPem?: string } = {},
+): Entitlements {
   const key = readKey() ?? null;
-  if (cached && cached.key === key) return cached.ents;
-  const ents = computeEntitlements(key);
+  const nowSec = opts.now ?? Math.floor(Date.now() / 1000);
+  if (cached && cached.key === key) {
+    // Re-check expiry on every cache hit: annual (team/business) keys must
+    // lapse the moment they expire, not at the next app restart. Cheap — one
+    // comparison; the Ed25519 re-verify below only runs on the first call
+    // AFTER expiry (computeEntitlements then falls back to Free).
+    const exp = cached.ents.expiresAt;
+    if (exp === null || exp >= nowSec) return cached.ents;
+  }
+  const ents = computeEntitlements(key, opts.now, opts.publicKeyPem);
   cached = { key, ents };
   return ents;
 }

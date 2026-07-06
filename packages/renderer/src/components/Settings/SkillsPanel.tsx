@@ -453,9 +453,12 @@ export default function SkillsPanel() {
   // skill_id of the card whose insights drawer is open (only one at a time).
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Starter-templates gallery (vertical packs): collapsed by default; slug
-  // currently being added (disables its button).
+  // currently being added (disables its button). Installs are a paid-tier
+  // convenience — gated on the skillTemplates entitlement (soft gate; the
+  // playbook text isn't secret, the one-click install is the product).
   const [showTemplates, setShowTemplates] = useState(false);
   const [addingTemplate, setAddingTemplate] = useState<string | null>(null);
+  const [templatesAllowed, setTemplatesAllowed] = useState(true);
 
   // Store actions for the failure "re-run" → opens a fresh chat on the skill.
   const closeWorkspaceSettings = useChatStore(s => s.closeWorkspaceSettings);
@@ -476,9 +479,15 @@ export default function SkillsPanel() {
     await window.artha.agent.sendMessage(sessionId, text).catch(() => {});
   };
 
+  useEffect(() => {
+    window.artha.license.get()
+      .then(res => setTemplatesAllowed(res.entitlements.skillTemplates))
+      .catch(() => setTemplatesAllowed(true)); // fail open — never block on a license read error
+  }, []);
+
   /** One-click template install — creates a normal editable skill. */
   const addTemplate = async (t: SkillTemplate) => {
-    if (addingTemplate) return;
+    if (addingTemplate || !templatesAllowed) return;
     setAddingTemplate(t.slug);
     setError('');
     try {
@@ -828,7 +837,7 @@ export default function SkillsPanel() {
                     <code className="text-[10px] text-artha-subtle font-mono">/{t.slug}</code>
                     {installed ? (
                       <span className="text-[10px] text-artha-success">Added ✓</span>
-                    ) : (
+                    ) : templatesAllowed ? (
                       <button
                         onClick={() => addTemplate(t)}
                         disabled={!!addingTemplate}
@@ -836,6 +845,13 @@ export default function SkillsPanel() {
                       >
                         {addingTemplate === t.slug ? 'Adding…' : 'Add'}
                       </button>
+                    ) : (
+                      <span
+                        className="text-[10px] text-artha-subtle"
+                        title="Starter templates are included with Personal and higher — see artha.space for plans"
+                      >
+                        Personal plan
+                      </span>
                     )}
                   </div>
                 </div>

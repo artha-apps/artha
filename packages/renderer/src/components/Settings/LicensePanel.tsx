@@ -10,25 +10,34 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle2, KeyRound, Trash2, ShieldCheck } from 'lucide-react';
 
-type Tier = 'free' | 'pro' | 'enterprise';
+type Tier = 'free' | 'pro' | 'team' | 'enterprise';
 
 interface Entitlements {
   tier: Tier;
   seats: number;
   lanServer: boolean;
   sharedMemory: boolean;
+  sharedPacks: boolean;
   orgHub: boolean;
   rbac: boolean;
   auditExport: boolean;
+  docsPerMonth: number | null;
+  scheduler: boolean;
+  maxContextPacks: number | null;
+  skillTemplates: boolean;
   org: string | null;
   expiresAt: number | null;
 }
 
-const TIER_LABEL: Record<Tier, string> = { free: 'Free', pro: 'Pro', enterprise: 'Enterprise' };
+/** Wire tiers → commercial names. 'pro' keys read "Personal" (full solo,
+ *  incl. grandfathered perpetual keys); 'enterprise' keys read "Business"
+ *  (air-gapped custom deals are minted on that tier too). */
+const TIER_LABEL: Record<Tier, string> = { free: 'Free', pro: 'Personal', team: 'Team', enterprise: 'Business' };
 const TIER_BLURB: Record<Tier, string> = {
-  free: 'Local desktop only. 1 seat. LAN server disabled.',
-  pro: 'Solo / small team. LAN/team server, shared memories, seat-capped roster.',
-  enterprise: 'Org hub deployment, RBAC on hub endpoints, audit-log export.',
+  free: 'Capped solo — 5 generated documents/month, no scheduler or starter templates. Chat, tools, RAG, memory, and BYOK stay open.',
+  pro: 'The full solo experience — unlimited documents, scheduler, unlimited context packs, starter templates, priority support.',
+  team: 'Everything in Personal, plus the LAN/team hub: shared memories, shared context packs, seat-capped roster.',
+  enterprise: 'Everything in Team, plus org hub deployment, RBAC on hub endpoints, and audit-log export.',
 };
 
 function formatExpiry(exp: number | null): string {
@@ -154,7 +163,8 @@ export default function LicensePanel() {
         </div>
 
         <p className="text-[11px] text-artha-muted">
-          Don't have a key? Free is unlimited for solo local use. Reach out for Pro or Enterprise pricing.
+          Don't have a key? See plans at artha.space/#pricing — Personal for the full solo
+          experience, Team for LAN collaboration, Business for compliance features.
         </p>
       </div>
     </div>

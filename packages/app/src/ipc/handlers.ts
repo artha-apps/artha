@@ -66,9 +66,10 @@ import {
 } from '../agent/contextPacks';
 import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } from '../sentry';
 import { ensureModelReady, getModelStatus } from '../llm/ollamaRuntime';
-import { Entitlements, FREE_ENTITLEMENTS } from '../license/entitlements';
-import { getEntitlements, invalidateEntitlements, parseAndVerify } from '../license/verify';
+import { FREE_ENTITLEMENTS } from '../license/entitlements';
+import { invalidateEntitlements, parseAndVerify } from '../license/verify';
 import { usedSeats } from '../license/seats';
+import { getRawLicenseKey, currentEntitlements } from '../license/current';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
@@ -183,21 +184,9 @@ function stopIdeMcpServer(): { running: boolean } {
 }
 
 // ── Licensing helpers ──────────────────────────────────────────────────────
-// The raw license key lives on settings_json.license_key. These two helpers
-// give every module-level function (LAN server, autostart) read access without
-// pulling the inline closures from registerIpcHandlers. Cached entitlements
-// in ../license/verify keep this hot path effectively free.
-function getRawLicenseKey(): string | null {
-  try {
-    const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
-    const k = (JSON.parse(row?.settings_json ?? '{}') as { license_key?: string }).license_key;
-    return typeof k === 'string' && k ? k : null;
-  } catch { return null; }
-}
-
-function currentEntitlements(): Entitlements {
-  return getEntitlements(getRawLicenseKey);
-}
+// getRawLicenseKey/currentEntitlements live in ../license/current (imported
+// above) so tool modules — e.g. the docs tool's free-tier document cap — can
+// consult entitlements without importing this Electron-heavy module.
 
 // ── LAN API-key auth helper ─────────────────────────────────────────────────
 // The LAN server requires a Bearer token on every request when at least one
@@ -294,16 +283,16 @@ function lanStatus(): { running: boolean; url: string | null; localIp: string | 
  */
 function startLanServer(): { running: boolean; url: string | null; localIp: string | null; error?: string } {
   if (lanServer) return lanStatus();
-  // Gate: Free tier may NOT bind the LAN port. This is the central Free→Pro
-  // monetisation wall; the persona-onboarding flow paints a clear upgrade CTA
-  // when this error string surfaces in the UI.
+  // Gate: solo tiers may NOT bind the LAN port. This is the central
+  // solo→Team monetisation wall; the persona-onboarding flow paints a clear
+  // upgrade CTA when this error string surfaces in the UI.
   const ents = currentEntitlements();
   if (!ents.lanServer) {
     return {
       running: false,
       url: null,
       localIp: null,
-      error: 'The LAN/team server requires a Pro or Enterprise license. Apply a license in Settings → License.',
+      error: 'The LAN/team server requires a Team or Business license. Apply a license in Settings → License.',
     };
   }
   // Fail CLOSED: the server binds 0.0.0.0 (reachable by every device on the
@@ -332,6 +321,15 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
       json(200, { status: 'ok', uptime: process.uptime(), auth_required: (() => {
         try { return (getDb().prepare(`SELECT COUNT(*) AS n FROM api_keys WHERE is_enabled=1`).get() as { n: number }).n > 0; } catch { return false; }
       })() });
+      return;
+    }
+
+    // License guard on every non-health request: an annual Team key that
+    // expires while the hub is running must stop serving within one request
+    // (getEntitlements re-checks expiry on cache hits, so this is one integer
+    // comparison in the common case).
+    if (!currentEntitlements().lanServer) {
+      json(403, { error: 'The hub license has expired or was removed. Ask the hub admin to renew it in Settings → License.' });
       return;
     }
 
@@ -1121,8 +1119,18 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Named, reusable context sets (scopes + skill + pinned memories). Logic in
   // agent/contextPacks.ts; these handlers are thin pass-throughs.
   ipcMain.handle('packs:list', () => listPacks());
-  ipcMain.handle('packs:save', (_e, sessionId: string, name: string, overrides?: { skillId?: string | null; memoryIds?: string[] }) =>
-    savePackFromSession(sessionId, name, overrides ?? {}));
+  ipcMain.handle('packs:save', (_e, sessionId: string, name: string, overrides?: { skillId?: string | null; memoryIds?: string[] }) => {
+    // Free-tier cap on SAVED packs (maxContextPacks; null = unlimited).
+    // Applying/detaching existing packs is never gated.
+    const ents = currentEntitlements();
+    if (ents.maxContextPacks !== null) {
+      const count = (getDb().prepare(`SELECT COUNT(*) AS n FROM context_packs`).get() as { n: number }).n;
+      if (count >= ents.maxContextPacks) {
+        throw new Error(`The Free plan includes ${ents.maxContextPacks} saved context pack${ents.maxContextPacks === 1 ? '' : 's'}. Delete one first, or upgrade to Personal for unlimited packs — artha.space.`);
+      }
+    }
+    return savePackFromSession(sessionId, name, overrides ?? {});
+  });
   ipcMain.handle('packs:apply', (_e, packId: string, sessionId: string) =>
     applyPackToSession(packId, sessionId));
   ipcMain.handle('packs:get', (_e, sessionId: string) => getPackForSession(sessionId));
@@ -1573,7 +1581,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     // see their own local activity only via the in-app log; the bulk export that
     // backs compliance reporting is gated.
     if (!currentEntitlements().auditExport) {
-      throw new Error('Audit log export requires an Enterprise license.');
+      throw new Error('Audit log export requires a Business license.');
     }
     return getDb().prepare(
       `SELECT * FROM tool_audit_log ORDER BY ts DESC LIMIT ?`
@@ -1976,13 +1984,25 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('scheduler:list', () => sched.list());
 
-  ipcMain.handle('scheduler:create', (_e, input: TaskInput) => sched.create(input));
+  ipcMain.handle('scheduler:create', (_e, input: TaskInput) => {
+    // Scheduled/recurring tasks are a paid-tier convenience (Free is capped
+    // solo). Existing tasks keep running for downgraded users until disabled;
+    // only CREATING and RE-ENABLING are gated.
+    if (!currentEntitlements().scheduler) {
+      throw new Error('Scheduled tasks require a Personal (or higher) license — see artha.space for plans.');
+    }
+    return sched.create(input);
+  });
 
   ipcMain.handle('scheduler:update', (_e, taskId: string, patch: Partial<TaskInput>) =>
     sched.update(taskId, patch));
 
-  ipcMain.handle('scheduler:toggle', (_e, taskId: string, enabled: boolean) =>
-    sched.toggle(taskId, enabled));
+  ipcMain.handle('scheduler:toggle', (_e, taskId: string, enabled: boolean) => {
+    if (enabled && !currentEntitlements().scheduler) {
+      throw new Error('Scheduled tasks require a Personal (or higher) license — see artha.space for plans.');
+    }
+    return sched.toggle(taskId, enabled);
+  });
 
   ipcMain.handle('scheduler:remove', (_e, taskId: string) => {
     sched.remove(taskId);
@@ -2467,7 +2487,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     // enable path so a Free user can't mark memories shared (they have no LAN
     // server to inject them into anyway); always allow turning sharing OFF.
     if (shared && !currentEntitlements().sharedMemory) {
-      throw new Error('Shared memory requires a Pro or Enterprise license.');
+      throw new Error('Shared memory requires a Team or Business license.');
     }
     getDb().prepare(`UPDATE memory_entities SET is_shared=? WHERE entity_id=?`).run(shared ? 1 : 0, entityId);
     return true;

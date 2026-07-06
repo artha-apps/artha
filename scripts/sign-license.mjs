@@ -67,7 +67,11 @@ const privPath = process.env.ARTHA_LICENSE_PRIVATE_KEY_FILE
 if (args.help || args.h) {
   process.stdout.write(`Usage:
   node scripts/sign-license.mjs --genkeys
-  node scripts/sign-license.mjs --tier <free|pro|enterprise> --seats <n> --org <name> [--days 365] [--id <uuid>]
+  node scripts/sign-license.mjs --tier <free|pro|team|enterprise> --seats <n> --org <name> [--days 365] [--id <uuid>]
+
+Tiers: pro = Personal (full solo, NO LAN/team features) · team = Team (LAN hub,
+shared memory/packs, seats) · enterprise = Business/air-gapped (adds org hub,
+RBAC, audit export).
 
 Env:
   ARTHA_LICENSE_PRIVATE_KEY_FILE  Override the default private key path
@@ -96,8 +100,8 @@ if (!existsSync(privPath)) {
 }
 
 const tier = String(args.tier ?? '').toLowerCase();
-if (!['free', 'pro', 'enterprise'].includes(tier)) {
-  die('--tier must be one of: free, pro, enterprise');
+if (!['free', 'pro', 'team', 'enterprise'].includes(tier)) {
+  die('--tier must be one of: free, pro, team, enterprise');
 }
 
 const seats = Number(args.seats ?? 1);

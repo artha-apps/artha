@@ -16,6 +16,7 @@ import { generateDocument, type DocType, type SourceChunk } from '../docs/genera
 import { searchAllIndexes } from '../rag/indexer';
 import { resolveDocOutPath } from './docPath';
 import { getDb } from '../db/schema';
+import { currentEntitlements, docsGeneratedThisMonth } from '../license/current';
 
 const HOME = os.homedir();
 const DOC_TYPES: DocType[] = ['docx', 'pptx', 'xlsx', 'pdf'];
@@ -94,6 +95,18 @@ export function isDocsTool(name: string): boolean {
  */
 export async function invokeDocsTool(name: string, args: Record<string, unknown>, defaultDir?: string | null, ragIndexIds?: string[] | null): Promise<string> {
   if (name !== 'docs_generate') throw new Error(`Unknown docs tool: ${name}`);
+
+  // Free-tier cap: document generation is the flagship, and the Free plan is
+  // limited to N documents per calendar month (Entitlements.docsPerMonth;
+  // null = unlimited on every paid tier). Returned as a tool-error string so
+  // the agent relays the limit + upgrade path instead of crashing the run.
+  const ents = currentEntitlements();
+  if (ents.docsPerMonth !== null) {
+    const used = docsGeneratedThisMonth();
+    if (used >= ents.docsPerMonth) {
+      return `Error: the Free plan includes ${ents.docsPerMonth} generated documents per month and this month's allowance is used up (${used}/${ents.docsPerMonth}). Tell the user the limit resets next month, or they can upgrade to Personal at artha.space for unlimited documents.`;
+    }
+  }
 
   const type = String(args.type ?? '').toLowerCase() as DocType;
   if (!DOC_TYPES.includes(type)) {

@@ -63,6 +63,26 @@ export interface SessionScope {
   added_at: number;
 }
 
+/** Derived license entitlements, as returned by the license:* IPC. Mirrors
+ *  license/entitlements.ts — wire tiers are free|pro|team|enterprise, shown in
+ *  the UI as Free / Personal / Team / Business. */
+export interface LicenseEntitlements {
+  tier: 'free' | 'pro' | 'team' | 'enterprise';
+  seats: number;
+  lanServer: boolean;
+  sharedMemory: boolean;
+  sharedPacks: boolean;
+  orgHub: boolean;
+  rbac: boolean;
+  auditExport: boolean;
+  docsPerMonth: number | null;
+  scheduler: boolean;
+  maxContextPacks: number | null;
+  skillTemplates: boolean;
+  org: string | null;
+  expiresAt: number | null;
+}
+
 /** A Context Pack row (`context_packs` table) — a named, reusable context set.
  *  scopes_json/memory_ids_json are JSON strings; parse renderer-side. */
 export interface ContextPackRow {
@@ -474,21 +494,16 @@ const api = {
   // process after `apply` — the renderer only sees derived entitlements.
   license: {
     get: () => ipcRenderer.invoke('license:get') as Promise<{
-      entitlements: {
-        tier: 'free' | 'pro' | 'enterprise';
-        seats: number; lanServer: boolean; sharedMemory: boolean;
-        orgHub: boolean; rbac: boolean; auditExport: boolean;
-        org: string | null; expiresAt: number | null;
-      };
+      entitlements: LicenseEntitlements;
       hasKey: boolean;
     }>,
     apply: (rawKey: string) => ipcRenderer.invoke('license:apply', rawKey) as Promise<
-      | { ok: true; entitlements: { tier: 'free' | 'pro' | 'enterprise'; seats: number; lanServer: boolean; sharedMemory: boolean; orgHub: boolean; rbac: boolean; auditExport: boolean; org: string | null; expiresAt: number | null } }
+      | { ok: true; entitlements: LicenseEntitlements }
       | { ok: false; error: string }
     >,
     clear: () => ipcRenderer.invoke('license:clear') as Promise<{
       ok: true;
-      entitlements: { tier: 'free'; seats: number; lanServer: boolean; sharedMemory: boolean; orgHub: boolean; rbac: boolean; auditExport: boolean; org: null; expiresAt: null };
+      entitlements: LicenseEntitlements;
     }>,
   },
 

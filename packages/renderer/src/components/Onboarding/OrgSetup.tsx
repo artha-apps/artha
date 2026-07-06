@@ -16,10 +16,12 @@
 import { useEffect, useState } from 'react';
 import { ArrowRight, Building2, Check, ClipboardCopy, KeyRound, Plus, ShieldCheck, Trash2, Wifi } from 'lucide-react';
 
-type Tier = 'free' | 'pro' | 'enterprise';
+type Tier = 'free' | 'pro' | 'team' | 'enterprise';
 interface Entitlements {
   tier: Tier; seats: number; lanServer: boolean; sharedMemory: boolean;
-  orgHub: boolean; rbac: boolean; auditExport: boolean;
+  sharedPacks: boolean; orgHub: boolean; rbac: boolean; auditExport: boolean;
+  docsPerMonth: number | null; scheduler: boolean;
+  maxContextPacks: number | null; skillTemplates: boolean;
   org: string | null; expiresAt: number | null;
 }
 
@@ -63,8 +65,10 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
     try {
       const res = await window.artha.license.apply(licenseDraft.trim());
       if (!res.ok) { setLicenseError(res.error); return; }
-      if (res.entitlements.tier === 'free') {
-        setLicenseError('That key applied as Free — Enterprise/Pro is required for org setup.');
+      // Gate on the CAPABILITY, not the tier string — a Personal (solo) key
+      // is valid but has no team features, so it must not pass org setup.
+      if (!res.entitlements.lanServer) {
+        setLicenseError('That key does not include team features — a Team or Business license is required for org setup.');
         return;
       }
       setEnts(res.entitlements);
@@ -115,7 +119,7 @@ export default function OrgSetup({ onDone, onBack }: { onDone: () => void; onBac
     onDone();
   };
 
-  const licenseReady = !!ents && ents.tier !== 'free';
+  const licenseReady = !!ents && ents.lanServer;
   const hubReady = !!hubUrl;
   const seatsReady = seats.length >= 1;
 
