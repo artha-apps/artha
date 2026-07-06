@@ -68,6 +68,7 @@ import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } 
 import { ensureModelReady, getModelStatus } from '../llm/ollamaRuntime';
 import { Entitlements, FREE_ENTITLEMENTS } from '../license/entitlements';
 import { getEntitlements, invalidateEntitlements, parseAndVerify } from '../license/verify';
+import { usedSeats } from '../license/seats';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
@@ -2375,13 +2376,13 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('team:addMember', (_e, m: { displayName: string; email?: string; role?: 'admin' | 'member' }) => {
     const db = getDb();
-    // Seat enforcement: the license-encoded seat count caps the team roster.
-    // Pro/Enterprise customers can lift this by re-issuing a key with a higher
-    // `seats`; Free customers stay at 1.
+    // Seat enforcement: the license-encoded seat count caps the roster.
+    // Customers lift this by re-issuing a key with a higher `seats`; keyless
+    // installs stay at 1.
     const ents = currentEntitlements();
-    const count = (db.prepare(`SELECT COUNT(*) AS n FROM team_members`).get() as { n: number }).n;
-    if (count >= ents.seats) {
-      throw new Error(`Seat limit reached (${count}/${ents.seats}). Upgrade your license to add more members.`);
+    const used = usedSeats();
+    if (used >= ents.seats) {
+      throw new Error(`Seat limit reached (${used}/${ents.seats}). Upgrade your license to add more members.`);
     }
     const id = crypto.randomUUID();
     db.prepare(
@@ -2421,17 +2422,22 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const name = (typeof args === 'string' ? args : args?.name) ?? 'API Key';
     const memberId = typeof args === 'object' && args ? (args.memberId ?? null) : null;
     const db = getDb();
-    // Seat enforcement: a "seat" = one enabled API key.
-    const ents = currentEntitlements();
-    const enabledCount = (db.prepare(`SELECT COUNT(*) AS n FROM api_keys WHERE is_enabled=1`).get() as { n: number }).n;
-    if (enabledCount >= ents.seats) {
-      throw new Error(`Seat limit reached (${enabledCount}/${ents.seats}). Upgrade your license to issue more keys.`);
-    }
+    // Resolve the member binding FIRST so an unknown memberId gets its own
+    // error rather than a misleading seat message.
     let role: 'admin' | 'member' = 'member';
     if (memberId) {
       const m = db.prepare(`SELECT role FROM team_members WHERE member_id=?`).get(memberId) as { role: string } | undefined;
       if (!m) throw new Error(`Unknown member_id "${memberId}".`);
       role = m.role === 'admin' ? 'admin' : 'member';
+    }
+    // Seat enforcement: a key bound to an existing member shares that member's
+    // seat; only an UNBOUND key claims a seat of its own (usedSeats union).
+    if (!memberId) {
+      const ents = currentEntitlements();
+      const used = usedSeats();
+      if (used >= ents.seats) {
+        throw new Error(`Seat limit reached (${used}/${ents.seats}). Upgrade your license to issue more keys.`);
+      }
     }
     const { randomBytes } = require('crypto') as typeof import('crypto');
     const plaintext = randomBytes(32).toString('base64url'); // 43-char URL-safe token

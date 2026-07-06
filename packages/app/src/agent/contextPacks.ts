@@ -13,6 +13,7 @@
  *     wins for skill/memories (context_pack_id is single-valued).
  */
 import { getDb } from '../db/schema';
+import { getRunContext } from './runContext';
 import {
   findOrCreateFolderWorkspace,
   getSessionScopes,
@@ -180,8 +181,11 @@ export function getPackContextBlock(sessionId: string): string {
     const ids = parseMemoryIds(pack.memory_ids_json);
     if (ids.length === 0) return '';
     const placeholders = ids.map(() => '?').join(',');
+    // LAN runs may only receive the SHARED subset of a pack's pins — a shared
+    // pack must never become a side-channel for the host's private memories.
+    const sharedOnly = getRunContext()?.lan === true ? 'AND is_shared=1' : '';
     const rows = getDb().prepare(
-      `SELECT name, content FROM memory_entities WHERE entity_id IN (${placeholders}) ORDER BY updated_at DESC`
+      `SELECT name, content FROM memory_entities WHERE entity_id IN (${placeholders}) ${sharedOnly} ORDER BY updated_at DESC`
     ).all(...ids) as { name: string; content: string }[];
     if (rows.length === 0) return '';
     const lines = rows.map(r => `- ${r.name}: ${r.content}`).join('\n');

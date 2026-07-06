@@ -14,6 +14,7 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/schema';
 import { backfillMemoryEmbeddings } from '../agent/contextGather';
+import { getRunContext } from '../agent/runContext';
 
 /** Row shape of the `memory_entities` SQLite table. Kept as a local type rather
  *  than importing from schema.ts so this module stays self-contained and testable. */
@@ -204,15 +205,21 @@ export function invokeMemoryTool(
 export function getMemoryContext(projectId?: string | null): string {
   try {
     const db = getDb();
+    // LAN runs see ONLY memories explicitly marked shared — same rule as the
+    // semantic block in agent/contextGather.ts. Without this the recency
+    // preamble leaked the host's 20 most-recent PRIVATE memories to every
+    // authenticated teammate. (Parens matter: the filter must apply to both
+    // arms of the project_id OR.)
+    const sharedOnly = getRunContext()?.lan === true ? 'AND is_shared=1' : '';
     const rows = (projectId
       ? db.prepare(
           `SELECT name, entity_type, content FROM memory_entities
-           WHERE project_id IS NULL OR project_id = ?
+           WHERE (project_id IS NULL OR project_id = ?) ${sharedOnly}
            ORDER BY updated_at DESC LIMIT 20`
         ).all(projectId)
       : db.prepare(
           `SELECT name, entity_type, content FROM memory_entities
-           WHERE project_id IS NULL
+           WHERE project_id IS NULL ${sharedOnly}
            ORDER BY updated_at DESC LIMIT 20`
         ).all()) as Pick<MemoryEntity, 'name' | 'entity_type' | 'content'>[];
     if (!rows.length) return '';
