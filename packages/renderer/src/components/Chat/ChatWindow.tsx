@@ -473,19 +473,26 @@ export default function ChatWindow() {
     addUserMessage(sid, msg, attachments);
 
     // Dispatch is retryable: the user bubble is added once above, and Retry
-    // (inline banner or toast) re-runs only the IPC send below.
-    const dispatch = async () => {
+    // (inline banner or toast) re-runs only the IPC send below. An optional
+    // modelOverride escalates THIS message to a saved cloud model (recorded
+    // on the run's audit row) — offered in the failure banner when one exists.
+    const dispatch = async (modelOverride?: string) => {
       setLastError(null);
       setStreaming(true);
       try {
-        await window.artha.agent.sendMessage(sid, msg, attachments);
+        await window.artha.agent.sendMessage(sid, msg, attachments, modelOverride ? { modelOverride } : undefined);
       } catch (err) {
         // Reset streaming so the composer doesn't get stuck, and surface the
         // failure both inline (banner) and as a toast — it used to fail silently.
         setStreaming(false);
         const detail = err instanceof Error ? err.message : String(err);
         console.error('[Artha] sendMessage failed:', err);
-        setLastError({ title: 'Artha couldn’t complete that', detail, retry: dispatch });
+        setLastError({
+          title: 'Artha couldn’t complete that', detail, retry: dispatch,
+          escalate: cloudModel && !modelOverride
+            ? { label: `Retry on ☁ ${cloudModel.label}`, run: () => { void dispatch(cloudModel.modelName); } }
+            : undefined,
+        });
         toast.error('Message failed', detail, { label: 'Retry', onClick: () => { void dispatch(); } });
       }
     };
@@ -497,15 +504,20 @@ export default function ChatWindow() {
   const regenerate = (text: string) => {
     if (!activeSessionId || isStreaming) return;
     const sid = activeSessionId;
-    const dispatch = async () => {
+    const dispatch = async (modelOverride?: string) => {
       setLastError(null);
       setStreaming(true);
       try {
-        await window.artha.agent.sendMessage(sid, text);
+        await window.artha.agent.sendMessage(sid, text, undefined, modelOverride ? { modelOverride } : undefined);
       } catch (err) {
         setStreaming(false);
         const detail = err instanceof Error ? err.message : String(err);
-        setLastError({ title: 'Couldn’t regenerate', detail, retry: dispatch });
+        setLastError({
+          title: 'Couldn’t regenerate', detail, retry: dispatch,
+          escalate: cloudModel && !modelOverride
+            ? { label: `Retry on ☁ ${cloudModel.label}`, run: () => { void dispatch(cloudModel.modelName); } }
+            : undefined,
+        });
         toast.error('Regenerate failed', detail, { label: 'Retry', onClick: () => { void dispatch(); } });
       }
     };
@@ -645,6 +657,43 @@ export default function ChatWindow() {
     await window.artha.packs.detach(activeSessionId);
     setActivePack(null);
   };
+
+  // ── Model performance context (expected wait + cloud escalation) ─────────
+  // waitEst: measured-on-this-machine estimate for a task turn on the active
+  // model (plan + synthesis benchmark latency). cloudModel: the first saved
+  // BYOK row — offered as a one-tap escalation when a local run fails.
+  const [waitEst, setWaitEst] = useState<{ model: string; estMs: number } | null>(null);
+  const [cloudModel, setCloudModelRow] = useState<{ label: string; modelName: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [active, profiles, configured] = await Promise.all([
+          window.artha.llm.getActiveModel() as Promise<string | null>,
+          window.artha.router.listProfiles(),
+          window.artha.llm.listConfigured() as Promise<Array<{ name: string; ollama_name: string; base_url: string }>>,
+        ]);
+        if (cancelled) return;
+        const cloud = configured.find(m => !m.base_url.includes('localhost') && !m.base_url.includes('127.0.0.1'));
+        setCloudModelRow(cloud ? { label: cloud.name, modelName: cloud.ollama_name } : null);
+        if (active) {
+          const rows = profiles.filter(p => p.ollama_name === active);
+          const plan = rows.find(r => r.task_type === 'plan')?.latency_ms ?? 0;
+          const synth = rows.find(r => r.task_type === 'synthesis')?.latency_ms ?? 0;
+          setWaitEst(plan + synth > 0 ? { model: active, estMs: plan + synth } : null);
+        } else {
+          setWaitEst(null);
+        }
+      } catch { /* hint simply doesn't show */ }
+    })();
+    return () => { cancelled = true; };
+  }, [activeSessionId]);
+
+  // Same action-verb shape the intent gate fast-paths on — a cheap "this will
+  // be a task turn" signal for the wait hint. Renderer-side heuristic only.
+  const looksLikeTask = /\b(move|rename|delete|remove|create|make|organi[sz]e|copy|open|find|search|download|fetch|read|write|summari[sz]e|generate|build|convert|list|sort|clean|email|send|browse|draft|export|schedule)\b/i.test(input);
+  const showWaitHint = looksLikeTask && !isStreaming && !!waitEst && waitEst.estMs >= 6_000;
 
   const addFolderScope = async () => {
     if (!activeSessionId || scopeBusy) return;
@@ -1170,6 +1219,17 @@ export default function ChatWindow() {
                   <RefreshCw size={12} /> Retry
                 </button>
               )}
+              {/* Cloud escalation — same message, your BYOK model, this task
+                  only. The run's audit row records the cloud model used. */}
+              {lastError.escalate && (
+                <button
+                  onClick={() => lastError.escalate?.run()}
+                  title="Re-run this one message on your configured cloud model — logged on the run's audit trail"
+                  className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-artha-accent/15 hover:bg-artha-accent/25 text-artha-accent text-xs font-medium transition-colors active:scale-95"
+                >
+                  {lastError.escalate.label}
+                </button>
+              )}
               <button
                 onClick={() => setLastError(null)}
                 className="shrink-0 text-artha-danger/70 hover:text-artha-danger transition-colors"
@@ -1295,6 +1355,14 @@ export default function ChatWindow() {
               </Tooltip>
             )}
           </div>
+          {/* Expected-wait honesty: measured-here estimate for a task turn on
+              the active model, shown only when it's slow enough to matter. */}
+          {showWaitHint && waitEst && (
+            <p className="text-[11px] text-artha-subtle text-center mt-1.5">
+              ⏱ Expect ~{Math.max(1, Math.round(waitEst.estMs / 1000))}s to first action on {waitEst.model}
+              {cloudModel && <> · ☁ {cloudModel.label} available if this fails</>}
+            </p>
+          )}
           <p className="text-[11px] text-artha-subtle text-center mt-2">
             All processing happens locally · No data leaves your machine
           </p>

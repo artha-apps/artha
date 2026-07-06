@@ -482,24 +482,33 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
 
   const routed = resolveModelName(modelOverride, taskType);
 
-  // Use the ROUTED model's OWN context window, not the active model's. Routing
-  // (e.g. Delegate's fast model) can select a different model than the active
-  // one; forcing it into the active model's (possibly tiny) num_ctx truncates
-  // the large tool-using prompt + tool schemas, which silently breaks tool use
-  // and reading. Floor at 8192 so a tool-heavy loop never runs in a
-  // truncating-small window.
+  // Use the ROUTED model's OWN row when it's a different saved model. Two
+  // things depend on this:
+  //   - context_window: routing (e.g. Delegate's fast model) can select a
+  //     different model; forcing it into the active model's (possibly tiny)
+  //     num_ctx truncates the tool-using prompt + schemas, silently breaking
+  //     tool use. Floor at 8192 so a tool-heavy loop never truncates.
+  //   - base_url/api_key: a cloud escalation override ("retry this task on
+  //     gpt-4o") targets a BYOK row with its own endpoint + key. Without this,
+  //     the cloud model name would be sent to the ACTIVE model's (local
+  //     Ollama) endpoint and fail. Routed models with no saved row (bare
+  //     Ollama tags) keep the active row's transport, as before.
   let effectiveContextWindow = contextWindow;
+  let effectiveBaseUrl = baseUrl;
+  let effectiveApiKey = apiKey;
   if (routed && routed !== (row?.ollama_name as string)) {
     const routedRow = db
-      .prepare(`SELECT context_window FROM llm_models WHERE ollama_name = ?`)
-      .get(routed) as { context_window?: number } | undefined;
+      .prepare(`SELECT base_url, api_key, context_window FROM llm_models WHERE ollama_name = ?`)
+      .get(routed) as { base_url?: string; api_key?: string; context_window?: number } | undefined;
     if (routedRow?.context_window) effectiveContextWindow = routedRow.context_window;
+    if (routedRow?.base_url) effectiveBaseUrl = routedRow.base_url;
+    if (routedRow?.api_key) effectiveApiKey = routedRow.api_key;
   }
   effectiveContextWindow = Math.max(effectiveContextWindow, 8192);
 
   return new LLMClient({
-    baseUrl,
-    apiKey,
+    baseUrl: effectiveBaseUrl,
+    apiKey: effectiveApiKey,
     model: routed ?? fallbackModel,
     contextWindow: effectiveContextWindow,
     keepAlive: '30m',

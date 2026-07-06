@@ -6,7 +6,7 @@
 import { useEffect, useState } from 'react';
 import {
   Cpu, CheckCircle2, RefreshCw, HardDrive,
-  ChevronRight, Cloud, Plus, Trash2, Lock, Shield, Download, Zap,
+  ChevronRight, Cloud, Plus, Trash2, Lock, Shield, Download, Zap, Star,
 } from 'lucide-react';
 
 /** Subset of Ollama's /api/tags model entry we actually render. */
@@ -49,6 +49,54 @@ interface PullProgress {
   status: string;
   percent?: number;
   error?: string;
+}
+
+/** One benchmark row from `model_profiles` (see router/benchmark.ts). */
+interface RouterProfile {
+  ollama_name: string;
+  task_type: 'plan' | 'tool_args' | 'synthesis';
+  latency_ms: number;
+  quality: number;
+  benchmarked_at: number;
+}
+
+/** Per-model digest of its benchmark rows — drives the Model Fit line. */
+interface ModelFit {
+  planMs: number | null;
+  toolQuality: number | null;
+  synthMs: number | null;
+  avgQuality: number;
+}
+
+/** Aggregate a model's profile rows into a ModelFit; null = not benchmarked. */
+function fitFrom(profiles: RouterProfile[], name: string): ModelFit | null {
+  const rows = profiles.filter(p => p.ollama_name === name);
+  if (!rows.length) return null;
+  const by = (t: RouterProfile['task_type']) => rows.find(r => r.task_type === t);
+  const qualities = rows.map(r => r.quality);
+  return {
+    planMs: by('plan')?.latency_ms ?? null,
+    toolQuality: by('tool_args')?.quality ?? null,
+    synthMs: by('synthesis')?.latency_ms ?? null,
+    avgQuality: qualities.reduce((a, b) => a + b, 0) / qualities.length,
+  };
+}
+
+/** Plain-language capability label for a fit. Honest, measured-here numbers —
+ *  the benchmark scores JSON shape + prose coherence, not general smarts. */
+function fitLabel(fit: ModelFit): { label: string; tone: 'good' | 'ok' | 'warn' } {
+  const fast = (fit.synthMs ?? Infinity) <= 5_000;
+  if (fit.avgQuality < 0.5) return { label: 'Struggles with structured tasks here', tone: 'warn' };
+  if (fast && fit.avgQuality >= 0.8) return { label: 'Fast all-rounder — great default', tone: 'good' };
+  if (fast) return { label: 'Quick — fine for simple tasks', tone: 'ok' };
+  if (fit.avgQuality >= 0.8) return { label: 'High quality but slow — deep work', tone: 'ok' };
+  return { label: 'Balanced', tone: 'ok' };
+}
+
+/** ✓ / ~ / ✗ for a 0..1 quality score. */
+function qMark(q: number | null): string {
+  if (q === null) return '?';
+  return q >= 0.8 ? '✓' : q >= 0.4 ? '~' : '✗';
 }
 
 /** Curated catalog of popular Ollama models users can pull in one click. */
@@ -236,6 +284,11 @@ export default function ModelsPanel() {
   const [ctxWindow, setCtxWindow] = useState<number>(4096);
   const [ctxSaving, setCtxSaving] = useState(false);
 
+  // Model Fit — benchmark rows (model_profiles) measured on this machine, and
+  // which model a single-model probe is currently running for.
+  const [profiles, setProfiles] = useState<RouterProfile[]>([]);
+  const [benching, setBenching] = useState<string | null>(null);
+
   // BYOK cloud state — form fields + saved rows from `llm_models`.
   const [configured, setConfigured] = useState<ConfiguredModel[]>([]);
   const [showCloudForm, setShowCloudForm] = useState(false);
@@ -262,6 +315,9 @@ export default function ModelsPanel() {
     } catch {
       setOllamaOnline(false);
     }
+
+    // Model Fit data — benchmark rows measured on THIS machine. Best-effort.
+    window.artha.router.listProfiles().then(setProfiles).catch(() => setProfiles([]));
 
     // 2. Configured (saved) models — cloud BYOK must show even when Ollama is offline
     window.artha.llm.listConfigured().then(c => {
@@ -301,12 +357,20 @@ export default function ModelsPanel() {
   useEffect(() => {
     const unsub = window.artha.llm.onPullProgress((p: PullProgress) => {
       setPulling(prev => ({ ...prev, [p.name]: p }));
-      // On success, refresh the installed list, clear progress, and switch to Installed tab.
+      // On success, refresh the installed list, clear progress, and switch to
+      // Installed tab — then benchmark the new model in the background so its
+      // Model Fit card fills in without the user asking (~3 quick probes).
       if (p.status === 'success') {
         setTimeout(() => {
           setPulling(prev => { const n = { ...prev }; delete n[p.name]; return n; });
           setTab('installed');
           load();
+          setBenching(p.name);
+          window.artha.router.benchmarkModel(p.name)
+            .then(() => window.artha.router.listProfiles())
+            .then(setProfiles)
+            .catch(() => { /* fit card stays "Not benchmarked" */ })
+            .finally(() => setBenching(null));
         }, 1200);
       }
     });
@@ -327,6 +391,31 @@ export default function ModelsPanel() {
 
   // Used by the Browse tab to mark already-pulled catalog entries as installed.
   const installedTags = new Set(models.map(m => m.name));
+
+  // The measured-best installed model: highest quality, speed as tiebreak
+  // (score = quality − minutes of synthesis latency). Only models that hit a
+  // usable quality bar are eligible — a fast-but-broken model never wins.
+  const recommendedModel = (() => {
+    let best: { name: string; score: number } | null = null;
+    for (const m of models) {
+      const fit = fitFrom(profiles, m.name);
+      if (!fit || fit.avgQuality < 0.7) continue;
+      const score = fit.avgQuality - (fit.synthMs ?? 60_000) / 60_000;
+      if (!best || score > best.score) best = { name: m.name, score };
+    }
+    return best?.name ?? null;
+  })();
+
+  /** Probe one model on demand (fit-card "Benchmark" button / post-install). */
+  const benchOne = async (name: string) => {
+    if (benching) return;
+    setBenching(name);
+    try {
+      await window.artha.router.benchmarkModel(name);
+      setProfiles(await window.artha.router.listProfiles());
+    } catch { /* Ollama down — card stays "Not benchmarked" */ }
+    finally { setBenching(null); }
+  };
 
   /** Pull a model from the catalog using the streaming endpoint. */
   const pullModel = async (tag: string) => {
@@ -597,13 +686,54 @@ export default function ModelsPanel() {
                         {family}
                       </span>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-artha-text truncate">{model.name}</p>
+                        <p className="text-sm font-medium text-artha-text truncate flex items-center gap-1.5">
+                          {model.name}
+                          {model.name === recommendedModel && (
+                            <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-artha-accent/15 text-artha-accent text-[10px] font-semibold" title="Best measured quality + speed on this machine">
+                              <Star size={9} /> Recommended
+                            </span>
+                          )}
+                        </p>
                         {model.details?.parameter_size && (
                           <p className="text-xs text-artha-muted mt-0.5">
                             {model.details.parameter_size}
                             {model.details.quantization_level && ` · ${model.details.quantization_level}`}
                           </p>
                         )}
+                        {/* Model Fit — measured on THIS machine (router benchmark). */}
+                        {(() => {
+                          const fit = fitFrom(profiles, model.name);
+                          if (benching === model.name) {
+                            return <p className="text-[11px] text-artha-muted mt-1 flex items-center gap-1"><RefreshCw size={9} className="animate-spin" /> Benchmarking on this machine…</p>;
+                          }
+                          if (!fit) {
+                            return (
+                              <p className="text-[11px] text-artha-subtle mt-1">
+                                Not benchmarked ·{' '}
+                                <span
+                                  role="button"
+                                  onClick={(e) => { e.stopPropagation(); void benchOne(model.name); }}
+                                  className="text-artha-accent hover:underline cursor-pointer"
+                                >
+                                  measure speed &amp; fit
+                                </span>
+                              </p>
+                            );
+                          }
+                          const { label, tone } = fitLabel(fit);
+                          return (
+                            <p className="text-[11px] mt-1 flex items-center gap-2 flex-wrap">
+                              <span className={tone === 'good' ? 'text-artha-success' : tone === 'warn' ? 'text-artha-warn' : 'text-artha-muted'}>
+                                {label}
+                              </span>
+                              <span className="text-artha-subtle" title="Measured here: paragraph-response time · planning time · tool-call JSON reliability">
+                                ⚡ {fit.synthMs !== null ? `~${Math.max(1, Math.round(fit.synthMs / 1000))}s response` : '—'}
+                                {fit.planMs !== null && ` · plan ~${Math.max(1, Math.round(fit.planMs / 1000))}s`}
+                                {` · tools ${qMark(fit.toolQuality)}`}
+                              </span>
+                            </p>
+                          );
+                        })()}
                       </div>
                       <span className="text-xs text-artha-muted shrink-0">{formatSize(model.size)}</span>
                       <div className="shrink-0 w-5 flex items-center justify-center">

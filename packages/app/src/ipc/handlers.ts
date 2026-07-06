@@ -57,7 +57,7 @@ import { listEntities, listRelations, queryGraphDb } from '../bodhi/knowledgeGra
 import { buildShallowTree } from '../agent/folderTree';
 import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
-import { runBenchmark, listProfiles, setOverride, listOverrides } from '../router/benchmark';
+import { runBenchmark, benchmarkModel, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
 import { recomputePrimaryProject, getSessionScopes, findOrCreateFolderWorkspace } from '../db/scopes';
 import {
@@ -526,7 +526,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Side-effect: the *first* message of a session also sets the session title
   // (truncated to 40 chars) and pushes a `session:titleUpdated` event so the
   // sidebar updates without a full reload.
-  ipcMain.handle('agent:sendMessage', async (_e, sessionId: string, content: string, attachments?: { name: string; mime: string; data: string }[]) => {
+  ipcMain.handle('agent:sendMessage', async (_e, sessionId: string, content: string, attachments?: { name: string; mime: string; data: string }[], opts?: { modelOverride?: string }) => {
     const db = getDb();
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, content);
 
@@ -540,7 +540,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(sessionId);
     }
 
-    await orchestrator.handleMessage(sessionId, content, attachments);
+    await orchestrator.handleMessage(sessionId, content, attachments, opts ?? {});
   });
 
   ipcMain.handle('dialog:pickImage', async () => {
@@ -1792,6 +1792,12 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // a specific model for a task type, bypassing auto-selection.
   ipcMain.handle('router:benchmark', async () => {
     return runBenchmark((msg) => safeSend('router:benchmarkProgress', msg));
+  });
+
+  /** Probe a single model (used right after an install so its Model Fit card
+   *  fills in without a full-fleet re-benchmark). */
+  ipcMain.handle('router:benchmarkModel', async (_e, name: string) => {
+    return benchmarkModel(name, (msg) => safeSend('router:benchmarkProgress', msg));
   });
 
   ipcMain.handle('router:listProfiles', () => listProfiles());

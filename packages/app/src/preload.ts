@@ -87,8 +87,10 @@ export interface ContextPackRow {
 const api = {
   // ── Agent ────────────────────────────────────────────────────────────────
   agent: {
-    sendMessage: (sessionId: string, content: string, attachments?: { name: string; mime: string; data: string }[]) =>
-      ipcRenderer.invoke('agent:sendMessage', sessionId, content, attachments),
+    /** opts.modelOverride runs THIS message on a specific saved model (cloud
+     *  escalation "retry on X") — recorded on the run's audit row. */
+    sendMessage: (sessionId: string, content: string, attachments?: { name: string; mime: string; data: string }[], opts?: { modelOverride?: string }) =>
+      ipcRenderer.invoke('agent:sendMessage', sessionId, content, attachments, opts),
     pickImage: () =>
       ipcRenderer.invoke('dialog:pickImage') as Promise<{ name: string; mime: string; data: string; path: string } | null>,
     pickPdf: () =>
@@ -643,7 +645,13 @@ const api = {
   // a specific model for a task type, bypassing auto-selection.
   router: {
     benchmark: () => ipcRenderer.invoke('router:benchmark'),
-    listProfiles: () => ipcRenderer.invoke('router:listProfiles'),
+    /** Probe ONE model (post-install fit card fill-in) — no fleet re-run. */
+    benchmarkModel: (name: string) =>
+      ipcRenderer.invoke('router:benchmarkModel', name) as Promise<{ model: string; task: string; latency: number; quality: number }[]>,
+    listProfiles: () => ipcRenderer.invoke('router:listProfiles') as Promise<{
+      ollama_name: string; task_type: 'plan' | 'tool_args' | 'synthesis';
+      latency_ms: number; quality: number; benchmarked_at: number;
+    }[]>,
     listOverrides: () => ipcRenderer.invoke('router:listOverrides'),
     setOverride: (taskType: string, ollamaName: string | null) =>
       ipcRenderer.invoke('router:setOverride', taskType, ollamaName),

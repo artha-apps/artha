@@ -118,6 +118,33 @@ export interface BenchmarkReport {
   results: { model: string; task: TaskType; latency: number; quality: number }[];
 }
 
+/** Probe ONE model against every probe task, upserting into `model_profiles`.
+ *  Used standalone right after a model install (so its Model Fit card fills in
+ *  without re-benchmarking the whole fleet — a 70B re-probe is minutes) and by
+ *  `runBenchmark` for the full sweep. */
+export async function benchmarkModel(
+  model: string,
+  progress?: (msg: string) => void,
+): Promise<BenchmarkReport['results']> {
+  const db = getDb();
+  const upsert = db.prepare(`
+    INSERT INTO model_profiles (ollama_name, task_type, latency_ms, quality, benchmarked_at)
+    VALUES (?, ?, ?, ?, unixepoch())
+    ON CONFLICT(ollama_name, task_type) DO UPDATE SET
+      latency_ms = excluded.latency_ms,
+      quality = excluded.quality,
+      benchmarked_at = excluded.benchmarked_at
+  `);
+  const results: BenchmarkReport['results'] = [];
+  for (const probe of PROBES) {
+    progress?.(`${model} · ${probe.task}…`);
+    const { latency, quality } = await probeModel(model, probe);
+    upsert.run(model, probe.task, latency, quality);
+    results.push({ model, task: probe.task, latency, quality });
+  }
+  return results;
+}
+
 /** Probe every installed Ollama model against every probe task. Results are
  *  upserted into `model_profiles` so the LLM client's `taskType` routing
  *  immediately starts using them. `progress` is wired through to the Router
@@ -129,25 +156,9 @@ export async function runBenchmark(progress?: (msg: string) => void): Promise<Be
     return { models: [], durationMs: 0, results: [] };
   }
 
-  const db = getDb();
-  const upsert = db.prepare(`
-    INSERT INTO model_profiles (ollama_name, task_type, latency_ms, quality, benchmarked_at)
-    VALUES (?, ?, ?, ?, unixepoch())
-    ON CONFLICT(ollama_name, task_type) DO UPDATE SET
-      latency_ms = excluded.latency_ms,
-      quality = excluded.quality,
-      benchmarked_at = excluded.benchmarked_at
-  `);
-
   const results: BenchmarkReport['results'] = [];
-
   for (const model of models) {
-    for (const probe of PROBES) {
-      progress?.(`${model} · ${probe.task}…`);
-      const { latency, quality } = await probeModel(model, probe);
-      upsert.run(model, probe.task, latency, quality);
-      results.push({ model, task: probe.task, latency, quality });
-    }
+    results.push(...await benchmarkModel(model, progress));
   }
 
   return { models, durationMs: Date.now() - start, results };

@@ -58,7 +58,7 @@
 | **bundles/** | |
 | `src/bundles/bundle.ts` | Skill-bundle import/export — HMAC-signed manifest, golden-content hashing, `ENV:` secret stripping |
 | **router/** | |
-| `src/router/benchmark.ts` | Model capability probes (plan / tool-args / …) that score local Ollama models for the model router |
+| `src/router/benchmark.ts` | Model capability probes (plan / tool-args / synthesis) that score local Ollama models for the model router; `benchmarkModel()` probes ONE model (post-install Model Fit fill-in), `runBenchmark()` sweeps the fleet |
 | **ipc/** | |
 | `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, lan, cloud, …) |
 | **llm/** | |
@@ -134,7 +134,7 @@
 | `src/lib/tabTheme.ts` | Per-tab accent colours (Artha/Workflows/Code/Delegate) as raw values for dynamic inline styles; mirrors the `artha-tab-*` Tailwind/CSS tokens |
 | `src/lib/newChat.ts` | `createChat()` — the ONE new-chat flow (create session → attach project root scope → activate); shared by Sidebar, ProjectHome, CommandPalette, and SkillsPanel rerun so every entry point starts a chat with the same context |
 | **components/Chat/** | |
-| `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file), Context Pack chips (save/apply/detach), "Continue with context" scope-inheritance chip, `@chat:`/`@memory:` reference tokens; message bubble list |
+| `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file), Context Pack chips (save/apply/detach), "Continue with context" scope-inheritance chip, `@chat:`/`@memory:` reference tokens, expected-wait hint (benchmark-derived, task-shaped input on a slow model), cloud-escalation "Retry on ☁ X" in the failure banner (per-message modelOverride, audit-logged); message bubble list |
 | `ClarificationModal.tsx` | Pre-flight Q&A modal (pauses the agent until user answers or skips) |
 | `PlanApproval.tsx` | Approval UI for the ReAct plan before execution |
 | `ToolCallInline.tsx` | Inline, collapsible tool-call + result display within the chat stream |
@@ -162,7 +162,7 @@
 | **components/ProjectHome/** | |
 | `ProjectHome.tsx` | Project Context Hub — Chat tab's empty state for an active project: inline-editable rolling summary (`projects:updateSummary`), pinned memories (pin/unpin via `memory:setProject`), per-project default skill picker, RAG index status + rebuild, recent chats |
 | **components/Settings/** | |
-| `ModelsPanel.tsx` | Configure LLM models — browse/install + uninstall Ollama models, cloud BYOK keys, context window slider |
+| `ModelsPanel.tsx` | Configure LLM models — browse/install + uninstall Ollama models, cloud BYOK keys, context window slider, Model Fit cards (measured-here speed + per-task quality from `model_profiles`, plain-language label, ⭐ Recommended pick, auto-benchmark after install) |
 | `MCPToolsPanel.tsx` | MCP servers + tool schemas + tool-audit-log tabs; add / remove servers |
 | `SkillsPanel.tsx` | Create / edit / delete agent skill files |
 | `WebPanel.tsx` | Web search config — Brave key, SearXNG instances, provider status |

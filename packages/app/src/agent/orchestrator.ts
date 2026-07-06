@@ -114,6 +114,10 @@ export interface AgentPlan {
   /** Skill active for this run, if one was matched/invoked. Threaded through
    *  approval so its instructions + tool scope survive a pause-for-approval. */
   skill?: ActiveSkill | null;
+  /** Explicit per-run model override (cloud escalation "retry on X" / forks).
+   *  Beats the skill's pinned model. Rides the plan so it survives a
+   *  pause-for-approval. */
+  modelOverride?: string | null;
   /** How the active skill was reached — recorded in the skill_runs ledger so the
    *  dashboard can show explicit-vs-auto-vs-delegated usage. Only meaningful when
    *  `skill` is set; defaults to 'auto' at record time when absent. */
@@ -206,7 +210,12 @@ export class AgentOrchestrator {
    *   3. Generate plan (with enriched goal if answers were provided).
    *   4. Execute or pause for approval.
    */
-  async handleMessage(sessionId: string, userContent: string, attachments?: Attachment[]): Promise<void> {
+  async handleMessage(
+    sessionId: string,
+    userContent: string,
+    attachments?: Attachment[],
+    opts: { modelOverride?: string } = {},
+  ): Promise<void> {
     const db = getDb();
     const workflowId = crypto.randomUUID();
 
@@ -237,7 +246,7 @@ export class AgentOrchestrator {
     if (!skill) {
       const intent = await this.classifyIntent(goal);
       if (intent === 'chat') {
-        await this.handleConversational(workflowId, sessionId, goal, attachments);
+        await this.handleConversational(workflowId, sessionId, goal, attachments, opts.modelOverride);
         return;
       }
     }
@@ -310,6 +319,7 @@ export class AgentOrchestrator {
 
     const plan = await this.generatePlan(workflowId, sessionId, enrichedGoal, history, skill);
     plan.skill = skill;
+    plan.modelOverride = opts.modelOverride ?? null;
 
     // Plan landed — replace the generic "Planning…" status with the actual
     // first steps ("Plan: list ~/Desktop → move screenshots → verify"), so the
@@ -446,7 +456,8 @@ Reply with ONLY the single word "chat" or "task" — nothing else.`,
     workflowId: string,
     sessionId: string,
     goal: string,
-    attachments?: Attachment[]
+    attachments?: Attachment[],
+    modelOverride?: string,
   ): Promise<void> {
     const db = getDb();
     const runId = crypto.randomUUID();
@@ -454,7 +465,7 @@ Reply with ONLY the single word "chat" or "task" — nothing else.`,
     db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`).run(workflowId);
     db.prepare(
       `INSERT INTO agent_runs (run_id, session_id, workflow_id, goal, model, status) VALUES (?,?,?,?,?, 'running')`
-    ).run(runId, sessionId, workflowId, goal, this.activeModelName());
+    ).run(runId, sessionId, workflowId, goal, modelOverride ?? this.activeModelName());
 
     this.emit('agent:workflowStart', workflowId);
 
@@ -506,7 +517,7 @@ ${envBlock}`,
         }
       : undefined;
     try {
-      const llm = getActiveLLMClient(undefined, 'synthesis');
+      const llm = getActiveLLMClient(modelOverride, 'synthesis');
       const result = await llm.streamComplete(
         messages,
         undefined, // no tools → tool_choice dropped → no tool-constrained refusal
@@ -931,12 +942,12 @@ Rules:
     // Caller may pre-create the run id (non-blocking starts insert the row up
     // front so it can be polled immediately); otherwise mint one here.
     const runId = opts.runId ?? crypto.randomUUID();
-    // A skill can pin its own model; record the model that will ACTUALLY run so
-    // the per-skill model breakdown is honest (and so a pinned run isn't logged
-    // under the active model it bypassed). A stale pin (model uninstalled) is
-    // resolved to null so the run falls back instead of failing.
+    // Model precedence: explicit per-run override (cloud escalation / fork) →
+    // skill pin → active model. Record the model that will ACTUALLY run so the
+    // per-skill model breakdown and the run's audit row are honest. A stale
+    // skill pin (model uninstalled) resolves to null and falls back.
     const pinnedModel = this.resolvePinnedModel(plan.skill?.pinnedModel);
-    const model = pinnedModel || this.activeModelName();
+    const model = plan.modelOverride || pinnedModel || this.activeModelName();
     const planStartMs = Date.now();
 
     db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`)
@@ -1026,8 +1037,9 @@ RULES — follow exactly, no exceptions:
         goal: plan.goal,
         messages,
         skill,
-        // Honour a per-skill model pin; undefined falls through to the router.
-        modelOverride: pinnedModel ?? undefined,
+        // Explicit escalation/fork override beats the skill pin; undefined
+        // falls through to the router.
+        modelOverride: plan.modelOverride ?? pinnedModel ?? undefined,
         startMs: planStartMs,
         silent: opts.silent,
         taskType: opts.taskType,

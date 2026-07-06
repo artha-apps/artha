@@ -99,6 +99,10 @@ export interface ChatError {
   title: string;
   detail?: string;
   retry?: () => void;
+  /** Cloud escalation: re-run the same message on a configured BYOK model
+   *  ("Retry on gpt-4o — this task only"). Present only when a cloud model is
+   *  saved in llm_models. */
+  escalate?: { label: string; run: () => void };
 }
 
 /** A clarification request the orchestrator paused on — drives the ClarificationModal. */
