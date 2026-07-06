@@ -105,8 +105,11 @@
 | `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree-fork/nut-js` optional native dep |
 | `src/types/rag-extractors.d.ts` | Ambient shims for the pdf-parse internal entry + mammoth (avoids debug-mode fixture read / missing types) |
 | **license/** | |
-| `src/license/entitlements.ts` | `Tier` (`free` \| `pro` \| `enterprise`), `Entitlements`, `TIER_ENTITLEMENTS` matrix, `FREE_ENTITLEMENTS` fallback. Single source of truth for what each SKU unlocks |
-| `src/license/verify.ts` | Ed25519 verification + cached `getEntitlements()` — parses the signed token, rejects tampered/expired, falls back to Free on any failure. Uses Node built-in `crypto`; no network call |
+| `src/license/entitlements.ts` | `Tier` (`free` \| `pro`=Personal \| `team` \| `enterprise`=Business), `Entitlements` (team flags + solo caps: docsPerMonth/scheduler/maxContextPacks/skillTemplates), `TIER_ENTITLEMENTS` matrix, `FREE_ENTITLEMENTS` fallback. Single source of truth for what each SKU unlocks |
+| `src/license/verify.ts` | Ed25519 verification + cached `getEntitlements()` — parses the signed token, rejects tampered/expired, falls back to Free on any failure; cache re-checks expiry on every hit so annual keys lapse mid-session. Uses Node built-in `crypto`; no network call |
+| `src/license/current.ts` | `getRawLicenseKey()`/`currentEntitlements()` (shared by IPC handlers AND tool modules) + `docsGeneratedThisMonth()` for the Free doc cap |
+| `src/license/seats.ts` | `usedSeats()` — seat cap = team_members ∪ unbound enabled api_keys (a member-bound key shares the member's seat) |
+| `src/license/lanPrivacy.test.ts` | Vitest — LAN `is_shared` filters on the memory preamble + pack pins (real runWithContext), seat-union arithmetic |
 | `src/license/public-key.ts` | Bundled PEM public verification key. Placeholder shipped; rotated via `scripts/sign-license.mjs --genkeys` |
 | `src/license/verify.test.ts` | Vitest suite — mints a keypair in-process and tests valid/tampered/expired/wrong-key/garbage paths + entitlement derivation |
 | **scripts/** (app-scoped) | |
