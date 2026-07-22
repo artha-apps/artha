@@ -51,6 +51,7 @@ import {
 import { setSessionKey, getSessionKey, deleteSessionKey } from '../security/sessionKeys';
 import { PROVIDER_PRESETS } from '../llm/providerPresets';
 import { discoverModels, testConnection } from '../llm/providerProbe';
+import { getEffectiveCapabilities } from '../llm/capabilities';
 import { usableApiKey } from '../llm/client';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
@@ -1427,6 +1428,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     }
     return { key: opts.apiKey };
   };
+
+  // Effective capabilities for a provider (static registry ⊕ runtime probes).
+  ipcMain.handle('llm:getCapabilities', (_e, opts: { capabilityKey: string; model?: string }) =>
+    getEffectiveCapabilities(opts.capabilityKey, opts.model));
 
   // Model discovery (GET /v1/models) with normalized, key-free errors.
   ipcMain.handle('llm:discoverModels', async (_e, opts: { baseUrl: string; apiKey?: string; modelId?: string }) => {

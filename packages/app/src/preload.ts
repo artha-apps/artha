@@ -366,6 +366,10 @@ const api = {
     // Cloud models (BYOK, opt-in). Keys are stored locally and only sent to the
     // provider the user configured; local Ollama remains the default.
     listConfigured: () => ipcRenderer.invoke('llm:listConfigured'),
+    // Effective capabilities: static per-provider registry overlaid with
+    // runtime probe facts (e.g. "this model can't think").
+    getCapabilities: (opts: { capabilityKey: string; model?: string }) =>
+      ipcRenderer.invoke('llm:getCapabilities', opts) as Promise<Record<string, string>>,
     // Probes: pass apiKey for a just-typed key, or modelId for a saved model
     // (its sealed key is resolved in the main process, never sent here).
     discoverModels: (opts: { baseUrl: string; apiKey?: string; modelId?: string }) =>
