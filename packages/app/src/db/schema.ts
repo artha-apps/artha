@@ -15,6 +15,7 @@ import Database from 'better-sqlite3';
 import * as path from 'path';
 import { app } from 'electron';
 import { sealPlaintextApiKeys } from '../security/secretString';
+import { normalizeProviderIds } from '../llm/providerKind';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
 let db: Database.Database | null = null;
@@ -983,6 +984,18 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] api_key seal migration skipped:', err);
+  }
+
+  // Migration v20→v21: canonical provider ids on llm_models. Repairs legacy
+  // rows stamped with the 'ollama' schema default but pointing at a remote
+  // base_url — those are user-added OpenAI-compatible endpoints → 'custom'.
+  // Provider-aware runtime behaviour (warm-up/unload/banner gating) keys off
+  // this id, so it must be trustworthy before ollamaRuntime consults it.
+  try {
+    const n = normalizeProviderIds(db);
+    if (n) console.log(`[Artha] provider id normalization: ${n} row(s) repaired.`);
+  } catch (err) {
+    console.warn('[Artha] provider id normalization skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

@@ -21,6 +21,7 @@ import { spawn, execFile, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import { getDb } from '../db/schema';
+import { isOllamaManaged } from './providerKind';
 
 const execFileAsync = promisify(execFile);
 const OLLAMA_HOST = 'http://localhost:11434';
@@ -102,14 +103,21 @@ async function startServer(): Promise<boolean> {
   return false;
 }
 
-/** Active model name + context window from the DB (mirrors getActiveLLMClient). */
-function activeModel(): { name: string; numCtx: number } | undefined {
+/** Active model row from the DB (mirrors getActiveLLMClient), including
+ *  whether its lifecycle is ours to manage. Ollama warm-up/unload/auto-start
+ *  must NEVER fire for a cloud/BYOK active model — that used to POST cloud
+ *  model names at localhost and show a false "Ollama isn't installed" nag. */
+function activeModel(): { name: string; numCtx: number; ollamaManaged: boolean } | undefined {
   try {
     const row = getDb()
-      .prepare(`SELECT ollama_name, context_window FROM llm_models WHERE is_active=1 LIMIT 1`)
-      .get() as { ollama_name: string; context_window: number } | undefined;
+      .prepare(`SELECT ollama_name, context_window, provider, base_url FROM llm_models WHERE is_active=1 LIMIT 1`)
+      .get() as { ollama_name: string; context_window: number; provider?: string; base_url?: string } | undefined;
     if (!row?.ollama_name) return undefined;
-    return { name: row.ollama_name, numCtx: row.context_window ?? 8192 };
+    return {
+      name: row.ollama_name,
+      numCtx: row.context_window ?? 8192,
+      ollamaManaged: isOllamaManaged(row.provider, row.base_url),
+    };
   } catch { return undefined; }
 }
 
@@ -135,6 +143,18 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
   const set = (s: ModelStatus) => { lastStatus = s; try { emit(s); } catch { /* ignore */ } };
   const m = activeModel();
   set({ phase: 'checking', model: m?.name });
+
+  // Cloud/BYOK active model: nothing local to start or warm — the provider is
+  // remote and ready by definition. No server auto-start, no warm-up, no
+  // install nag. The ONLY localhost traffic allowed on this path is a single
+  // read-only reachability probe: if the user ALSO has Ollama running, local
+  // embeddings (memory ranking / RAG) still work, so provision the embed
+  // model; if Ollama is absent, do nothing and stay quiet.
+  if (m && !m.ollamaManaged) {
+    set({ phase: 'ready', model: m.name });
+    if (await isUp()) void ensureEmbedModel();
+    return;
+  }
 
   if (!(await isUp())) {
     if (!ollamaInstalled()) { set({ phase: 'not_installed' }); return; }
@@ -195,7 +215,8 @@ export async function ensureEmbedModel(): Promise<boolean> {
  *  quit so a multi-GB model isn't left resident after Artha closes. */
 export async function unloadActiveModel(): Promise<void> {
   const m = activeModel();
-  if (!m) return;
+  // Cloud/BYOK model: nothing resident in local Ollama to evict.
+  if (!m || !m.ollamaManaged) return;
   try {
     await fetch(`${OLLAMA_HOST}/api/generate`, {
       method: 'POST',
