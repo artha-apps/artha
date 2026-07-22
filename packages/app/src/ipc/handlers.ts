@@ -45,6 +45,7 @@ import { getBriefing, markBriefingSeen } from '../briefing/briefing';
 import { spawnEnv } from '../system/nodePath';
 import { MCPRegistry, parseEnvTokens } from '../mcp/registry';
 import { sealCredentials, openCredentials, isAtRestEncryptionAvailable, type StoredCredentials } from '../security/secrets';
+import { sealSecretString, isSecretEncryptionAvailable } from '../security/secretString';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
@@ -1416,21 +1417,26 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean;
   }) => {
     const db = getDb();
+    // Seal the key BEFORE it touches the DB — plaintext never lands on disk.
+    // atRestEncrypted tells the renderer whether the OS keychain backed the
+    // seal (false = base64 fallback, UI must show the honest degraded state).
+    const sealedKey = sealSecretString(m.apiKey);
+    const atRestEncrypted = isSecretEncryptionAvailable();
     const existing = db.prepare(`SELECT model_id FROM llm_models WHERE ollama_name=?`).get(m.model) as { model_id: string } | undefined;
     const id = existing?.model_id ?? crypto.randomUUID();
     if (existing) {
       db.prepare(`UPDATE llm_models SET name=?, base_url=?, api_key=?, provider=? WHERE model_id=?`)
-        .run(m.label || m.model, m.baseUrl, m.apiKey, m.provider, id);
+        .run(m.label || m.model, m.baseUrl, sealedKey, m.provider, id);
     } else {
       db.prepare(`INSERT INTO llm_models (model_id, name, ollama_name, base_url, api_key, provider, is_active)
                   VALUES (?,?,?,?,?,?,0)`)
-        .run(id, m.label || m.model, m.model, m.baseUrl, m.apiKey, m.provider);
+        .run(id, m.label || m.model, m.model, m.baseUrl, sealedKey, m.provider);
     }
     if (m.activate) {
       db.prepare(`UPDATE llm_models SET is_active=0`).run();
       db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(id);
     }
-    return { model_id: id };
+    return { model_id: id, atRestEncrypted };
   });
 
   // Clamp to [512, 128 000] so a user typo can't break the model call (most

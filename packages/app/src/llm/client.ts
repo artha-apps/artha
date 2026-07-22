@@ -7,6 +7,7 @@
  */
 import OpenAI from 'openai';
 import { getDb } from '../db/schema';
+import { openSecretString } from '../security/secretString';
 import { applyToolCallDeltas, toToolCalls, type PartialToolCall } from './streamMerge';
 
 /** Assembled result of a streamed completion — mirrors the bits of a
@@ -474,7 +475,10 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
     .get() as Record<string, unknown> | undefined;
 
   const baseUrl       = (row?.base_url as string)        ?? 'http://localhost:11434/v1';
-  const apiKey        = (row?.api_key as string)          ?? 'ollama';
+  // api_key is stored sealed at rest (v1:enc:/v1:raw: envelope) — open it here,
+  // the last main-process point before the outbound request. Legacy plaintext
+  // rows pass through unchanged until the launch migration seals them.
+  const apiKey        = openSecretString(row?.api_key as string | undefined);
   const fallbackModel = (row?.ollama_name as string)      ?? 'llama3.2:3b-instruct-q4_K_M';
   // num_ctx for the local Ollama native path. Default 8192 (up from Ollama's
   // 2048) so big tool-using prompts aren't truncated + re-evaluated each turn.
@@ -502,7 +506,7 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
       .get(routed) as { base_url?: string; api_key?: string; context_window?: number } | undefined;
     if (routedRow?.context_window) effectiveContextWindow = routedRow.context_window;
     if (routedRow?.base_url) effectiveBaseUrl = routedRow.base_url;
-    if (routedRow?.api_key) effectiveApiKey = routedRow.api_key;
+    if (routedRow?.api_key) effectiveApiKey = openSecretString(routedRow.api_key);
   }
   effectiveContextWindow = Math.max(effectiveContextWindow, 8192);
 

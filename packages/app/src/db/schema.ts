@@ -14,6 +14,7 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import { app } from 'electron';
+import { sealPlaintextApiKeys } from '../security/secretString';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
 let db: Database.Database | null = null;
@@ -968,6 +969,20 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] context_packs is_shared migration skipped:', err);
+  }
+
+  // Migration v19→v20: seal plaintext BYOK api_keys at rest. runMigrations()
+  // executes post-`ready`, so Electron safeStorage is usable here. Idempotent
+  // (already-sealed rows and the 'ollama' placeholder are skipped); a row that
+  // fails to seal keeps working via openSecretString's plaintext passthrough
+  // and is retried on the next launch.
+  try {
+    const { sealed, failed } = sealPlaintextApiKeys(db);
+    if (sealed || failed) {
+      console.log(`[Artha] api_key seal migration: ${sealed} sealed, ${failed} failed.`);
+    }
+  } catch (err) {
+    console.warn('[Artha] api_key seal migration skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

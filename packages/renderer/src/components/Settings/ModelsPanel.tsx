@@ -298,6 +298,9 @@ export default function ModelsPanel() {
   const [cloudKey, setCloudKey] = useState('');
   const [savingCloud, setSavingCloud] = useState(false);
   const [cloudError, setCloudError] = useState('');
+  // Honest at-rest state: false when the OS keychain is unavailable, so the
+  // saved key is only base64-obfuscated on disk. Never hide this from the user.
+  const [keyNotEncrypted, setKeyNotEncrypted] = useState(false);
 
   // Tab controls which list is shown: models already on disk vs the pull catalog.
   const [tab, setTab] = useState<'installed' | 'browse'>('installed');
@@ -442,14 +445,15 @@ export default function ModelsPanel() {
     setSavingCloud(true);
     setCloudError('');
     try {
-      await window.artha.llm.addCloudModel({
+      const res = await window.artha.llm.addCloudModel({
         provider: cloudProvider,
         label: `${CLOUD_PROVIDERS[cloudProvider].label}: ${cloudModel.trim()}`,
         model: cloudModel.trim(),
         baseUrl: cloudBaseUrl.trim(),
         apiKey: cloudKey.trim(),
         activate: true,
-      });
+      }) as { model_id: string; atRestEncrypted?: boolean };
+      setKeyNotEncrypted(res?.atRestEncrypted === false);
       setShowCloudForm(false);
       setCloudModel(''); setCloudKey('');
       setActiveModelState(cloudModel.trim());
