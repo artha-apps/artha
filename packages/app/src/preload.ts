@@ -366,6 +366,18 @@ const api = {
     // Cloud models (BYOK, opt-in). Keys are stored locally and only sent to the
     // provider the user configured; local Ollama remains the default.
     listConfigured: () => ipcRenderer.invoke('llm:listConfigured'),
+    // Probes: pass apiKey for a just-typed key, or modelId for a saved model
+    // (its sealed key is resolved in the main process, never sent here).
+    discoverModels: (opts: { baseUrl: string; apiKey?: string; modelId?: string }) =>
+      ipcRenderer.invoke('llm:discoverModels', opts) as Promise<
+        { ok: true; models: string[] } |
+        { ok: false; error: { kind: string; status?: number; message: string; retryable: boolean } }
+      >,
+    testConnection: (opts: { baseUrl: string; apiKey?: string; modelId?: string; model: string }) =>
+      ipcRenderer.invoke('llm:testConnection', opts) as Promise<
+        { ok: true; latencyMs: number; model: string } |
+        { ok: false; error: { kind: string; status?: number; message: string; retryable: boolean } }
+      >,
     // Static provider preset registry (data-only; see llm/providerPresets.ts).
     listProviderPresets: () => ipcRenderer.invoke('llm:listProviderPresets') as Promise<{
       id: string; label: string; kind: 'cloud' | 'gateway' | 'runtime-remote' | 'custom';

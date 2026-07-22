@@ -104,6 +104,11 @@ export async function startMockProvider(initial: MockProviderScenario = {}): Pro
     }
 
     if (req.method === 'GET' && req.url?.endsWith('/models')) {
+      if (scenario.failure === 'malformed') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"data": [{'); // truncated JSON
+        return;
+      }
       const ids = scenario.emptyCatalogue
         ? []
         : (scenario.models ?? ['mock-small', 'mock-large']);

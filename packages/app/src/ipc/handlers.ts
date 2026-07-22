@@ -50,6 +50,8 @@ import {
 } from '../security/secretString';
 import { setSessionKey, getSessionKey, deleteSessionKey } from '../security/sessionKeys';
 import { PROVIDER_PRESETS } from '../llm/providerPresets';
+import { discoverModels, testConnection } from '../llm/providerProbe';
+import { usableApiKey } from '../llm/client';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
@@ -1408,6 +1410,37 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Provider preset registry — static data (llm/providerPresets.ts); the
   // renderer renders whatever this returns, so new providers ship data-only.
   ipcMain.handle('llm:listProviderPresets', () => PROVIDER_PRESETS);
+
+  // Resolve the API key for a probe: either the form value the user just
+  // typed (pre-save) or a SAVED model's sealed/session key by model_id —
+  // the sealed key itself never travels through the renderer.
+  const probeKey = (opts: { apiKey?: string; modelId?: string }): { key?: string; error?: string } => {
+    if (opts.modelId) {
+      const row = getDb().prepare(`SELECT model_id, api_key FROM llm_models WHERE model_id=?`)
+        .get(opts.modelId) as { model_id: string; api_key: string | null } | undefined;
+      if (!row) return { error: 'Model not found.' };
+      try {
+        return { key: usableApiKey(getDb(), row.model_id, row.api_key) };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    return { key: opts.apiKey };
+  };
+
+  // Model discovery (GET /v1/models) with normalized, key-free errors.
+  ipcMain.handle('llm:discoverModels', async (_e, opts: { baseUrl: string; apiKey?: string; modelId?: string }) => {
+    const k = probeKey(opts);
+    if (k.error) return { ok: false, error: { kind: 'auth', retryable: false, message: k.error } };
+    return discoverModels(opts.baseUrl, k.key);
+  });
+
+  // One cheap completion proving base URL + key + model work together.
+  ipcMain.handle('llm:testConnection', async (_e, opts: { baseUrl: string; apiKey?: string; modelId?: string; model: string }) => {
+    const k = probeKey(opts);
+    if (k.error) return { ok: false, error: { kind: 'auth', retryable: false, message: k.error } };
+    return testConnection(opts.baseUrl, k.key, opts.model);
+  });
 
   // ── Cloud models (BYOK, opt-in) ──────────────────────────────────────────
   // Cloud providers are just llm_models rows with a non-local base_url + key.

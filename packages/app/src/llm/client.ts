@@ -490,7 +490,7 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
  * Never logs or embeds key material in errors.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function usableApiKey(db: any, modelId: string | undefined, stored: string | null | undefined): string {
+export function usableApiKey(db: any, modelId: string | undefined, stored: string | null | undefined): string {
   if (!stored || stored.trim() === '' || stored === LOCAL_API_KEY_PLACEHOLDER) {
     return LOCAL_API_KEY_PLACEHOLDER;
   }
