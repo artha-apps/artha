@@ -14,7 +14,8 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import { app } from 'electron';
-import { sealPlaintextApiKeys } from '../security/secretString';
+import { sealPlaintextApiKeys, sealPlaintextColumns } from '../security/secretString';
+import { resealRawCredentialBlobs } from '../security/secrets';
 import { normalizeProviderIds } from '../llm/providerKind';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
@@ -980,24 +981,50 @@ export function runMigrations(): void {
   // successful pass we verify no sealable value remains, then checkpoint the
   // WAL and VACUUM so the old plaintext bytes don't survive in WAL frames or
   // freelist pages. Log output is sanitized counts only — never key material.
+  let totalSealed = 0;
   try {
     const res = sealPlaintextApiKeys(db);
+    totalSealed += res.sealed;
     if (res.sealed || res.failed || res.pending) {
       console.log(
         `[Artha] api_key seal migration: ${res.sealed} sealed, ${res.failed} failed, ` +
         `${res.pending} pending (no secure keychain), ${res.unsealedRemaining} remaining.`
       );
     }
-    if (res.sealed > 0) {
-      try {
-        db.pragma('wal_checkpoint(TRUNCATE)');
-        db.exec('VACUUM');
-      } catch (err) {
-        console.warn('[Artha] post-seal WAL/VACUUM cleanup skipped:', err);
-      }
-    }
   } catch (err) {
     console.warn('[Artha] api_key seal migration skipped:', err);
+  }
+
+  // Migration v21→v22 (commit 4.1): seal Google OAuth tokens at rest (same
+  // rules as api_keys — keychain absent leaves rows intact + counted), and
+  // re-seal any legacy v1:raw MCP credential blobs (register R5).
+  try {
+    const oauth = sealPlaintextColumns(db, {
+      table: 'oauth_tokens', idColumn: 'provider', valueColumns: ['access_token', 'refresh_token'],
+    });
+    totalSealed += oauth.sealed;
+    if (oauth.sealed || oauth.failed || oauth.pending) {
+      console.log(
+        `[Artha] oauth_tokens seal migration: ${oauth.sealed} sealed, ${oauth.failed} failed, ` +
+        `${oauth.pending} pending, ${oauth.unsealedRemaining} remaining.`
+      );
+    }
+    const resealed = resealRawCredentialBlobs(db);
+    totalSealed += resealed;
+    if (resealed) console.log(`[Artha] MCP credential reseal: ${resealed} legacy raw blob(s) upgraded.`);
+  } catch (err) {
+    console.warn('[Artha] oauth/MCP seal migration skipped:', err);
+  }
+
+  // One cleanup pass for every seal above: old plaintext bytes must not
+  // survive in WAL frames or freelist pages after a successful migration.
+  if (totalSealed > 0) {
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)');
+      db.exec('VACUUM');
+    } catch (err) {
+      console.warn('[Artha] post-seal WAL/VACUUM cleanup skipped:', err);
+    }
   }
 
   // Migration v20→v21: canonical provider ids on llm_models. Repairs legacy

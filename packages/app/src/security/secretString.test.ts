@@ -39,6 +39,7 @@ import {
   isRawEnvelope,
   isSecretEncryptionAvailable,
   sealPlaintextApiKeys,
+  sealPlaintextColumns,
   SecureStorageUnavailableError,
   LOCAL_API_KEY_PLACEHOLDER,
   SESSION_SENTINEL,
@@ -197,6 +198,41 @@ describe('sealPlaintextApiKeys (launch migration, Commit 3.5 rules)', () => {
     const res = sealPlaintextApiKeys(db);
     expect(res.unsealedRemaining).toBe(0);
     expect(JSON.stringify(db.rows)).not.toContain('sk-super-secret-42');
+  });
+
+  it('sealPlaintextColumns (oauth_tokens shape): seals both token columns, honors keychain-absent', () => {
+    const rows: Record<string, string | null>[] = [
+      { provider: 'google', access_token: 'ya29.plain-access', refresh_token: '1//plain-refresh' },
+    ];
+    const db: SecretMigrationDb = {
+      prepare(sql: string) {
+        return {
+          all: () => rows.map(r => ({ ...r })),
+          run: (...args: unknown[]) => {
+            const m = sql.match(/SET (\w+)=\? WHERE/);
+            const [val, id] = args as [string, string];
+            const row = rows.find(r => r.provider === id);
+            if (row && m) row[m[1]] = val;
+            return { changes: 1 };
+          },
+        };
+      },
+    };
+    const spec = { table: 'oauth_tokens', idColumn: 'provider', valueColumns: ['access_token', 'refresh_token'] };
+
+    fake.available = false;
+    expect(sealPlaintextColumns(db, spec)).toMatchObject({ sealed: 0, pending: 2 });
+    expect(rows[0].access_token).toBe('ya29.plain-access'); // untouched
+
+    fake.available = true;
+    const res = sealPlaintextColumns(db, spec);
+    expect(res).toMatchObject({ sealed: 2, failed: 0, unsealedRemaining: 0 });
+    expect(rows[0].access_token!.startsWith('v1:enc:')).toBe(true);
+    expect(rows[0].refresh_token!.startsWith('v1:enc:')).toBe(true);
+    expect(openSecretString(rows[0].access_token)).toBe('ya29.plain-access');
+    expect(JSON.stringify(rows)).not.toContain('plain-refresh');
+    // Idempotent second pass.
+    expect(sealPlaintextColumns(db, spec)).toMatchObject({ sealed: 0, unsealedRemaining: 0 });
   });
 
   it('continues past a row that fails to seal and reports it (per-row isolation)', () => {

@@ -46,7 +46,7 @@ import { spawnEnv } from '../system/nodePath';
 import { MCPRegistry, parseEnvTokens } from '../mcp/registry';
 import { sealCredentials, openCredentials, isAtRestEncryptionAvailable, type StoredCredentials } from '../security/secrets';
 import {
-  sealSecretString, isSecretEncryptionAvailable, SESSION_SENTINEL, SecureStorageUnavailableError,
+  sealSecretString, openSecretString, isSecretEncryptionAvailable, SESSION_SENTINEL, SecureStorageUnavailableError,
 } from '../security/secretString';
 import { setSessionKey, getSessionKey, deleteSessionKey } from '../security/sessionKeys';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
@@ -2227,6 +2227,15 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('oauth:startFlow', async (_e, opts: { provider: string }): Promise<{ success: boolean; error?: string }> => {
     try {
       if (opts?.provider !== 'google') return { success: false, error: `Unsupported provider: ${opts?.provider}` };
+      // OAuth tokens are only ever persisted keychain-sealed. With no
+      // trustworthy keychain, refuse up front (before Google is contacted)
+      // rather than fail after consent — same policy as BYOK keys.
+      if (!isSecretEncryptionAvailable()) {
+        return {
+          success: false,
+          error: 'Secure key storage is unavailable on this system, so Artha can’t save Google sign-in tokens. Enable a system keychain (e.g. GNOME Keyring / KWallet with Secret Service on Linux) and try again.',
+        };
+      }
       const db = getDb();
       const clientId = readSettings().google_client_id as string | undefined;
       if (!clientId) return { success: false, error: 'No Google Client ID configured. Add it in the Cloud panel’s Setup section first.' };
@@ -2288,7 +2297,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
                  access_token=excluded.access_token,
                  refresh_token=COALESCE(excluded.refresh_token, oauth_tokens.refresh_token),
                  expires_at=excluded.expires_at, scope=excluded.scope`
-            ).run(tok.access_token ?? null, tok.refresh_token ?? null, expiresAt, tok.scope ?? GOOGLE_SCOPES.join(' '));
+            ).run(
+              // Sealed before they ever touch the DB (startFlow already
+              // verified a trustworthy keychain exists).
+              tok.access_token ? sealSecretString(tok.access_token) : null,
+              tok.refresh_token ? sealSecretString(tok.refresh_token) : null,
+              expiresAt,
+              tok.scope ?? GOOGLE_SCOPES.join(' ')
+            );
             finish({ success: true });
           } catch (e) {
             finish({ success: false, error: e instanceof Error ? e.message : String(e) });
@@ -2324,6 +2340,8 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const row = db.prepare(`SELECT access_token FROM oauth_tokens WHERE provider=?`).get(provider) as { access_token: string | null } | undefined;
     db.prepare(`DELETE FROM oauth_tokens WHERE provider=?`).run(provider);
     if (row?.access_token) {
+      // Stored sealed; open only for the outbound revoke call.
+      row.access_token = openSecretString(row.access_token);
       try {
         await fetch('https://oauth2.googleapis.com/revoke', {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

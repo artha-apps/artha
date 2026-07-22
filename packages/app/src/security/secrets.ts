@@ -68,6 +68,40 @@ export function sealCredentials(creds: StoredCredentials | null | undefined): st
   return ENC_PREFIX + safeStorage.encryptString(json).toString('base64');
 }
 
+/** Minimal DB surface (mirrors secretString.ts) so the reseal migration is
+ *  unit-testable without better-sqlite3. */
+export interface CredsMigrationDb {
+  prepare(sql: string): {
+    all(...args: unknown[]): unknown[];
+    run(...args: unknown[]): unknown;
+  };
+}
+
+/**
+ * Launch migration (register R5): re-seal legacy `v1:raw:` MCP credential
+ * blobs written by older builds on keychain-less systems. Runs only when a
+ * trustworthy keychain exists; raw rows are otherwise left as-is (they still
+ * open read-only). Per-row failure isolation; sanitized logging.
+ */
+export function resealRawCredentialBlobs(db: CredsMigrationDb): number {
+  if (!isAtRestEncryptionAvailable()) return 0;
+  const rows = db
+    .prepare(`SELECT tool_id, credentials_enc FROM tools WHERE credentials_enc LIKE '${RAW_PREFIX}%'`)
+    .all() as { tool_id: string; credentials_enc: string }[];
+  let resealed = 0;
+  for (const row of rows) {
+    try {
+      const creds = openCredentials(row.credentials_enc);
+      const sealed = sealCredentials(creds);
+      db.prepare(`UPDATE tools SET credentials_enc=? WHERE tool_id=?`).run(sealed, row.tool_id);
+      resealed++;
+    } catch (err) {
+      console.warn(`[Artha] credential reseal failed for tool ${row.tool_id}:`, (err as Error)?.name ?? 'Error');
+    }
+  }
+  return resealed;
+}
+
 /**
  * Decrypt a blob produced by `sealCredentials` back into a credential map.
  * Returns `{}` for null/blank input. Throws only on a genuinely corrupt blob

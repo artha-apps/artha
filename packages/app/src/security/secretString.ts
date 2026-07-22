@@ -218,3 +218,55 @@ export function sealPlaintextApiKeys(db: SecretMigrationDb): SealMigrationResult
   const unsealedRemaining = scan().filter(r => needsSealing(r.api_key)).length;
   return { sealed, failed, pending, unsealedRemaining };
 }
+
+/** Which table/columns a generic seal migration walks. Identifiers come from
+ *  OUR code only — never from user input. */
+export interface ColumnSealSpec {
+  table: string;
+  idColumn: string;
+  valueColumns: string[];
+}
+
+/**
+ * Generic launch migration: seal plaintext (or legacy-raw) values in the
+ * given TEXT columns, with the same rules as sealPlaintextApiKeys — no
+ * keychain → touch nothing (pending); per-row/column failure isolation;
+ * sanitized logging; verification scan. Used by the oauth_tokens sealing
+ * (commit 4.1) and any future scalar-credential column.
+ */
+export function sealPlaintextColumns(db: SecretMigrationDb, spec: ColumnSealSpec): SealMigrationResult {
+  const cols = [spec.idColumn, ...spec.valueColumns].join(', ');
+  const scan = () =>
+    (db.prepare(`SELECT ${cols} FROM ${spec.table}`).all() as Record<string, string | null>[]);
+  const needsSealing = (v: string | null | undefined) => isSealableSecret(v) || isRawEnvelope(v);
+  const countUnsealed = (rows: Record<string, string | null>[]) =>
+    rows.reduce((n, r) => n + spec.valueColumns.filter(c => needsSealing(r[c])).length, 0);
+
+  const rows = scan();
+  if (!isSecretEncryptionAvailable()) {
+    const pending = countUnsealed(rows);
+    return { sealed: 0, failed: 0, pending, unsealedRemaining: pending };
+  }
+
+  let sealed = 0;
+  let failed = 0;
+  for (const row of rows) {
+    for (const col of spec.valueColumns) {
+      const v = row[col];
+      if (!needsSealing(v)) continue;
+      try {
+        const plain = isRawEnvelope(v) ? openSecretString(v) : (v as string);
+        db.prepare(`UPDATE ${spec.table} SET ${col}=? WHERE ${spec.idColumn}=?`)
+          .run(sealSecretString(plain), row[spec.idColumn]);
+        sealed++;
+      } catch (err) {
+        failed++;
+        console.warn(
+          `[Artha] ${spec.table}.${col} seal failed for ${row[spec.idColumn]}:`,
+          (err as Error)?.name ?? 'Error'
+        );
+      }
+    }
+  }
+  return { sealed, failed, pending: 0, unsealedRemaining: countUnsealed(scan()) };
+}

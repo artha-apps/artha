@@ -23,6 +23,8 @@ import {
   sealCredentials,
   openCredentials,
   isAtRestEncryptionAvailable,
+  resealRawCredentialBlobs,
+  type CredsMigrationDb,
   type StoredCredentials,
 } from './secrets';
 
@@ -65,5 +67,49 @@ describe('sealCredentials / openCredentials', () => {
     expect(openCredentials(null)).toEqual({});
     expect(openCredentials('')).toEqual({});
     expect(openCredentials('garbage-without-prefix')).toEqual({});
+  });
+});
+
+describe('resealRawCredentialBlobs (register R5)', () => {
+  const creds: StoredCredentials = { env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_raw_era' } };
+  const legacyRaw = 'v1:raw:' + Buffer.from(JSON.stringify(creds), 'utf8').toString('base64');
+
+  function fakeDb(rows: { tool_id: string; credentials_enc: string }[]) {
+    const db: CredsMigrationDb & { rows: typeof rows } = {
+      rows,
+      prepare(sql: string) {
+        return {
+          all: () => rows.filter(r => r.credentials_enc.startsWith('v1:raw:')).map(r => ({ ...r })),
+          run: (...args: unknown[]) => {
+            if (!sql.startsWith('UPDATE')) throw new Error(`unexpected: ${sql}`);
+            const [blob, id] = args as [string, string];
+            const row = rows.find(r => r.tool_id === id);
+            if (row) row.credentials_enc = blob;
+            return { changes: 1 };
+          },
+        };
+      },
+    };
+    return db;
+  }
+
+  it('upgrades legacy raw blobs to keychain-sealed when a keychain exists', () => {
+    const db = fakeDb([
+      { tool_id: 't1', credentials_enc: legacyRaw },
+      { tool_id: 't2', credentials_enc: sealCredentials({ env: { X: 'y' } })! },
+    ]);
+    expect(resealRawCredentialBlobs(db)).toBe(1);
+    const upgraded = db.rows.find(r => r.tool_id === 't1')!.credentials_enc;
+    expect(upgraded.startsWith('v1:enc:')).toBe(true);
+    expect(upgraded).not.toContain(Buffer.from(JSON.stringify(creds)).toString('base64'));
+    expect(openCredentials(upgraded)).toEqual(creds);
+  });
+
+  it('touches nothing when no keychain is available (raw rows keep opening read-only)', () => {
+    encryptionAvailable = false;
+    const db = fakeDb([{ tool_id: 't1', credentials_enc: legacyRaw }]);
+    expect(resealRawCredentialBlobs(db)).toBe(0);
+    expect(db.rows[0].credentials_enc).toBe(legacyRaw);
+    expect(openCredentials(db.rows[0].credentials_enc)).toEqual(creds);
   });
 });
