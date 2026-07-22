@@ -157,7 +157,7 @@ A mock OpenAI-compatible provider server ships as a vitest fixture (in-process H
 |---|---|---|
 | D-P1 | One OpenAI-compat transport + per-provider presets; adapters only where behavior genuinely differs | The existing single-adapter design is correct; presets are data |
 | D-P2 | Provider classification centralized in `providerKind.ts` | Kills the scattered-localhost-checks bug class (commit 2) |
-| D-P3 | Scalar secrets sealed via the `v1:` envelope family (`secretString.ts`) | One at-rest format; version prefix = key-version hook (commit 1) |
+| D-P3 | Scalar secrets sealed via the `v1:` envelope family (`secretString.ts`); the ONLY persistent form is keychain-sealed `v1:enc:` — no base64/raw fallback. No trustworthy keychain (incl. Linux `basic_text`, which uses a static in-binary key) → session-only (in-memory, `v1:session` sentinel) or refuse-with-remediation. Legacy plaintext/raw rows: seal-on-read when possible, locked (typed error) otherwise | One at-rest format; version prefix = key-version hook; reversible-obfuscation persistence prohibited (commits 1 + 3.5) |
 | D-P4 | No silent model fallback — typed `NoModelConfiguredError` | Honest empty states over deceptive failures (commit 3) |
 | D-P5 | Execution profiles as a table + implicit Default profile | First-class abstraction; invisible migration |
 | D-P6 | Capability registry = static data + folded runtime probes | Providers differ; failures should be predicted, not discovered |

@@ -45,7 +45,10 @@ import { getBriefing, markBriefingSeen } from '../briefing/briefing';
 import { spawnEnv } from '../system/nodePath';
 import { MCPRegistry, parseEnvTokens } from '../mcp/registry';
 import { sealCredentials, openCredentials, isAtRestEncryptionAvailable, type StoredCredentials } from '../security/secrets';
-import { sealSecretString, isSecretEncryptionAvailable } from '../security/secretString';
+import {
+  sealSecretString, isSecretEncryptionAvailable, SESSION_SENTINEL, SecureStorageUnavailableError,
+} from '../security/secretString';
+import { setSessionKey, getSessionKey, deleteSessionKey } from '../security/sessionKeys';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
@@ -1407,36 +1410,57 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // provider the user explicitly configured. Local Ollama stays the default;
   // nothing here is enabled unless the user adds and activates a cloud model.
   ipcMain.handle('llm:listConfigured', () => {
-    return getDb().prepare(
-      `SELECT model_id, name, ollama_name, base_url, provider, context_window, is_active
+    // key_state is DERIVED — the api_key value itself never reaches the
+    // renderer. 'session' downgrades to 'session_expired' when the in-memory
+    // key died with a previous process (honest re-enter state).
+    const rows = getDb().prepare(
+      `SELECT model_id, name, ollama_name, base_url, provider, context_window, is_active,
+              CASE
+                WHEN api_key IS NULL OR api_key = '' OR api_key = 'ollama' THEN 'none'
+                WHEN api_key LIKE 'v1:enc:%' THEN 'sealed'
+                WHEN api_key = '${SESSION_SENTINEL}' THEN 'session'
+                ELSE 'locked'
+              END AS key_state
        FROM llm_models ORDER BY added_at DESC`
-    ).all();
+    ).all() as ({ model_id: string; key_state: string } & Record<string, unknown>)[];
+    return rows.map(r =>
+      r.key_state === 'session' && !getSessionKey(r.model_id)
+        ? { ...r, key_state: 'session_expired' }
+        : r
+    );
   });
 
   ipcMain.handle('llm:addCloudModel', (_e, m: {
-    provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean;
+    provider: string; label: string; model: string; baseUrl: string; apiKey: string;
+    activate?: boolean; persistence?: 'session';
   }) => {
     const db = getDb();
-    // Seal the key BEFORE it touches the DB — plaintext never lands on disk.
-    // atRestEncrypted tells the renderer whether the OS keychain backed the
-    // seal (false = base64 fallback, UI must show the honest degraded state).
-    const sealedKey = sealSecretString(m.apiKey);
-    const atRestEncrypted = isSecretEncryptionAvailable();
+    const secure = isSecretEncryptionAvailable();
+    // Credential policy (Commit 3.5): a key is persisted ONLY keychain-sealed.
+    // With no trustworthy keychain, the caller must explicitly opt into
+    // session-only (in-memory, gone on restart) — otherwise refuse with
+    // remediation. Base64/plaintext persistence does not exist anymore.
+    const sessionOnly = m.persistence === 'session';
+    if (!secure && !sessionOnly) {
+      return { error: 'secure_storage_unavailable' as const, message: new SecureStorageUnavailableError().message };
+    }
+    const storedKey = sessionOnly ? SESSION_SENTINEL : sealSecretString(m.apiKey);
     const existing = db.prepare(`SELECT model_id FROM llm_models WHERE ollama_name=?`).get(m.model) as { model_id: string } | undefined;
     const id = existing?.model_id ?? crypto.randomUUID();
     if (existing) {
       db.prepare(`UPDATE llm_models SET name=?, base_url=?, api_key=?, provider=? WHERE model_id=?`)
-        .run(m.label || m.model, m.baseUrl, sealedKey, m.provider, id);
+        .run(m.label || m.model, m.baseUrl, storedKey, m.provider, id);
     } else {
       db.prepare(`INSERT INTO llm_models (model_id, name, ollama_name, base_url, api_key, provider, is_active)
                   VALUES (?,?,?,?,?,?,0)`)
-        .run(id, m.label || m.model, m.model, m.baseUrl, sealedKey, m.provider);
+        .run(id, m.label || m.model, m.model, m.baseUrl, storedKey, m.provider);
     }
+    if (sessionOnly) setSessionKey(id, m.apiKey);
     if (m.activate) {
       db.prepare(`UPDATE llm_models SET is_active=0`).run();
       db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(id);
     }
-    return { model_id: id, atRestEncrypted };
+    return { model_id: id, persistence: sessionOnly ? ('session' as const) : ('persistent' as const) };
   });
 
   // Clamp to [512, 128 000] so a user typo can't break the model call (most
@@ -1456,6 +1480,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('llm:removeModel', (_e, modelId: string) => {
     getDb().prepare(`DELETE FROM llm_models WHERE model_id=?`).run(modelId);
+    deleteSessionKey(modelId); // drop any in-memory session key with the row
     return true;
   });
 

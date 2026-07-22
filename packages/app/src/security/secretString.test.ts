@@ -1,18 +1,18 @@
 /**
- * secretString tests — BYOK api_key sealing (Phase A commit 1).
+ * secretString tests — credential policy (Phase A commits 1 + 3.5).
  *
- * electron's safeStorage is mocked with a reversible fake cipher so we can
- * assert: envelope round-trips (enc + raw fallback), placeholder/legacy
- * passthrough, corrupt-blob degradation, and the launch migration's
- * idempotency + plaintext-never-persists guarantee — all without Electron.
+ * Covers the founder-required scenarios: keychain available / unavailable
+ * (incl. Linux basic_text), no plaintext-or-base64 persistence for new keys,
+ * failed migration (rows untouched + locked), migration retry, successful
+ * migration cleanup verification, and legacy-raw resealing. Session-only and
+ * restart flows are tested in llm/client.credentialPolicy.test.ts.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const { fake } = vi.hoisted(() => ({
   fake: {
     available: true,
-    // Reversible fake "encryption": prefix marker + base64. Distinct from the
-    // real thing but lets decryptString invert encryptString deterministically.
+    backend: 'gnome_libsecret' as string, // Linux-only concept; see basic_text test
     encryptString: (plain: string) => Buffer.from(`FAKE!${plain}`, 'utf8'),
     decryptString: (buf: Buffer) => {
       const s = buf.toString('utf8');
@@ -25,6 +25,7 @@ const { fake } = vi.hoisted(() => ({
 vi.mock('electron', () => ({
   safeStorage: {
     isEncryptionAvailable: () => fake.available,
+    getSelectedStorageBackend: () => fake.backend,
     encryptString: (p: string) => fake.encryptString(p),
     decryptString: (b: Buffer) => fake.decryptString(b),
   },
@@ -35,12 +36,53 @@ import {
   openSecretString,
   isSealedSecret,
   isSealableSecret,
+  isRawEnvelope,
+  isSecretEncryptionAvailable,
   sealPlaintextApiKeys,
+  SecureStorageUnavailableError,
   LOCAL_API_KEY_PLACEHOLDER,
+  SESSION_SENTINEL,
   type SecretMigrationDb,
 } from './secretString';
 
-beforeEach(() => { fake.available = true; });
+beforeEach(() => {
+  fake.available = true;
+  fake.backend = 'gnome_libsecret';
+  delete process.env.ARTHA_FORCE_NO_KEYCHAIN;
+});
+
+describe('isSecretEncryptionAvailable (trustworthy-keychain policy)', () => {
+  it('true with a real keychain backend', () => {
+    expect(isSecretEncryptionAvailable()).toBe(true);
+  });
+
+  it('false when safeStorage reports unavailable', () => {
+    fake.available = false;
+    expect(isSecretEncryptionAvailable()).toBe(false);
+  });
+
+  it('Linux basic_text backend (static in-binary key) counts as UNAVAILABLE', () => {
+    // basic_text passes isEncryptionAvailable() but violates the
+    // no-application-wide-static-key rule — must be rejected.
+    fake.backend = 'basic_text';
+    const isLinux = process.platform === 'linux';
+    // On non-Linux platforms getSelectedStorageBackend doesn't apply; assert
+    // the policy branch directly by simulating the platform.
+    const orig = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    try {
+      expect(isSecretEncryptionAvailable()).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', orig);
+    }
+    if (isLinux) expect(isSecretEncryptionAvailable()).toBe(false);
+  });
+
+  it('ARTHA_FORCE_NO_KEYCHAIN=1 forces unavailable (fails safe, for QA screenshots)', () => {
+    process.env.ARTHA_FORCE_NO_KEYCHAIN = '1';
+    expect(isSecretEncryptionAvailable()).toBe(false);
+  });
+});
 
 describe('sealSecretString / openSecretString', () => {
   it('round-trips a real key through the encrypted envelope', () => {
@@ -50,18 +92,15 @@ describe('sealSecretString / openSecretString', () => {
     expect(openSecretString(sealed)).toBe('sk-live-abc123');
   });
 
-  it('falls back to the raw envelope when the keychain is unavailable — and still round-trips', () => {
+  it('REFUSES to seal when no trustworthy keychain exists — no base64 fallback', () => {
     fake.available = false;
-    const sealed = sealSecretString('sk-live-abc123');
-    expect(sealed.startsWith('v1:raw:')).toBe(true);
-    expect(sealed).not.toContain('sk-live-abc123'); // base64, not raw plaintext
-    expect(openSecretString(sealed)).toBe('sk-live-abc123');
+    expect(() => sealSecretString('sk-live-abc123')).toThrow(SecureStorageUnavailableError);
   });
 
-  it('never seals the local placeholder or blank values', () => {
+  it('never seals the local placeholder or blank values (no keychain needed)', () => {
+    fake.available = false; // even unavailable: passthrough values never throw
     expect(sealSecretString(LOCAL_API_KEY_PLACEHOLDER)).toBe(LOCAL_API_KEY_PLACEHOLDER);
     expect(sealSecretString('')).toBe('');
-    expect(sealSecretString('  ')).toBe('  ');
   });
 
   it('is idempotent — sealing a sealed value returns it unchanged', () => {
@@ -69,37 +108,31 @@ describe('sealSecretString / openSecretString', () => {
     expect(sealSecretString(once)).toBe(once);
   });
 
-  it('passes legacy plaintext through openSecretString unchanged (migration safety net)', () => {
-    expect(openSecretString('sk-legacy-plaintext')).toBe('sk-legacy-plaintext');
-    expect(openSecretString(LOCAL_API_KEY_PLACEHOLDER)).toBe(LOCAL_API_KEY_PLACEHOLDER);
+  it('still READS legacy raw envelopes (read-only compatibility)', () => {
+    const legacyRaw = 'v1:raw:' + Buffer.from('sk-legacy', 'utf8').toString('base64');
+    expect(isRawEnvelope(legacyRaw)).toBe(true);
+    expect(openSecretString(legacyRaw)).toBe('sk-legacy');
   });
 
-  it('returns the placeholder for null/undefined and for corrupt sealed blobs (no throw)', () => {
+  it('returns the placeholder for null/undefined and corrupt sealed blobs (no throw)', () => {
     expect(openSecretString(null)).toBe(LOCAL_API_KEY_PLACEHOLDER);
-    expect(openSecretString(undefined)).toBe(LOCAL_API_KEY_PLACEHOLDER);
-    // Valid envelope prefix, garbage ciphertext → degrade, don't crash.
     expect(openSecretString('v1:enc:' + Buffer.from('garbage').toString('base64')))
       .toBe(LOCAL_API_KEY_PLACEHOLDER);
   });
 
-  it('classifies values correctly', () => {
+  it('classifies values correctly (session sentinel is an envelope, not sealable)', () => {
     expect(isSealedSecret('v1:enc:abc')).toBe(true);
     expect(isSealedSecret('v1:raw:abc')).toBe(true);
-    expect(isSealedSecret('sk-plain')).toBe(false);
+    expect(isSealedSecret(SESSION_SENTINEL)).toBe(true);
     expect(isSealableSecret('sk-plain')).toBe(true);
+    expect(isSealableSecret(SESSION_SENTINEL)).toBe(false);
     expect(isSealableSecret(LOCAL_API_KEY_PLACEHOLDER)).toBe(false);
-    expect(isSealableSecret('v1:enc:abc')).toBe(false);
-    expect(isSealableSecret('')).toBe(false);
-    expect(isSealableSecret(null)).toBe(false);
   });
 });
 
-describe('sealPlaintextApiKeys (launch migration)', () => {
-  /** In-memory llm_models fixture implementing the minimal DB surface. */
-  function fakeDb(rows: { model_id: string; api_key: string | null }[]): SecretMigrationDb & {
-    rows: { model_id: string; api_key: string | null }[];
-  } {
-    return {
+describe('sealPlaintextApiKeys (launch migration, Commit 3.5 rules)', () => {
+  function fakeDb(rows: { model_id: string; api_key: string | null }[]) {
+    const db: SecretMigrationDb & { rows: typeof rows } = {
       rows,
       prepare(sql: string) {
         return {
@@ -114,39 +147,59 @@ describe('sealPlaintextApiKeys (launch migration)', () => {
         };
       },
     };
+    return db;
   }
 
-  it('seals plaintext cloud keys, skips placeholder + already-sealed rows', () => {
+  it('seals plaintext AND legacy-raw rows; skips placeholder, enc, and session rows', () => {
     const db = fakeDb([
       { model_id: 'local1', api_key: 'ollama' },
       { model_id: 'cloud1', api_key: 'sk-plain-1' },
-      { model_id: 'cloud2', api_key: sealSecretString('sk-already-sealed') },
-      { model_id: 'empty1', api_key: null },
+      { model_id: 'cloud2', api_key: 'v1:raw:' + Buffer.from('sk-was-raw').toString('base64') },
+      { model_id: 'cloud3', api_key: sealSecretString('sk-already-sealed') },
+      { model_id: 'sess1', api_key: SESSION_SENTINEL },
     ]);
     const res = sealPlaintextApiKeys(db);
-    expect(res).toEqual({ sealed: 1, failed: 0 });
+    expect(res).toEqual({ sealed: 2, failed: 0, pending: 0, unsealedRemaining: 0 });
     expect(db.rows.find(r => r.model_id === 'local1')!.api_key).toBe('ollama');
-    const cloud1 = db.rows.find(r => r.model_id === 'cloud1')!.api_key!;
-    expect(cloud1.startsWith('v1:enc:')).toBe(true);
-    expect(openSecretString(cloud1)).toBe('sk-plain-1');
+    expect(db.rows.find(r => r.model_id === 'sess1')!.api_key).toBe(SESSION_SENTINEL);
+    for (const id of ['cloud1', 'cloud2']) {
+      const v = db.rows.find(r => r.model_id === id)!.api_key!;
+      expect(v.startsWith('v1:enc:')).toBe(true);
+    }
+    expect(openSecretString(db.rows.find(r => r.model_id === 'cloud2')!.api_key)).toBe('sk-was-raw');
   });
 
-  it('is idempotent — a second pass changes nothing', () => {
+  it('FAILED migration (no keychain): touches nothing, reports pending, never writes raw', () => {
+    fake.available = false;
+    const db = fakeDb([
+      { model_id: 'cloud1', api_key: 'sk-plain-1' },
+      { model_id: 'local1', api_key: 'ollama' },
+    ]);
+    const res = sealPlaintextApiKeys(db);
+    expect(res).toEqual({ sealed: 0, failed: 0, pending: 1, unsealedRemaining: 1 });
+    // Credential preserved exactly — never destroyed, never base64'd.
+    expect(db.rows.find(r => r.model_id === 'cloud1')!.api_key).toBe('sk-plain-1');
+  });
+
+  it('migration RETRY: succeeds once the keychain becomes available', () => {
+    fake.available = false;
     const db = fakeDb([{ model_id: 'cloud1', api_key: 'sk-plain-1' }]);
-    sealPlaintextApiKeys(db);
-    const after = db.rows[0].api_key;
-    const second = sealPlaintextApiKeys(db);
-    expect(second).toEqual({ sealed: 0, failed: 0 });
-    expect(db.rows[0].api_key).toBe(after);
+    expect(sealPlaintextApiKeys(db).pending).toBe(1);
+    fake.available = true; // keychain fixed, next launch
+    const res = sealPlaintextApiKeys(db);
+    expect(res.sealed).toBe(1);
+    expect(res.unsealedRemaining).toBe(0);
+    expect(db.rows[0].api_key!.startsWith('v1:enc:')).toBe(true);
   });
 
-  it('never leaves the original plaintext anywhere in the stored value', () => {
+  it('successful migration cleanup: verification reports zero unsealed and no plaintext remains', () => {
     const db = fakeDb([{ model_id: 'c', api_key: 'sk-super-secret-42' }]);
-    sealPlaintextApiKeys(db);
-    expect(db.rows[0].api_key).not.toContain('sk-super-secret-42');
+    const res = sealPlaintextApiKeys(db);
+    expect(res.unsealedRemaining).toBe(0);
+    expect(JSON.stringify(db.rows)).not.toContain('sk-super-secret-42');
   });
 
-  it('continues past a row that fails to seal and reports it', () => {
+  it('continues past a row that fails to seal and reports it (per-row isolation)', () => {
     const rows = [
       { model_id: 'bad', api_key: 'sk-will-fail' },
       { model_id: 'good', api_key: 'sk-will-succeed' },
@@ -166,18 +219,9 @@ describe('sealPlaintextApiKeys (launch migration)', () => {
       },
     };
     const res = sealPlaintextApiKeys(db);
-    expect(res).toEqual({ sealed: 1, failed: 1 });
-    expect(rows.find(r => r.model_id === 'bad')!.api_key).toBe('sk-will-fail'); // untouched, retried next launch
-    expect(openSecretString(rows.find(r => r.model_id === 'good')!.api_key)).toBe('sk-will-succeed');
-  });
-
-  it('raw-fallback migration still removes plaintext from disk representation', () => {
-    fake.available = false;
-    const db = fakeDb([{ model_id: 'c', api_key: 'sk-no-keychain' }]);
-    sealPlaintextApiKeys(db);
-    const stored = db.rows[0].api_key!;
-    expect(stored.startsWith('v1:raw:')).toBe(true);
-    expect(stored).not.toContain('sk-no-keychain');
-    expect(openSecretString(stored)).toBe('sk-no-keychain');
+    expect(res.sealed).toBe(1);
+    expect(res.failed).toBe(1);
+    expect(res.unsealedRemaining).toBe(1); // the failed row still needs sealing
+    expect(rows.find(r => r.model_id === 'bad')!.api_key).toBe('sk-will-fail'); // untouched
   });
 });

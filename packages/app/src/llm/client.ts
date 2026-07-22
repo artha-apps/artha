@@ -7,7 +7,17 @@
  */
 import OpenAI from 'openai';
 import { getDb } from '../db/schema';
-import { openSecretString } from '../security/secretString';
+import {
+  openSecretString,
+  sealSecretString,
+  isRawEnvelope,
+  isSecretEncryptionAvailable,
+  LOCAL_API_KEY_PLACEHOLDER,
+  SESSION_SENTINEL,
+  SessionKeyExpiredError,
+  CredentialLockedError,
+} from '../security/secretString';
+import { getSessionKey } from '../security/sessionKeys';
 import { applyToolCallDeltas, toToolCalls, type PartialToolCall } from './streamMerge';
 
 /** Assembled result of a streamed completion — mirrors the bits of a
@@ -465,6 +475,44 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
   }
 }
 
+/**
+ * Resolve a stored api_key value to the plaintext usable for THIS request,
+ * applying the credential policy (Commit 3.5):
+ *   - placeholder/blank            → placeholder (local endpoints)
+ *   - v1:enc:                      → decrypt via keychain
+ *   - v1:session sentinel          → process-memory key, or a typed
+ *                                    SessionKeyExpiredError after restart
+ *   - legacy plaintext / v1:raw:   → if a trustworthy keychain exists, seal
+ *                                    in place NOW (migrate-on-read) and use;
+ *                                    otherwise throw CredentialLockedError.
+ *                                    A persistently stored plaintext key is
+ *                                    never silently read and sent forever.
+ * Never logs or embeds key material in errors.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function usableApiKey(db: any, modelId: string | undefined, stored: string | null | undefined): string {
+  if (!stored || stored.trim() === '' || stored === LOCAL_API_KEY_PLACEHOLDER) {
+    return LOCAL_API_KEY_PLACEHOLDER;
+  }
+  if (stored === SESSION_SENTINEL) {
+    const k = modelId ? getSessionKey(modelId) : undefined;
+    if (!k) throw new SessionKeyExpiredError();
+    return k;
+  }
+  if (stored.startsWith('v1:enc:')) return openSecretString(stored);
+  // Legacy plaintext or legacy raw envelope.
+  const plain = isRawEnvelope(stored) ? openSecretString(stored) : stored;
+  if (isSecretEncryptionAvailable() && modelId) {
+    // Migrate-on-read: seal atomically before first use so the plaintext
+    // window closes the moment a trustworthy keychain is present.
+    try {
+      db.prepare(`UPDATE llm_models SET api_key=? WHERE model_id=?`).run(sealSecretString(plain), modelId);
+    } catch { /* seal retried by the launch migration; the key still works */ }
+    return plain;
+  }
+  throw new CredentialLockedError();
+}
+
 /** Thrown when no model is configured at all — replaces the old silent
  *  fallback to a llama3.2 tag on localhost, which sent fresh BYOK /
  *  configure-later users into a deceptive connection failure against a
@@ -492,10 +540,10 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
   if (!row && !routed) throw new NoModelConfiguredError();
 
   const baseUrl       = (row?.base_url as string)        ?? 'http://localhost:11434/v1';
-  // api_key is stored sealed at rest (v1:enc:/v1:raw: envelope) — open it here,
-  // the last main-process point before the outbound request. Legacy plaintext
-  // rows pass through unchanged until the launch migration seals them.
-  const apiKey        = openSecretString(row?.api_key as string | undefined);
+  // Resolve the stored key under the credential policy (seal-on-read for
+  // legacy plaintext; typed errors for locked/expired keys) at the last
+  // main-process point before the outbound request.
+  const apiKey        = usableApiKey(db, row?.model_id as string | undefined, row?.api_key as string | undefined);
   // `routed` is non-null whenever `row` is (guard above), so this fallback tag
   // is only ever used with an ACTIVE row that carries its own name.
   const fallbackModel = (row?.ollama_name as string)      ?? 'llama3.2:3b-instruct-q4_K_M';
@@ -519,11 +567,11 @@ export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType):
   let effectiveApiKey = apiKey;
   if (routed && routed !== (row?.ollama_name as string)) {
     const routedRow = db
-      .prepare(`SELECT base_url, api_key, context_window FROM llm_models WHERE ollama_name = ?`)
-      .get(routed) as { base_url?: string; api_key?: string; context_window?: number } | undefined;
+      .prepare(`SELECT model_id, base_url, api_key, context_window FROM llm_models WHERE ollama_name = ?`)
+      .get(routed) as { model_id?: string; base_url?: string; api_key?: string; context_window?: number } | undefined;
     if (routedRow?.context_window) effectiveContextWindow = routedRow.context_window;
     if (routedRow?.base_url) effectiveBaseUrl = routedRow.base_url;
-    if (routedRow?.api_key) effectiveApiKey = openSecretString(routedRow.api_key);
+    if (routedRow?.api_key) effectiveApiKey = usableApiKey(db, routedRow.model_id, routedRow.api_key);
   }
   effectiveContextWindow = Math.max(effectiveContextWindow, 8192);
 

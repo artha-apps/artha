@@ -165,40 +165,61 @@ user strings; scrubbing is best-effort on message bodies.
 This section is policy: where implementation currently diverges, the divergence
 is stated and scheduled.
 
-1. **All credentials at rest are sealed with Electron `safeStorage`** — macOS
-   Keychain, Windows DPAPI, Linux Secret Service (libsecret/kwallet). The
-   persisted format is versioned: `v1:enc:<b64>`. The `v1:` prefix exists so
-   the format can evolve (key rotation, algorithm change) without guessing.
-2. **When secure storage is unavailable** (`safeStorage.isEncryptionAvailable()
-   === false`, e.g. a headless Linux box with no keyring):
-   - Never silently store plaintext as if nothing happened.
-   - Show an honest degraded state in the UI (the `v1:raw:<b64>` fallback is
-     detectable by prefix; `isAtRestEncryptionAvailable()` feeds the warning).
-   - Document remediation (install/unlock a Secret Service provider).
-   - Offer session-only credentials (held in memory, not persisted) where the
-     workflow allows it. **(Phase A — UI for this is not yet built)**
-   - Never weaken storage invisibly: a value written as `v1:enc:` must never be
-     rewritten as `v1:raw:` without explicit user acknowledgment.
-3. **Current divergences:**
-   - `llm_models.api_key` is **plaintext** in SQLite (`src/db/schema.ts:157`;
-     written by `llm:addCloudModel` in `src/ipc/handlers.ts:1415-1425`). Fix in
-     flight (**Phase A commit 1**): seal with the same `secrets.ts` mechanism
-     and migrate existing rows in place.
-   - `oauth_tokens.access_token/refresh_token` are plaintext TEXT columns —
-     same class of problem, same target mechanism. **(Phase A follow-up)**
-4. **Migration semantics (Phase A target state):** on first launch of a
-   compatible build, every plaintext key is sealed in place (single
-   transaction, per-row). If sealing a row fails (keychain locked, safeStorage
-   throws), the key **remains functional in its current form** — availability
-   is not sacrificed — but the UI must surface that this credential is
-   unencrypted at rest until sealing succeeds. Migration must be idempotent
-   (prefix check makes re-runs no-ops) and must not brick model configs on a
-   machine without a keychain (those rows become `v1:raw:` + warning, per rule 2).
-5. **Verified non-leak paths for `api_key` (this week's audit):** excluded from
-   renderer-bound column lists, absent from all LAN hub routes, stripped from
-   bundle exports (`ENV:` scrubbing in `src/bundles/bundle.ts`), and not
-   present in Sentry payloads post-`scrubEvent`. These controls must be
-   preserved by regression tests when the sealed format lands.
+1. **The only permitted persistent form is keychain-sealed** — `v1:enc:<b64>`
+   via Electron `safeStorage`: macOS Keychain, Windows DPAPI, Linux Secret
+   Service (libsecret/kwallet). The `v1:` prefix is the version hook (key
+   rotation, algorithm change). Prohibited persistent forms, with or without a
+   UI warning: plaintext, base64, any reversible obfuscation, a locally stored
+   key beside the database, an application-wide static key.
+   **(Implemented — commits 1 + 3.5: `security/secretString.ts`, `secrets.ts`.)**
+2. **"Available" means trustworthy.** `safeStorage.isEncryptionAvailable()` is
+   necessary but not sufficient: on Linux the `basic_text` backend reports
+   available while using a static key baked into the Chromium binary — a
+   prohibited application-wide static key. `isSecretEncryptionAvailable()`
+   additionally rejects `basic_text` via `getSelectedStorageBackend()`.
+   `ARTHA_FORCE_NO_KEYCHAIN=1` is a QA override that forces the unavailable
+   state; it fails safe (stricter only). **(Implemented — commit 3.5.)**
+3. **When no trustworthy keychain exists** the user gets exactly two honest
+   options, per credential:
+   - **Session-only:** the DB stores the zero-material sentinel `v1:session`;
+     the real key lives in process memory (`security/sessionKeys.ts`) and dies
+     with the app. After restart the UI reports the key as expired and asks
+     for re-entry. **(Implemented for BYOK LLM keys — commit 3.5.)**
+   - **Secure-storage-required:** persistent saving is refused with remediation
+     instructions (enable GNOME Keyring / KWallet / Secret Service). Local
+     models and credential-less providers keep working. Credentialed MCP
+     installs are refused the same way (session-only MCP support may follow).
+     **(Implemented — commit 3.5.)**
+   The legacy `v1:raw:<b64>` envelope is **read-only compatibility**: it is
+   never written anymore; rows found in it are resealed on read/migration when
+   a keychain exists, else locked (rule 4). A user-configured external secret
+   source (e.g. a vault) is a possible later addition for advanced users; it
+   is not implemented and nothing in the current architecture depends on it.
+4. **Migration semantics (implemented — commit 3.5):**
+   - Each plaintext or legacy-raw key is sealed independently; success replaces
+     the value atomically.
+   - No trustworthy keychain → rows are left **intact but LOCKED**: the request
+     boundary (`usableApiKey` in `llm/client.ts`) refuses them with a typed
+     `CredentialLockedError` — interactive and background paths alike — until
+     the keychain is fixed or the user re-enters the key for the session. A
+     persistently stored plaintext key is never silently read and sent.
+   - Seal-on-read closes the window opportunistically: the first use after a
+     keychain becomes available seals the row before the request is made.
+   - Migration is idempotent, never destroys a credential, logs only sanitized
+     counts (never key material), ends with a verification scan
+     (`unsealedRemaining`), and on any successful seal the WAL is
+     checkpoint-truncated and the DB VACUUMed so old plaintext bytes do not
+     survive in WAL frames or freelist pages.
+5. **Verified non-leak paths for `api_key`:** excluded from renderer-bound
+   column lists (`llm:listConfigured` exposes only a derived `key_state`:
+   none/sealed/session/session_expired/locked), absent from all LAN hub
+   routes, stripped from bundle exports (`ENV:` scrubbing in
+   `src/bundles/bundle.ts`), and not present in Sentry payloads post-
+   `scrubEvent`. Typed credential errors carry no key material.
+6. **Remaining divergence:** `oauth_tokens.access_token/refresh_token` are
+   still plaintext TEXT columns — same class of problem, same mechanism.
+   **(Scheduled: Phase A commit 4.1, approved as a dedicated commit; includes
+   reseal-on-read for any legacy `v1:raw:` MCP rows in the wild.)**
 
 ---
 
@@ -357,6 +378,20 @@ damaging actions behind human confirmation.
 | 10 | Cloud escalation of a sensitive-scope chat ("Retry on ☁") | Local-only content leaves device on an explicit user click | Escalation is opt-in, per-message, visibly labeled, audit-logged | Medium: user may not realize scope content rides along; no tag enforcement yet | Phase B (tags block ineligible context; derived-content caveat in Section 4 still applies) |
 
 ---
+
+## 9. Security remediation register (founder-approved, 2026-07-22)
+
+Pre-existing findings tracked to closure. Phase A is not a security rewrite —
+each item has an owner phase, severity, enforcement boundary, and acceptance
+condition.
+
+| # | Finding | Severity | Enforcement boundary | Owner phase | Acceptance condition |
+|---|---|---|---|---|---|
+| R1 | `oauth_tokens` access/refresh tokens plaintext in SQLite | High | At-rest storage (main process) | **A — commit 4.1** (dedicated, approved) | Tokens sealed `v1:enc:`; in-place migration; no plaintext readable post-VACUUM; Google API calls still succeed; legacy `v1:raw:` MCP rows resealed on read |
+| R2 | LAN hub transport is plain HTTP (Bearer keys + chat content readable on the LAN segment) | High | Network transport (hub ↔ members) | **E** (with scheduler/hub hardening; design earlier if a customer requires it) | TLS with a pinned self-signed cert embedded in member connection cards/QR, or an equivalently authenticated channel; plain HTTP requires an explicit "trusted network" override |
+| R3 | MCP `permissions_json` exists in schema but is not enforced at dispatch | High | Tool dispatch (orchestrator → MCP registry) | **E** (with the approvals object model) | Declared fs/network scopes enforced per server at invocation; violations blocked + audit-logged; default-deny for new servers |
+| R4 | Skill-bundle integrity uses unkeyed SHA-256 while described as "HMAC-signed" (integrity only, not authenticity) | Medium | Import trust decision (user-facing) | Terminology: **now** (commit alongside 3.5). Keyed/public-key signing: **E** (bundle redesign) | UI/docs no longer imply authenticity (done); bundles carry an Ed25519 author signature verified against a trusted-key list; unsigned imports show an explicit unauthenticated warning |
+| R5 | Legacy `v1:raw:` envelopes in the wild (MCP credentials written by older builds on keychain-less Linux) | Medium | At-rest storage | **A — commit 4.1** rider | Reseal-on-read implemented; raw rows counted at startup (sanitized); zero raw rows after keychain present + one use |
 
 ## Review cadence
 

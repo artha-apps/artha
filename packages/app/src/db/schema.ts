@@ -972,15 +972,29 @@ export function runMigrations(): void {
     console.warn('[Artha] context_packs is_shared migration skipped:', err);
   }
 
-  // Migration v19→v20: seal plaintext BYOK api_keys at rest. runMigrations()
-  // executes post-`ready`, so Electron safeStorage is usable here. Idempotent
-  // (already-sealed rows and the 'ollama' placeholder are skipped); a row that
-  // fails to seal keeps working via openSecretString's plaintext passthrough
-  // and is retried on the next launch.
+  // Migration v19→v20 (revised by Commit 3.5): seal plaintext BYOK api_keys
+  // at rest. runMigrations() executes post-`ready`, so safeStorage is usable.
+  // Idempotent. When no trustworthy keychain exists the rows are left intact
+  // but LOCKED (the read path refuses them — no indefinite plaintext use);
+  // they seal on the next launch/read once a keychain is available. After a
+  // successful pass we verify no sealable value remains, then checkpoint the
+  // WAL and VACUUM so the old plaintext bytes don't survive in WAL frames or
+  // freelist pages. Log output is sanitized counts only — never key material.
   try {
-    const { sealed, failed } = sealPlaintextApiKeys(db);
-    if (sealed || failed) {
-      console.log(`[Artha] api_key seal migration: ${sealed} sealed, ${failed} failed.`);
+    const res = sealPlaintextApiKeys(db);
+    if (res.sealed || res.failed || res.pending) {
+      console.log(
+        `[Artha] api_key seal migration: ${res.sealed} sealed, ${res.failed} failed, ` +
+        `${res.pending} pending (no secure keychain), ${res.unsealedRemaining} remaining.`
+      );
+    }
+    if (res.sealed > 0) {
+      try {
+        db.pragma('wal_checkpoint(TRUNCATE)');
+        db.exec('VACUUM');
+      } catch (err) {
+        console.warn('[Artha] post-seal WAL/VACUUM cleanup skipped:', err);
+      }
     }
   } catch (err) {
     console.warn('[Artha] api_key seal migration skipped:', err);

@@ -1,8 +1,9 @@
 /**
  * Tests for the connector-credential secret store. Electron's `safeStorage` is
- * mocked two ways — encryption-available (the normal case) and unavailable (the
- * base64 fallback) — to prove the seal→open roundtrip holds in both, and that
- * the storage format/prefixes behave as the registry and UI rely on.
+ * mocked two ways — encryption-available (the normal case) and unavailable —
+ * to prove the seal→open roundtrip holds, that writing REFUSES without a
+ * trustworthy keychain (Commit 3.5: no base64 persistence), and that legacy
+ * v1:raw blobs still OPEN (read-only compatibility).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -40,13 +41,17 @@ describe('sealCredentials / openCredentials', () => {
     expect(openCredentials(blob)).toEqual(creds);
   });
 
-  it('falls back to base64 (still roundtrips) when the keychain is unavailable', () => {
+  it('REFUSES to seal when the keychain is unavailable — no base64 persistence (Commit 3.5)', () => {
     encryptionAvailable = false;
     expect(isAtRestEncryptionAvailable()).toBe(false);
     const creds: StoredCredentials = { env: { BRAVE_API_KEY: 'BSA123' } };
-    const blob = sealCredentials(creds);
-    expect(blob!.startsWith('v1:raw:')).toBe(true);
-    expect(openCredentials(blob)).toEqual(creds);
+    expect(() => sealCredentials(creds)).toThrow(/secure OS keychain/i);
+  });
+
+  it('still OPENS legacy v1:raw blobs written by older builds (read-only compatibility)', () => {
+    const creds: StoredCredentials = { env: { BRAVE_API_KEY: 'BSA123' } };
+    const legacy = 'v1:raw:' + Buffer.from(JSON.stringify(creds), 'utf8').toString('base64');
+    expect(openCredentials(legacy)).toEqual(creds);
   });
 
   it('returns null for empty / absent credentials so the DB stores NULL', () => {

@@ -366,8 +366,14 @@ const api = {
     // Cloud models (BYOK, opt-in). Keys are stored locally and only sent to the
     // provider the user configured; local Ollama remains the default.
     listConfigured: () => ipcRenderer.invoke('llm:listConfigured'),
-    addCloudModel: (m: { provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean }) =>
-      ipcRenderer.invoke('llm:addCloudModel', m),
+    // Persist policy: with a trustworthy OS keychain the key is sealed at
+    // rest; without one the call REFUSES unless persistence:'session' is
+    // passed (in-memory key, cleared on quit). See security/secretString.ts.
+    addCloudModel: (m: { provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean; persistence?: 'session' }) =>
+      ipcRenderer.invoke('llm:addCloudModel', m) as Promise<
+        { model_id: string; persistence: 'persistent' | 'session' } |
+        { error: 'secure_storage_unavailable'; message: string }
+      >,
     setActiveModelById: (modelId: string) =>
       ipcRenderer.invoke('llm:setActiveModelById', modelId),
     setContextWindow: (modelId: string, tokens: number) =>

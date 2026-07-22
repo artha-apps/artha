@@ -298,9 +298,12 @@ export default function ModelsPanel() {
   const [cloudKey, setCloudKey] = useState('');
   const [savingCloud, setSavingCloud] = useState(false);
   const [cloudError, setCloudError] = useState('');
-  // Honest at-rest state: false when the OS keychain is unavailable, so the
-  // saved key is only base64-obfuscated on disk. Never hide this from the user.
-  const [keyNotEncrypted, setKeyNotEncrypted] = useState(false);
+  // No trustworthy OS keychain: the save was REFUSED and the user must choose
+  // session-only use (or fix their keychain). We never persist a key that
+  // isn't keychain-sealed — base64/plaintext storage does not exist.
+  const [storagePrompt, setStoragePrompt] = useState<string | null>(null);
+  // The key was accepted for THIS SESSION ONLY (in memory, gone on restart).
+  const [sessionNotice, setSessionNotice] = useState(false);
 
   // Tab controls which list is shown: models already on disk vs the pull catalog.
   const [tab, setTab] = useState<'installed' | 'browse'>('installed');
@@ -438,7 +441,7 @@ export default function ModelsPanel() {
     setCloudBaseUrl(CLOUD_PROVIDERS[p].baseUrl);
   };
 
-  const saveCloudModel = async () => {
+  const saveCloudModel = async (persistence?: 'session') => {
     if (!cloudModel.trim()) { setCloudError('Model name is required'); return; }
     if (!cloudBaseUrl.trim()) { setCloudError('Base URL is required'); return; }
     if (!cloudKey.trim()) { setCloudError('API key is required'); return; }
@@ -452,8 +455,15 @@ export default function ModelsPanel() {
         baseUrl: cloudBaseUrl.trim(),
         apiKey: cloudKey.trim(),
         activate: true,
-      }) as { model_id: string; atRestEncrypted?: boolean };
-      setKeyNotEncrypted(res?.atRestEncrypted === false);
+        persistence,
+      });
+      if ('error' in res) {
+        // Keychain unavailable: keep the form open and offer session-only use.
+        setStoragePrompt(res.message);
+        return;
+      }
+      setStoragePrompt(null);
+      setSessionNotice(res.persistence === 'session');
       setShowCloudForm(false);
       setCloudModel(''); setCloudKey('');
       setActiveModelState(cloudModel.trim());
@@ -941,17 +951,45 @@ export default function ModelsPanel() {
           </p>
         </div>
 
-        {/* Honest degraded state: the OS keychain was unavailable when the key
-            was saved, so it is only obfuscated (base64) on disk — never hide
-            this from the user. */}
-        {keyNotEncrypted && (
+        {/* No trustworthy OS keychain: the save was refused. Offer the honest
+            alternatives — session-only use, or fix the keychain and retry.
+            A key is never written to disk unless it is keychain-sealed. */}
+        {storagePrompt && (
           <div className="flex items-start gap-2 mb-4 text-xs bg-artha-warn/10 border border-artha-warn/30 rounded-lg px-3 py-2.5">
             <Shield size={13} className="text-artha-warn shrink-0 mt-0.5" />
-            <p className="leading-relaxed text-artha-text">
-              <span className="font-medium">Your API key is stored without OS-keychain encryption.</span>{' '}
-              No secure keychain is available on this system, so the key is only obfuscated on disk.
-              Anyone with access to this user account could recover it. Enable a system keychain
-              (e.g. a Secret Service provider on Linux), then re-save the key.
+            <div className="flex-1 min-w-0">
+              <p className="leading-relaxed text-artha-text font-medium">Secure key storage isn’t available on this system</p>
+              <p className="leading-relaxed text-artha-muted mt-0.5">{storagePrompt}</p>
+              <div className="flex items-center gap-2 mt-2">
+                <button
+                  onClick={() => { setStoragePrompt(null); void saveCloudModel('session'); }}
+                  disabled={savingCloud}
+                  className="px-2.5 py-1 rounded-lg bg-artha-warn/15 hover:bg-artha-warn/25 text-artha-warn font-medium transition-colors disabled:opacity-50"
+                >
+                  Use for this session only
+                </button>
+                <button
+                  onClick={() => setStoragePrompt(null)}
+                  className="px-2.5 py-1 rounded-lg bg-artha-s2 hover:bg-artha-s3 text-artha-muted transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+              <p className="leading-relaxed text-artha-muted mt-2">
+                Session-only means the key lives in memory and is cleared when Artha closes —
+                you’ll enter it again next launch.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* The key was accepted for this session only — say so plainly. */}
+        {sessionNotice && (
+          <div className="flex items-start gap-2 mb-4 text-xs bg-artha-s2 border border-artha-border rounded-lg px-3 py-2.5">
+            <Shield size={13} className="text-artha-accent shrink-0 mt-0.5" />
+            <p className="leading-relaxed text-artha-muted">
+              This key is held in memory for the current session and will be removed when Artha
+              closes. You’ll be asked to enter it again after a restart.
             </p>
           </div>
         )}
@@ -1035,7 +1073,7 @@ export default function ModelsPanel() {
             {cloudError && <p className="text-xs text-artha-danger">{cloudError}</p>}
 
             <div className="flex gap-2">
-              <button onClick={saveCloudModel} disabled={savingCloud}
+              <button onClick={() => void saveCloudModel()} disabled={savingCloud}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-40 text-sm font-medium transition-colors">
                 {savingCloud ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
                 Save &amp; activate

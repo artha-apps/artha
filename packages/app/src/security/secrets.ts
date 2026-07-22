@@ -10,16 +10,23 @@
  * process as environment variables at spawn time.
  *
  * Storage format (the string persisted in `tools.credentials_enc`):
- *   "v1:enc:<base64 ciphertext>"   — OS-encrypted (normal case)
- *   "v1:raw:<base64 utf8 json>"    — fallback when OS encryption is unavailable
+ *   "v1:enc:<base64 ciphertext>"   — OS-encrypted. The ONLY persistent form
+ *                                    that may be WRITTEN.
+ *   "v1:raw:<base64 utf8 json>"    — LEGACY READ-ONLY. Older builds wrote this
+ *                                    when no keychain existed; base64 is not
+ *                                    encryption, so writing it is prohibited
+ *                                    (Commit 3.5). Existing rows still open;
+ *                                    reseal-on-read lands with the oauth_tokens
+ *                                    sealing commit.
  *
- * The version+mode prefix lets us evolve the format and lets the reader tell an
- * encrypted blob from a fallback one without guessing. Fallback only triggers
- * on platforms where `safeStorage.isEncryptionAvailable()` is false (e.g. a
- * Linux box with no keyring/secret-service); we still function there, but the
- * blob is only base64-obfuscated, so `isAtRestEncrypted()` lets the UI warn.
+ * When no trustworthy keychain is available, `sealCredentials` THROWS
+ * (SecureStorageUnavailableError) and the install flow must refuse the save
+ * with remediation — connectors without credentials keep working. Trustworthy
+ * means more than `isEncryptionAvailable()`: Linux `basic_text` (static
+ * in-binary key) is treated as unavailable — see secretString.ts.
  */
 import { safeStorage } from 'electron';
+import { isSecretEncryptionAvailable, SecureStorageUnavailableError } from './secretString';
 
 /**
  * A connector's resolved secrets, in the exact form the spawn needs:
@@ -38,33 +45,27 @@ export interface StoredCredentials {
 const ENC_PREFIX = 'v1:enc:';
 const RAW_PREFIX = 'v1:raw:';
 
-/** True when the OS-backed keychain is available to encrypt secrets at rest.
- *  When false, `sealCredentials` falls back to base64 and the UI should warn. */
+/** True when a TRUSTWORTHY OS keychain is available to encrypt secrets at
+ *  rest. Delegates to the single policy source (secretString.ts), which also
+ *  rejects Linux `basic_text` and honors the ARTHA_FORCE_NO_KEYCHAIN QA flag. */
 export function isAtRestEncryptionAvailable(): boolean {
-  try {
-    return safeStorage.isEncryptionAvailable();
-  } catch {
-    return false;
-  }
+  return isSecretEncryptionAvailable();
 }
 
 /**
  * Encrypt a credential map into the opaque string stored in the DB. Returns
  * `null` for an empty/absent map so callers can store SQL NULL (no credentials).
+ * Throws SecureStorageUnavailableError when credentials are present but no
+ * trustworthy keychain exists — persistent reversible-obfuscation storage is
+ * prohibited; the caller refuses the install with remediation guidance.
  */
 export function sealCredentials(creds: StoredCredentials | null | undefined): string | null {
   const hasEnv = creds?.env && Object.keys(creds.env).length > 0;
   const hasArgs = creds?.args && creds.args.length > 0;
   if (!creds || (!hasEnv && !hasArgs)) return null;
+  if (!isAtRestEncryptionAvailable()) throw new SecureStorageUnavailableError();
   const json = JSON.stringify(creds);
-  if (isAtRestEncryptionAvailable()) {
-    const cipher = safeStorage.encryptString(json); // Buffer
-    return ENC_PREFIX + cipher.toString('base64');
-  }
-  // Keychain unavailable — store base64 so the connector still works, but it is
-  // NOT encrypted at rest. isAtRestEncryptionAvailable() === false lets the UI
-  // surface this to the user.
-  return RAW_PREFIX + Buffer.from(json, 'utf8').toString('base64');
+  return ENC_PREFIX + safeStorage.encryptString(json).toString('base64');
 }
 
 /**
