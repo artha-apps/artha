@@ -152,7 +152,7 @@ describe('sealPlaintextApiKeys (launch migration)', () => {
       { model_id: 'good', api_key: 'sk-will-succeed' },
     ];
     const db: SecretMigrationDb = {
-      prepare(sql: string) {
+      prepare(_sql: string) {
         return {
           all: () => rows.map(r => ({ ...r })),
           run: (...args: unknown[]) => {

@@ -60,7 +60,7 @@ describe('normalizeProviderIds migration', () => {
   function fakeDb(rows: { model_id: string; provider: string | null; base_url: string | null }[]) {
     const db: ProviderMigrationDb & { rows: typeof rows } = {
       rows,
-      prepare(sql: string) {
+      prepare(_sql: string) {
         return {
           all: () => rows.map(r => ({ ...r })),
           run: (...args: unknown[]) => {

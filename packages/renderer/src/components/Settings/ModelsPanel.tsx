@@ -941,6 +941,21 @@ export default function ModelsPanel() {
           </p>
         </div>
 
+        {/* Honest degraded state: the OS keychain was unavailable when the key
+            was saved, so it is only obfuscated (base64) on disk — never hide
+            this from the user. */}
+        {keyNotEncrypted && (
+          <div className="flex items-start gap-2 mb-4 text-xs bg-artha-warn/10 border border-artha-warn/30 rounded-lg px-3 py-2.5">
+            <Shield size={13} className="text-artha-warn shrink-0 mt-0.5" />
+            <p className="leading-relaxed text-artha-text">
+              <span className="font-medium">Your API key is stored without OS-keychain encryption.</span>{' '}
+              No secure keychain is available on this system, so the key is only obfuscated on disk.
+              Anyone with access to this user account could recover it. Enable a system keychain
+              (e.g. a Secret Service provider on Linux), then re-save the key.
+            </p>
+          </div>
+        )}
+
         {/* Configured cloud models */}
         {cloudModels.length > 0 && (
           <div className="space-y-2 mb-4">
