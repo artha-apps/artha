@@ -366,6 +366,12 @@ const api = {
     // Cloud models (BYOK, opt-in). Keys are stored locally and only sent to the
     // provider the user configured; local Ollama remains the default.
     listConfigured: () => ipcRenderer.invoke('llm:listConfigured'),
+    // Static provider preset registry (data-only; see llm/providerPresets.ts).
+    listProviderPresets: () => ipcRenderer.invoke('llm:listProviderPresets') as Promise<{
+      id: string; label: string; kind: 'cloud' | 'gateway' | 'runtime-remote' | 'custom';
+      baseUrl: string; baseUrlTemplate?: string; keyRequired: boolean; keyHint: string;
+      modelHint: string; docsUrl: string; capabilityKey: string; note?: string;
+    }[]>,
     // Persist policy: with a trustworthy OS keychain the key is sealed at
     // rest; without one the call REFUSES unless persistence:'session' is
     // passed (in-memory key, cleared on quit). See security/secretString.ts.

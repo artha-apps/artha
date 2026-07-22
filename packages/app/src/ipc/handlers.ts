@@ -49,6 +49,7 @@ import {
   sealSecretString, openSecretString, isSecretEncryptionAvailable, SESSION_SENTINEL, SecureStorageUnavailableError,
 } from '../security/secretString';
 import { setSessionKey, getSessionKey, deleteSessionKey } from '../security/sessionKeys';
+import { PROVIDER_PRESETS } from '../llm/providerPresets';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
@@ -1403,6 +1404,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     }
     return true;
   });
+
+  // Provider preset registry — static data (llm/providerPresets.ts); the
+  // renderer renders whatever this returns, so new providers ship data-only.
+  ipcMain.handle('llm:listProviderPresets', () => PROVIDER_PRESETS);
 
   // ── Cloud models (BYOK, opt-in) ──────────────────────────────────────────
   // Cloud providers are just llm_models rows with a non-local base_url + key.
