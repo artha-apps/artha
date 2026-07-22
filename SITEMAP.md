@@ -62,7 +62,7 @@
 | `src/skills/registry.ts` | `SkillRegistry` singleton — loads/creates/toggles YAML skill files, resolves `/slug` + auto-match, filters tool schemas per skill |
 | `src/skills/util.ts` | Pure skill helpers — slug normalisation, `/slug` parsing, import parsing, tool-allowlist filtering (unit-tested) |
 | **bundles/** | |
-| `src/bundles/bundle.ts` | Skill-bundle import/export — HMAC-signed manifest, golden-content hashing, `ENV:` secret stripping |
+| `src/bundles/bundle.ts` | Skill-bundle import/export — SHA-256 integrity checksum on the manifest (unkeyed: detects modification, does NOT prove authorship; keyed signing planned), golden-content hashing, `ENV:` secret stripping |
 | **router/** | |
 | `src/router/benchmark.ts` | Model capability probes (plan / tool-args / synthesis) that score local Ollama models for the model router; `benchmarkModel()` probes ONE model (post-install Model Fit fill-in), `runBenchmark()` sweeps the fleet |
 | **ipc/** | |
@@ -190,7 +190,7 @@
 | `ProvenancePanel.tsx` | Source attribution for agent answers (`.artha-receipt.json` sidecar) |
 | `TimeTravelPanel.tsx` | Session replay / history — fork a run from any past step |
 | `RouterPanel.tsx` | Model router config — benchmark + manual overrides |
-| `BundlesPanel.tsx` | Skill bundle management — HMAC-signed export / import |
+| `BundlesPanel.tsx` | Skill bundle management — integrity-checksummed export / import (SHA-256; authenticity signing planned) |
 | `vite.config.ts` | Vite config — React plugin, build output to `dist/` |
 | `tailwind.config.js` | Tailwind config — artha colour palette |
 | `tsconfig.json` | TypeScript config for renderer (ESNext, bundler resolution) |
