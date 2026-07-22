@@ -28,7 +28,7 @@ const OLLAMA_HOST = 'http://localhost:11434';
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 export type ModelStatusPhase =
-  | 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'error';
+  | 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'no_model' | 'error';
 export interface ModelStatus { phase: ModelStatusPhase; model?: string; detail?: string; }
 
 /** Did Artha spawn the server this session? Gates "stop on quit". */
@@ -157,9 +157,13 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
   }
 
   if (!(await isUp())) {
-    if (!ollamaInstalled()) { set({ phase: 'not_installed' }); return; }
+    // "Install Ollama" is only the right message when a LOCAL model is (or is
+    // about to be) the active one. With nothing configured at all, the honest
+    // state is 'no_model' — the user should choose a setup path (local model
+    // OR their own API key), not be steered to Ollama by default.
+    if (!ollamaInstalled()) { set({ phase: m ? 'not_installed' : 'no_model' }); return; }
     set({ phase: 'starting', model: m?.name });
-    if (!(await startServer())) { set({ phase: 'not_installed' }); return; }
+    if (!(await startServer())) { set({ phase: m ? 'not_installed' : 'no_model' }); return; }
     // Cold daemon start is usually a couple seconds; poll up to 20s.
     const deadline = Date.now() + 20_000;
     let up = false;
@@ -170,7 +174,10 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
     if (!up) { set({ phase: 'error', detail: 'Ollama did not start in time.' }); return; }
   }
 
-  if (!m) { set({ phase: 'ready' }); return; } // server up, no active model configured yet
+  // Server up but nothing active: report the truthful empty state (the old
+  // 'ready' here let a fresh install look configured when it wasn't). The
+  // server is left running for onboarding's model list/pull flows.
+  if (!m) { set({ phase: 'no_model' }); return; }
   set({ phase: 'warming', model: m.name });
   await warm(m.name, m.numCtx);
   set({ phase: 'ready', model: m.name });

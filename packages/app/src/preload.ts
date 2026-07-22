@@ -12,9 +12,11 @@ import type { SkillMetric, SkillModelStats, SkillToolUsage, SkillFailure } from 
  */
 export type ArthaAPI = typeof api;
 
-/** Phase of the local-model startup flow (auto-start Ollama + pre-warm). */
+/** Phase of the model startup flow (auto-start Ollama + pre-warm for local
+ *  models; immediate 'ready' for cloud models; 'no_model' = nothing is
+ *  configured at all — the honest empty state, never a fake default). */
 export interface ModelStatus {
-  phase: 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'error';
+  phase: 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'no_model' | 'error';
   model?: string;
   detail?: string;
 }

@@ -465,26 +465,43 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
   }
 }
 
+/** Thrown when no model is configured at all — replaces the old silent
+ *  fallback to a llama3.2 tag on localhost, which sent fresh BYOK /
+ *  configure-later users into a deceptive connection failure against a
+ *  server they never set up. Callers surface `message` directly in the UI. */
+export class NoModelConfiguredError extends Error {
+  readonly code = 'NO_MODEL_CONFIGURED';
+  constructor() {
+    super('No model is configured. Choose a local model or add your own API key in Settings → Models.');
+    this.name = 'NoModelConfiguredError';
+  }
+}
+
 /** Returns an LLMClient configured from the active model in the DB.
  *  `taskType` lets the router pick a different model per phase of a run;
- *  `modelOverride` short-circuits everything (used by time-travel fork). */
+ *  `modelOverride` short-circuits everything (used by time-travel fork).
+ *  Throws `NoModelConfiguredError` when there is no active row and nothing
+ *  routed/overridden — never invents a localhost default. */
 export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType): LLMClient {
   const db = getDb();
   const row = db
     .prepare(`SELECT * FROM llm_models WHERE is_active = 1 LIMIT 1`)
     .get() as Record<string, unknown> | undefined;
 
+  const routed = resolveModelName(modelOverride, taskType);
+  if (!row && !routed) throw new NoModelConfiguredError();
+
   const baseUrl       = (row?.base_url as string)        ?? 'http://localhost:11434/v1';
   // api_key is stored sealed at rest (v1:enc:/v1:raw: envelope) — open it here,
   // the last main-process point before the outbound request. Legacy plaintext
   // rows pass through unchanged until the launch migration seals them.
   const apiKey        = openSecretString(row?.api_key as string | undefined);
+  // `routed` is non-null whenever `row` is (guard above), so this fallback tag
+  // is only ever used with an ACTIVE row that carries its own name.
   const fallbackModel = (row?.ollama_name as string)      ?? 'llama3.2:3b-instruct-q4_K_M';
   // num_ctx for the local Ollama native path. Default 8192 (up from Ollama's
   // 2048) so big tool-using prompts aren't truncated + re-evaluated each turn.
   const contextWindow = (row?.context_window as number)   ?? 8192;
-
-  const routed = resolveModelName(modelOverride, taskType);
 
   // Use the ROUTED model's OWN row when it's a different saved model. Two
   // things depend on this:

@@ -37,6 +37,14 @@ vi.mock('child_process', async (importOriginal) => {
   return { ...real, spawn: spawnSpy };
 });
 
+// fs gates ollamaInstalled(); controllable so tests don't depend on whether
+// THIS machine has Ollama at /opt/homebrew/bin.
+const { fsState } = vi.hoisted(() => ({ fsState: { installed: true } }));
+vi.mock('fs', async (importOriginal) => {
+  const real = await importOriginal<typeof import('fs')>();
+  return { ...real, existsSync: () => fsState.installed };
+});
+
 import { ensureModelReady, unloadActiveModel, getModelStatus } from './ollamaRuntime';
 
 /** fetch recorder: captures every (url, method) and answers per scenario. */
@@ -63,6 +71,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   spawnSpy.mockClear();
   state.activeRow = undefined;
+  fsState.installed = true;
 });
 
 const CLOUD_ROW = {
@@ -122,6 +131,49 @@ describe('ensureModelReady with a LOCAL active model (regression)', () => {
     expect(calls.some(c => c.url.endsWith('/api/generate') && c.method === 'POST')).toBe(true);
     expect(statuses).toContain('warming');
     expect(getModelStatus().phase).toBe('ready');
+  });
+});
+
+describe('ensureModelReady with NO active model (commit 3: honest empty state)', () => {
+  it('reports no_model — not ready — when the server is up but nothing is active', async () => {
+    state.activeRow = undefined;
+    stubFetch({ tagsOk: true });
+    await ensureModelReady(() => { /* phases checked via getModelStatus */ });
+    expect(getModelStatus().phase).toBe('no_model');
+  });
+
+  it('reports no_model — not a false install-Ollama nag — when Ollama is absent too', async () => {
+    state.activeRow = undefined;
+    fsState.installed = false;
+    stubFetch({ tagsOk: false });
+    const statuses: string[] = [];
+    await ensureModelReady(s => statuses.push(s.phase));
+    expect(getModelStatus().phase).toBe('no_model');
+    expect(statuses).not.toContain('not_installed');
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
+  it('still nags not_installed when a LOCAL model IS active but Ollama is gone (regression)', async () => {
+    state.activeRow = LOCAL_ROW;
+    fsState.installed = false;
+    stubFetch({ tagsOk: false });
+    await ensureModelReady(() => { /* terminal phase asserted below */ });
+    expect(getModelStatus().phase).toBe('not_installed');
+  });
+
+  it('recovers across a simulated restart: no_model → user configures cloud → ready', async () => {
+    state.activeRow = undefined;
+    stubFetch({ tagsOk: false });
+    fsState.installed = false;
+    await ensureModelReady(() => { /* first launch: nothing configured */ });
+    expect(getModelStatus().phase).toBe('no_model');
+
+    // "Restart" after the user added + activated a BYOK model.
+    state.activeRow = CLOUD_ROW;
+    stubFetch({ tagsOk: false });
+    await ensureModelReady(() => { /* second launch: cloud model active */ });
+    expect(getModelStatus().phase).toBe('ready');
+    expect(getModelStatus().model).toBe('gpt-4o-mini');
   });
 });
 

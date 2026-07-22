@@ -489,9 +489,13 @@ export default function ChatWindow() {
         console.error('[Artha] sendMessage failed:', err);
         setLastError({
           title: 'Artha couldn’t complete that', detail, retry: dispatch,
-          escalate: cloudModel && !modelOverride
-            ? { label: `Retry on ☁ ${cloudModel.label}`, run: () => { void dispatch(cloudModel.modelName); } }
-            : undefined,
+          // No model configured → the fix is configuration, not a retry:
+          // deep-link into Settings → Models instead of offering cloud retry.
+          escalate: /no model is configured/i.test(detail)
+            ? { label: 'Open Model Settings', run: () => useChatStore.getState().setActiveView('models') }
+            : cloudModel && !modelOverride
+              ? { label: `Retry on ☁ ${cloudModel.label}`, run: () => { void dispatch(cloudModel.modelName); } }
+              : undefined,
         });
         toast.error('Message failed', detail, { label: 'Retry', onClick: () => { void dispatch(); } });
       }
@@ -514,9 +518,11 @@ export default function ChatWindow() {
         const detail = err instanceof Error ? err.message : String(err);
         setLastError({
           title: 'Couldn’t regenerate', detail, retry: dispatch,
-          escalate: cloudModel && !modelOverride
-            ? { label: `Retry on ☁ ${cloudModel.label}`, run: () => { void dispatch(cloudModel.modelName); } }
-            : undefined,
+          escalate: /no model is configured/i.test(detail)
+            ? { label: 'Open Model Settings', run: () => useChatStore.getState().setActiveView('models') }
+            : cloudModel && !modelOverride
+              ? { label: `Retry on ☁ ${cloudModel.label}`, run: () => { void dispatch(cloudModel.modelName); } }
+              : undefined,
         });
         toast.error('Regenerate failed', detail, { label: 'Retry', onClick: () => { void dispatch(); } });
       }
