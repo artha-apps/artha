@@ -366,6 +366,12 @@ const api = {
     // Cloud models (BYOK, opt-in). Keys are stored locally and only sent to the
     // provider the user configured; local Ollama remains the default.
     listConfigured: () => ipcRenderer.invoke('llm:listConfigured'),
+    // Default execution profile (v0 schema; Phase B routing consumes it).
+    getExecutionProfile: () => ipcRenderer.invoke('llm:getExecutionProfile') as Promise<Record<string, unknown> | null>,
+    // Honest semantic-feature status (embeddings available or why not).
+    semanticStatus: () => ipcRenderer.invoke('llm:semanticStatus') as Promise<
+      { available: true } | { available: false; reason: 'ollama_down' | 'embed_model_missing' }
+    >,
     // Effective capabilities: static per-provider registry overlaid with
     // runtime probe facts (e.g. "this model can't think").
     getCapabilities: (opts: { capabilityKey: string; model?: string }) =>

@@ -74,7 +74,8 @@ import {
   setPackShared, describeSharedPacks,
 } from '../agent/contextPacks';
 import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } from '../sentry';
-import { ensureModelReady, getModelStatus } from '../llm/ollamaRuntime';
+import { ensureModelReady, getModelStatus, getSemanticStatus } from '../llm/ollamaRuntime';
+import { getDefaultProfile } from '../llm/profiles';
 import { FREE_ENTITLEMENTS } from '../license/entitlements';
 import { invalidateEntitlements, parseAndVerify } from '../license/verify';
 import { usedSeats } from '../license/seats';
@@ -1428,6 +1429,15 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     }
     return { key: opts.apiKey };
   };
+
+  // The default execution profile (v0: mode + reserved slots; is_active on
+  // llm_models remains authoritative for model choice until Phase B routing).
+  ipcMain.handle('llm:getExecutionProfile', () => getDefaultProfile(getDb()) ?? null);
+
+  // Do semantic features (memory ranking / RAG vectors) actually work right
+  // now? Drives the honest degraded-state notices instead of silent
+  // zero-vector indexes and keyword-only memory.
+  ipcMain.handle('llm:semanticStatus', () => getSemanticStatus());
 
   // Effective capabilities for a provider (static registry ⊕ runtime probes).
   ipcMain.handle('llm:getCapabilities', (_e, opts: { capabilityKey: string; model?: string }) =>

@@ -48,6 +48,12 @@ export default function RAGPanel() {
   // `rebuilding` holds the index_id being re-embedded so we can animate that row only.
   const [rebuilding, setRebuilding] = useState<string | null>(null);
   const [error, setError] = useState('');
+  // Honest degraded state: semantic search needs local embeddings (Ollama +
+  // nomic-embed-text). Without them, indexing silently produced useless
+  // zero-vector indexes — now we say so BEFORE the user indexes anything.
+  const [semantic, setSemantic] = useState<
+    { available: true } | { available: false; reason: 'ollama_down' | 'embed_model_missing' } | null
+  >(null);
 
   const load = async () => {
     setLoading(true);
@@ -56,6 +62,7 @@ export default function RAGPanel() {
     } finally {
       setLoading(false);
     }
+    window.artha.llm.semanticStatus?.().then(setSemantic).catch(() => setSemantic(null));
   };
 
   useEffect(() => { load(); }, []);
@@ -107,6 +114,17 @@ export default function RAGPanel() {
   return (
     <div className="flex-1 overflow-y-auto px-8 py-8 max-w-3xl mx-auto w-full">
       <FeatureGuide {...GUIDES.rag} />
+      {/* Semantic search unavailable — honest state, shown BEFORE indexing. */}
+      {semantic && !semantic.available && (
+        <div className="mb-4 px-3 py-2.5 rounded-lg bg-artha-warn/10 border border-artha-warn/30 text-xs leading-relaxed">
+          <span className="font-medium text-artha-text">Semantic search is unavailable right now. </span>
+          <span className="text-artha-muted">
+            {semantic.reason === 'ollama_down'
+              ? 'Local embeddings need Ollama running on this machine (even if you chat via a cloud model). Until then, document search falls back to keyword matching.'
+              : 'The embedding model (nomic-embed-text) isn’t installed yet — Artha pulls it automatically when Ollama is running. Until then, document search falls back to keyword matching.'}
+          </span>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">

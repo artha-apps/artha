@@ -218,6 +218,32 @@ export async function ensureEmbedModel(): Promise<boolean> {
   }
 }
 
+/** Whether semantic features (memory ranking, RAG vector search) actually
+ *  work right now — they require local Ollama + the embed model. Consumed by
+ *  the honest degraded-state notices (Phase A commit 10): before this, a
+ *  missing embedder silently produced zero-vector indexes and keyword-only
+ *  memory with no indication anywhere. */
+export type SemanticStatus =
+  | { available: true }
+  | { available: false; reason: 'ollama_down' | 'embed_model_missing' };
+
+export async function getSemanticStatus(): Promise<SemanticStatus> {
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 1500);
+    const res = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: c.signal });
+    clearTimeout(t);
+    if (!res.ok) return { available: false, reason: 'ollama_down' };
+    const json = await res.json() as { models?: { name: string }[] };
+    const installed = (json.models ?? []).some(
+      t2 => t2.name === EMBED_MODEL || t2.name.startsWith(`${EMBED_MODEL}:`)
+    );
+    return installed ? { available: true } : { available: false, reason: 'embed_model_missing' };
+  } catch {
+    return { available: false, reason: 'ollama_down' };
+  }
+}
+
 /** Evict the active model from memory (`keep_alive: 0`). Best-effort; called on
  *  quit so a multi-GB model isn't left resident after Artha closes. */
 export async function unloadActiveModel(): Promise<void> {

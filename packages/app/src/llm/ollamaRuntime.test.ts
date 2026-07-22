@@ -45,7 +45,7 @@ vi.mock('fs', async (importOriginal) => {
   return { ...real, existsSync: () => fsState.installed };
 });
 
-import { ensureModelReady, unloadActiveModel, getModelStatus } from './ollamaRuntime';
+import { ensureModelReady, unloadActiveModel, getModelStatus, getSemanticStatus } from './ollamaRuntime';
 
 /** fetch recorder: captures every (url, method) and answers per scenario. */
 function stubFetch(opts: { tagsOk: boolean; tagsModels?: string[] }) {
@@ -174,6 +174,23 @@ describe('ensureModelReady with NO active model (commit 3: honest empty state)',
     await ensureModelReady(() => { /* second launch: cloud model active */ });
     expect(getModelStatus().phase).toBe('ready');
     expect(getModelStatus().model).toBe('gpt-4o-mini');
+  });
+});
+
+describe('getSemanticStatus (honest degraded states, commit 10)', () => {
+  it('Ollama down → unavailable with ollama_down', async () => {
+    stubFetch({ tagsOk: false });
+    expect(await getSemanticStatus()).toEqual({ available: false, reason: 'ollama_down' });
+  });
+
+  it('Ollama up but embed model missing → embed_model_missing', async () => {
+    stubFetch({ tagsOk: true, tagsModels: ['llama3.2:3b'] });
+    expect(await getSemanticStatus()).toEqual({ available: false, reason: 'embed_model_missing' });
+  });
+
+  it('embed model installed (bare or tagged) → available', async () => {
+    stubFetch({ tagsOk: true, tagsModels: ['nomic-embed-text:latest'] });
+    expect(await getSemanticStatus()).toEqual({ available: true });
   });
 });
 

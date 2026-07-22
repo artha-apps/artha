@@ -17,6 +17,7 @@ import { app } from 'electron';
 import { sealPlaintextApiKeys, sealPlaintextColumns } from '../security/secretString';
 import { resealRawCredentialBlobs } from '../security/secrets';
 import { normalizeProviderIds } from '../llm/providerKind';
+import { ensureDefaultProfile } from '../llm/profiles';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
 let db: Database.Database | null = null;
@@ -1037,6 +1038,17 @@ export function runMigrations(): void {
     if (n) console.log(`[Artha] provider id normalization: ${n} row(s) repaired.`);
   } catch (err) {
     console.warn('[Artha] provider id normalization skipped:', err);
+  }
+
+  // Migration v22→v23 (commit 10): execution_profiles table + ONE implicit
+  // "Default" profile synthesized from the active model. v0 is schema-only:
+  // llm_models.is_active stays authoritative, so existing users see zero
+  // behaviour change; Phase B routing fills the reserved slots.
+  try {
+    const prof = ensureDefaultProfile(db);
+    if (prof.created) console.log(`[Artha] Default execution profile created (mode: ${prof.mode}).`);
+  } catch (err) {
+    console.warn('[Artha] execution_profiles migration skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

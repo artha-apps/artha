@@ -320,6 +320,8 @@ export default function ModelsPanel() {
   const [discovering, setDiscovering] = useState(false);
   const [testState, setTestState] = useState<{ ok: boolean; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
+  // Effective capabilities for the selected preset (registry ⊕ probes).
+  const [caps, setCaps] = useState<Record<string, string> | null>(null);
   const [savingCloud, setSavingCloud] = useState(false);
   const [cloudError, setCloudError] = useState('');
   // No trustworthy OS keychain: the save was REFUSED and the user must choose
@@ -476,6 +478,8 @@ export default function ModelsPanel() {
     setDiscovered(null);
     setTestState(null);
     setCloudError('');
+    window.artha.llm.getCapabilities?.({ capabilityKey: p.capabilityKey })
+      .then(setCaps).catch(() => setCaps(null));
   };
 
   /** GET /v1/models through the main process — populates the model datalist. */
@@ -1138,6 +1142,29 @@ export default function ModelsPanel() {
                   Get a key / docs ↗
                 </a>
               </p>
+            )}
+
+            {/* What this provider can do (capability registry; 'varies' =
+                depends on the model you pick) + its data-retention honesty note. */}
+            {caps && (
+              <div className="space-y-1">
+                <div className="flex flex-wrap gap-1">
+                  {([['toolCalling', 'Tools'], ['structuredOutput', 'JSON'], ['reasoning', 'Reasoning'], ['vision', 'Vision'], ['embeddings', 'Embeddings'], ['usageReporting', 'Usage']] as const).map(([k, label]) => {
+                    const v = caps[k];
+                    const tone = v === 'yes' ? 'text-artha-success bg-artha-success/10'
+                      : v === 'no' ? 'text-artha-muted bg-artha-s2 line-through'
+                      : 'text-artha-warn bg-artha-warn/10';
+                    return (
+                      <span key={k} title={`${label}: ${v}`} className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${tone}`}>
+                        {label}{v === 'varies' ? '·varies' : v === 'unknown' ? '·?' : ''}
+                      </span>
+                    );
+                  })}
+                </div>
+                {typeof caps.dataRetentionNote === 'string' && (
+                  <p className="text-[10px] text-artha-subtle leading-relaxed">{caps.dataRetentionNote}</p>
+                )}
+              </div>
             )}
 
             {/* Base URL — fixed presets hide it; template presets require it. */}
