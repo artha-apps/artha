@@ -447,7 +447,9 @@ const api = {
       ipcRenderer.invoke('mcp:getAuditLog', limit),
     // Install URIs of every installed MCP server — lets the Marketplace restore
     // the "Installed" badge from the DB instead of in-memory state.
-    listInstalledIds: () => ipcRenderer.invoke('mcp:listInstalledIds') as Promise<string[]>,
+    listInstalledIds: () => ipcRenderer.invoke('mcp:listInstalledIds') as Promise<
+      { uri: string; connected: boolean; status: string; error: string | null }[]
+    >,
     // Install URIs of servers that have stored credentials (no secrets returned).
     listConfiguredUris: () => ipcRenderer.invoke('mcp:listConfiguredUris') as Promise<string[]>,
   },

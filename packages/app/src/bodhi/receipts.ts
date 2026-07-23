@@ -150,7 +150,12 @@ export function listReceiptRuns(limit = 50): { run_id: string; goal: string; ses
     SELECT r.run_id        AS run_id,
            MAX(r.ts)       AS ts,
            COUNT(*)        AS calls,
-           SUM(r.is_mutation) AS mutations,
+           -- Count only mutations that actually SUCCEEDED. is_mutation marks
+           -- "this tool changes state", independent of outcome, so summing it
+           -- reported "1 changed file" for a change that was successfully
+           -- BLOCKED by policy — claiming damage in exactly the case where it
+           -- was prevented (shipped-surface audit H9).
+           SUM(CASE WHEN r.is_mutation = 1 AND r.status = 'ok' THEN 1 ELSE 0 END) AS mutations,
            IFNULL(ar.goal, '') AS goal,
            IFNULL(ar.session_id, '') AS session_id
     FROM tool_receipts r

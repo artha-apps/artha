@@ -50,7 +50,7 @@ export function getBriefing(): Briefing {
   const failedRuns = count(`SELECT COUNT(*) AS n FROM agent_runs WHERE created_at >= ? AND status='failed'`, since);
   const filesChanged = count(
     `SELECT COUNT(*) AS n FROM tool_receipts tr JOIN agent_runs ar ON ar.run_id = tr.run_id
-      WHERE ar.created_at >= ? AND tr.is_mutation = 1`, since);
+      WHERE ar.created_at >= ? AND tr.is_mutation = 1 AND tr.status = 'ok'`, since);
   const newArtifacts = count(`SELECT COUNT(*) AS n FROM artifacts WHERE created_at >= ?`, since);
   const newMemories = count(`SELECT COUNT(*) AS n FROM memory_entities WHERE created_at >= ?`, since);
   const newContacts = count(`SELECT COUNT(*) AS n FROM crm_contacts WHERE created_at >= ?`, since);

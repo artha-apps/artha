@@ -1037,7 +1037,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
              IFNULL(cs.title, '')  AS session_title,
              IFNULL(cs.origin, 'chat') AS session_origin,
              (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id) AS calls,
-             (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id AND tr.is_mutation = 1) AS mutations
+             (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id AND tr.is_mutation = 1 AND tr.status = 'ok') AS mutations
       FROM agent_runs ar
       LEFT JOIN chat_sessions cs ON cs.session_id = ar.session_id
       ORDER BY ar.created_at DESC
@@ -1762,10 +1762,20 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // URI (mcp_server_uri). The Marketplace uses this to restore the "Installed"
   // badge across panel navigations instead of relying on in-memory state.
   ipcMain.handle('mcp:listInstalledIds', () => {
+    // Returns the URI plus its REAL connection state. Previously this returned
+    // every row with a URI, and the Marketplace rendered "✓ Installed" from
+    // mere existence — including servers whose connect had failed, since the
+    // row is deliberately written before (and kept after) a failed handshake
+    // (shipped-surface audit H7).
     const rows = getDb().prepare(
-      `SELECT mcp_server_uri FROM tools WHERE mcp_server_uri IS NOT NULL`
-    ).all() as { mcp_server_uri: string }[];
-    return rows.map(r => r.mcp_server_uri);
+      `SELECT mcp_server_uri, conn_status, conn_error FROM tools WHERE mcp_server_uri IS NOT NULL`
+    ).all() as { mcp_server_uri: string; conn_status: string | null; conn_error: string | null }[];
+    return rows.map(r => ({
+      uri: r.mcp_server_uri,
+      connected: r.conn_status === 'connected',
+      status: r.conn_status ?? 'unknown',
+      error: r.conn_error,
+    }));
   });
 
   ipcMain.handle('mcp:getAuditLog', (_e, limit = 200) => {

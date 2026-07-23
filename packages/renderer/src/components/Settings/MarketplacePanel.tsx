@@ -74,17 +74,24 @@ export default function MarketplacePanel() {
   // `installing` holds the catalog entry id currently being installed.
   const [installing, setInstalling] = useState<string | null>(null);
   const [installed, setInstalled] = useState<Set<string>>(new Set());
+  /** Rows that exist but are NOT connected — shown honestly instead of as installed. */
+  const [notConnected, setNotConnected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   // Used to redirect auth-required entries straight to the Cloud Integrations tab.
   const setActiveView = useChatStore(s => s.setActiveView);
 
   // Installed state is persisted in the DB (the `tools` table), keyed by install
   // URI. Map those URIs back to catalog ids so the badges survive navigation.
+  // "Installed" now means CONNECTED: the row is written before the handshake
+  // and kept when it fails, so existence alone was showing "✓ Installed" for
+  // servers that never connected and gave the agent zero tools.
   const refreshInstalled = async () => {
     try {
-      const uris = await window.artha.mcp.listInstalledIds();
-      const ids = CATALOG.filter(e => uris.includes(e.installUri)).map(e => e.id);
-      setInstalled(new Set(ids));
+      const rows = await window.artha.mcp.listInstalledIds();
+      const connectedUris = rows.filter(r => r.connected).map(r => r.uri);
+      const failedUris = rows.filter(r => !r.connected).map(r => r.uri);
+      setInstalled(new Set(CATALOG.filter(e => connectedUris.includes(e.installUri)).map(e => e.id)));
+      setNotConnected(new Set(CATALOG.filter(e => failedUris.includes(e.installUri)).map(e => e.id)));
     } catch {
       /* leave whatever we have */
     }
@@ -169,6 +176,8 @@ export default function MarketplacePanel() {
           {filtered.map(entry => {
             const isInstalling = installing === entry.id;
             const isDone = installed.has(entry.id);
+            // Row exists but the handshake failed — must not read as installed.
+            const isBroken = notConnected.has(entry.id);
             const authRequired = AUTH_REQUIRED.has(entry.id);
 
             return (
@@ -193,6 +202,11 @@ export default function MarketplacePanel() {
                   <p className="text-[11px] text-artha-muted/50 font-mono mt-1">{entry.installUri}</p>
                   {authRequired && (
                     <p className="text-[11px] text-amber-400/90 mt-1.5">Auth required — go to Cloud tab</p>
+                  )}
+                  {isBroken && (
+                    <p className="text-[11px] text-artha-warn mt-1.5">
+                      Installed but not connected — the agent has no tools from this server. Retry to reconnect.
+                    </p>
                   )}
                 </div>
 
@@ -221,17 +235,21 @@ export default function MarketplacePanel() {
                     <button
                       onClick={() => install(entry)}
                       disabled={isInstalling || isDone}
-                      title={isDone ? 'Installed' : 'Install'}
+                      title={isDone ? 'Connected' : isBroken ? 'Installed but not connected — retry' : 'Install'}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-not-allowed ${
                         isDone
                           ? 'bg-artha-success/15 border border-artha-success/30 text-artha-success'
-                          : 'bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-50 text-artha-text'
+                          : isBroken
+                            ? 'bg-artha-warn/15 border border-artha-warn/30 text-artha-warn hover:bg-artha-warn/25'
+                            : 'bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-50 text-artha-text'
                       }`}
                     >
                       {isInstalling ? (
                         <><Loader size={11} className="animate-spin" /> Installing…</>
                       ) : isDone ? (
-                        <><Check size={11} /> Installed</>
+                        <><Check size={11} /> Connected</>
+                      ) : isBroken ? (
+                        <><Download size={11} /> Retry</>
                       ) : (
                         <><Download size={11} /> Install</>
                       )}
