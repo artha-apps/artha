@@ -47,7 +47,7 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
-import { shouldNudgeToAct, compactStaleDomDumps } from './actGuard';
+import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, compactStaleDomDumps } from './actGuard';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
 import { evaluatePolicy } from '../bodhi/policy';
@@ -1388,6 +1388,19 @@ RULES — follow exactly, no exceptions:
     let browserToolCalls = 0;
     let actNudges = 0;
     const MAX_ACT_NUDGES = 2;
+    // Send-completion guard: a "send an email" goal is only satisfied by a
+    // CONFIRMED send (an external_actions row), never by a draft. Tracks nudges
+    // that push the model from email_compose → email_send.
+    let sendNudges = 0;
+    const MAX_SEND_NUDGES = 2;
+    const sendWasConfirmed = (): boolean => {
+      try {
+        const row = db.prepare(
+          `SELECT COUNT(*) AS n FROM external_actions WHERE run_id=? AND category='send' AND state='confirmed'`
+        ).get(args.runId) as { n: number } | undefined;
+        return (row?.n ?? 0) > 0;
+      } catch { return false; }
+    };
 
     // tool_call ids of every browser_read_dom call, so we can keep only the
     // latest DOM dump in context and stub the rest (see compactStaleDomDumps).
@@ -1725,6 +1738,34 @@ RULES — follow exactly, no exceptions:
           continue;
         }
 
+        // Backstop: the goal was to SEND, but no send has been confirmed — the
+        // model likely drafted (email_compose) and stopped. Push it to actually
+        // send. This is what turns "drafted" into "delivered" instead of a
+        // false completion.
+        if (shouldNudgeToSend({
+          goal: args.goal,
+          sendConfirmed: sendWasConfirmed(),
+          nudges: sendNudges,
+          maxNudges: MAX_SEND_NUDGES,
+          content: rawContent,
+        })) {
+          if (streamedLive) emit('agent:streamReset');
+          sendNudges++;
+          messages.push({
+            role: 'system',
+            content:
+              `You have NOT sent the email yet — preparing a draft is not sending. ` +
+              `The user asked you to SEND it ("${args.goal.slice(0, 160)}"). ` +
+              `Call the email_send tool NOW to actually deliver it (it sends through the user's own ` +
+              `Gmail in Artha's browser, after their approval). Do NOT use email_compose — that only ` +
+              `drafts. If email_send returns login_required, tell the user to sign in to Gmail in ` +
+              `Artha's browser once, then it will work.`,
+          });
+          recordStep(stepIdx++, 'system', { note: 'send-nudge', nudge: sendNudges });
+          emptyCount = 0;
+          continue;
+        }
+
         let finalText: string;
 
         if (mutations.length > 0) {
@@ -1756,6 +1797,18 @@ RULES — follow exactly, no exceptions:
           finalText = `${finalText}\n\n⚠️ Heads up: every tool call in this run failed (${toolCallErrors}/${toolCallsTotal}), so the answer above isn't grounded in real results. Treat it as unverified.`;
         }
 
+        // Send-completion honesty: if the goal was to SEND but no send was ever
+        // confirmed (external_actions), the objective was NOT met — say so
+        // plainly, whatever the model's prose claims. This is what stops a
+        // "drafted but not sent" run from being reported as done.
+        const sendUnfulfilled = detectsSendIntent(args.goal) && !sendWasConfirmed();
+        if (sendUnfulfilled) {
+          finalText =
+            `${finalText}\n\n⚠️ The email was NOT sent. A draft may have been prepared, but nothing was ` +
+            `delivered. To actually send it, make sure you're signed in to Gmail in Artha's browser, then ` +
+            `ask me to send it — I use email_send, which delivers through your Gmail after your approval.`;
+        }
+
         // The raw content was already streamed live. Only re-emit if the final
         // text differs (verified summary, or cleaning changed it) — otherwise
         // what the user already saw stands as-is.
@@ -1785,6 +1838,19 @@ RULES — follow exactly, no exceptions:
         }
 
         recordStep(stepIdx++, 'final', { content: finalText });
+        if (sendUnfulfilled) {
+          // A requested send never happened — this is NOT a completion. Report
+          // it honestly so Delegate can't show a green "completed".
+          db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+          db.prepare(`UPDATE agent_states SET status='failed' WHERE workflow_id=?`).run(args.workflowId);
+          terminalOutcome = 'failed';
+          persistRunFacts(db, args.runId, {
+            outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: 'email_not_sent',
+          });
+        } else {
         // `status='completed'` means ONLY that the executor finished. Whether
         // the user's objective was achieved is decided later, from the facts
         // persisted below (bodhi/taskModel.deriveTaskStatus) — never here.
@@ -1797,6 +1863,7 @@ RULES — follow exactly, no exceptions:
             mutationsFailed: mutations.filter(m => !m.success).length,
             errorDetail: null,
           });
+        }
         // Evidence: one sanitized record per mutation actually attempted.
         for (const m of mutations) {
           recordEvidence(db, {

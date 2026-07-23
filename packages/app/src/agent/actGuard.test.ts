@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   detectsWebAction,
   shouldNudgeToAct,
+  detectsSendIntent,
+  shouldNudgeToSend,
   compactStaleDomDumps,
   type ActGuardState,
   type CompactableMessage,
@@ -129,5 +131,48 @@ describe('compactStaleDomDumps', () => {
     ];
     expect(compactStaleDomDumps(msgs, new Set(['dom-1']))).toBe(0);
     expect((msgs[0].content as string).length).toBeGreaterThan(12_000);
+  });
+});
+
+describe('detectsSendIntent', () => {
+  it('fires on real send-email goals', () => {
+    for (const g of [
+      'Send an email to jkscanada@gmail.com saying hello',
+      'email jane@x.com about the Q3 numbers',
+      'compose and send the email to the team',
+      'forward that message to my boss',
+      'send it to alex@example.com',
+    ]) expect(detectsSendIntent(g), g).toBe(true);
+  });
+
+  it('does NOT fire on read/summarize goals', () => {
+    for (const g of [
+      'read my latest email and summarize it',
+      'check if I have any new messages',
+      'draft a note for later', // draft ≠ send
+      'find the invoice in my inbox',
+    ]) expect(detectsSendIntent(g), g).toBe(false);
+  });
+});
+
+describe('shouldNudgeToSend', () => {
+  const base = {
+    goal: 'Send an email to jkscanada@gmail.com saying hi',
+    sendConfirmed: false, nudges: 0, maxNudges: 2, content: 'I have prepared the email draft for you.',
+  };
+  it('nudges when a send goal ended without a confirmed send', () => {
+    expect(shouldNudgeToSend(base)).toBe(true);
+  });
+  it('does NOT nudge once a send is confirmed', () => {
+    expect(shouldNudgeToSend({ ...base, sendConfirmed: true })).toBe(false);
+  });
+  it('stops nudging at the cap', () => {
+    expect(shouldNudgeToSend({ ...base, nudges: 2 })).toBe(false);
+  });
+  it('does NOT nudge on a genuine clarifying question', () => {
+    expect(shouldNudgeToSend({ ...base, content: 'Who should I send it to?' })).toBe(false);
+  });
+  it('does NOT nudge on a non-send goal', () => {
+    expect(shouldNudgeToSend({ ...base, goal: 'summarize my inbox' })).toBe(false);
   });
 });

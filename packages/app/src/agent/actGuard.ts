@@ -62,6 +62,49 @@ export function shouldNudgeToAct(s: ActGuardState): boolean {
   );
 }
 
+/** Does the goal ask Artha to SEND a message/email (a consequential delivery,
+ *  not merely draft one)? Used to catch the "the model made a draft and called
+ *  it done" false-completion: a send goal is only satisfied by an actual,
+ *  confirmed send. Deliberately focused on send/deliver verbs + a mail/message
+ *  object so it doesn't fire on "read my email". */
+export function detectsSendIntent(goal: string): boolean {
+  const g = goal || '';
+  return (
+    (/\b(send|deliver|fire off|shoot(?:\s+over)?|forward)\b/i.test(g) &&
+      /\b(e-?mails?|mail|messages?|gmail|outlook|note|reply)\b/i.test(g)) ||
+    /\bsend\s+(it|this|that|them|the (e-?mail|message|note|reply))\b/i.test(g) ||
+    /\b(e-?mail|message)\s+\S+@\S+/i.test(g)   // "email jane@x.com …"
+  );
+}
+
+/** Inputs for the send-nudge decision, taken when the model returns a
+ *  plain-text reply on a send-intent goal. */
+export interface SendGuardState {
+  goal: string;
+  /** Did a real send get CONFIRMED this run (an external_actions row)? */
+  sendConfirmed: boolean;
+  /** How many send-nudges we've already injected this run. */
+  nudges: number;
+  maxNudges: number;
+  /** The text the model just returned. */
+  content: string;
+}
+
+/**
+ * True when the model is about to end a SEND task without a confirmed send —
+ * e.g. it created a draft (email_compose) and stopped. Pushes it to actually
+ * call email_send instead. Fires only under the nudge cap and never on a
+ * genuine clarifying question.
+ */
+export function shouldNudgeToSend(s: SendGuardState): boolean {
+  return (
+    detectsSendIntent(s.goal) &&
+    !s.sendConfirmed &&
+    s.nudges < s.maxNudges &&
+    !s.content.includes('?')
+  );
+}
+
 /** Minimal structural shape of a chat message the DOM-compactor touches.
  *  Declared locally so this module stays dependency-free (no OpenAI import). */
 export interface CompactableMessage {
