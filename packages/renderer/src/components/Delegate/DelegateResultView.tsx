@@ -28,9 +28,28 @@ export default function DelegateResultView({ result }: { result: DelegateResult 
       <div className="flex items-center gap-2 mb-3">
         <CheckCircle2 size={16} style={{ color: theme.accent }} />
         <h2 className="text-sm font-semibold text-artha-text">Result</h2>
+        <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-artha-warn/15 text-artha-warn">
+          Beta
+        </span>
       </div>
 
-      {/* Summary */}
+      {/* Honest verification limitation. Delegate reports that a run ENDED; it
+          cannot yet verify that the objective was achieved (Phase A.5 in
+          progress). Stating this is better than a green check that implies
+          proof we do not have. */}
+      <div className="mb-3 px-3 py-2 rounded-lg bg-artha-warn/10 border border-artha-warn/25 text-xs leading-relaxed text-artha-text">
+        <span className="font-medium">The run finished — completion is not verified.</span>{' '}
+        <span className="text-artha-muted">
+          Delegate reports what the agent did, not proof that your objective was met. Check the
+          output below, and open Workflows → Runs to inspect the actual tool calls and results.
+        </span>
+      </div>
+
+      {/* Summary — the model's own words. Labelled as such so it is never
+          mistaken for a system-verified statement of outcome. */}
+      <h3 className="text-[10px] uppercase tracking-wider text-artha-subtle font-semibold mb-1">
+        Agent summary
+      </h3>
       <p className="text-sm text-artha-text leading-relaxed mb-4">{result.summary}</p>
 
       {/* Generated files */}
