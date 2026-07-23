@@ -4,6 +4,14 @@ This is the production runbook for standing up an **Artha org hub** — a single
 
 The hub binds `0.0.0.0:7842/chat`. Every authorised teammate hits that endpoint with a Bearer token (their personal API key) and gets the full Artha agent — local model, RAG, document workflows, shared org memories — all running on the hub host. No customer data ever leaves the hub.
 
+> ⚠️ **Trusted networks only (current limitation).** Hub traffic is plain HTTP
+> today: Bearer keys and chat content are readable by anyone who can sniff the
+> network segment. Run the hub ONLY on a trusted LAN or inside a company VPN /
+> WireGuard tunnel — never exposed to an untrusted network or the internet.
+> Do not describe hub traffic as encrypted or protected. Transport security is
+> a release gate for production org-hub deployments (security remediation
+> register R2 in `docs/architecture/ARTHA_SECURITY_THREAT_MODEL.md`).
+
 There are two ways to run the hub today; pick the one that matches how your IT team operates.
 
 > **Phase 1 note.** The hub is the same Electron app you'd run on a laptop, with the LAN server flipped on and an Enterprise license applied. A true headless build (no Electron, runs as a container daemon, Postgres-backed) lands in Phase 2; the Docker option below uses `xvfb` as the bridge until then.

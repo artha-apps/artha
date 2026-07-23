@@ -49,8 +49,16 @@ jobs:
         run: npm run lint --if-present
 
   test:
-    name: Unit tests
-    runs-on: ubuntu-latest
+    # Phase A touches per-OS behavior (keychain policy, path handling), so the
+    # unit suite runs on all three platforms. NOTE: this proves the mocked
+    # policy logic cross-platform — native keychain integration (real
+    # libsecret/DPAPI) still needs manual validation per the threat model §3.
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v6
