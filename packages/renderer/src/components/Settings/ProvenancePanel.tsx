@@ -132,7 +132,7 @@ export default function ProvenancePanel() {
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {docs.length === 0 && (
             <p className="text-xs text-artha-muted/70 text-center mt-8 px-4">
-              Generated documents will appear here with their source lineage.
+              Generated documents will appear here with the sources the model attributed to each section.
             </p>
           )}
           {docs.map(d => {
@@ -231,6 +231,11 @@ export default function ProvenancePanel() {
                 </h3>
                 <span className="text-xs text-artha-muted">({anchors.length})</span>
               </div>
+              <p className="text-[10px] text-artha-muted/70 mb-2 leading-relaxed">
+                These are the sources the model attributed to each section while writing.
+                Artha records the attribution; it does not (yet) verify that a section’s
+                wording was actually derived from the cited source.
+              </p>
               <div className="space-y-2">
                 {anchors.map(a => {
                   const Icon = SOURCE_ICON[a.source_type];
