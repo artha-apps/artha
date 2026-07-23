@@ -588,6 +588,99 @@ export async function initDatabase(): Promise<void> {
       created_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- ── Phase A.5: truthful task / verification model ──────────────────────
+    -- A TASK is the user's objective and is DURABLE across many execution
+    -- attempts, clarifications, retries and resumptions. A RUN (agent_runs) is
+    -- one attempt. Conflating them is what let "the executor stopped" be
+    -- reported as "your objective was achieved".
+    CREATE TABLE IF NOT EXISTS agent_tasks (
+      task_id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      source_type     TEXT NOT NULL,               -- delegate | scheduler | workflow | chat
+      source_id       TEXT,                        -- scheduled_tasks.task_id, etc.
+      conversation_id TEXT,                        -- chat_sessions.session_id (persistent thread)
+      objective       TEXT NOT NULL DEFAULT '',
+      -- Lifecycle of the OBJECTIVE. Deliberately no CHECK constraint: the
+      -- vocabulary must be able to grow without a table rebuild (rebuilding
+      -- agent_runs would cascade-delete agent_steps evidence).
+      task_status     TEXT NOT NULL DEFAULT 'active',
+      verification_status TEXT NOT NULL DEFAULT 'not_evaluated',
+      acceptance_mode TEXT NOT NULL DEFAULT 'system_verified', -- | user_review | user_accepted
+      current_run_id  TEXT,
+      last_run_id     TEXT,
+      blocked_reason  TEXT,
+      remaining_work_json TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      completed_at    INTEGER
+    );
+
+    -- What "done" means for one task. Only kind='predicate' rows may ever
+    -- produce verification_status='verified' — prose criteria cap at
+    -- awaiting_user_review so the model cannot grade its own subjective work.
+    CREATE TABLE IF NOT EXISTS task_acceptance_criteria (
+      criterion_id  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      task_id       TEXT NOT NULL,
+      kind          TEXT NOT NULL DEFAULT 'predicate',  -- predicate | prose
+      predicate     TEXT,                               -- closed vocabulary (validator type)
+      inputs_json   TEXT NOT NULL DEFAULT '{}',
+      description   TEXT NOT NULL DEFAULT '',
+      required      INTEGER NOT NULL DEFAULT 1,
+      outcome       TEXT NOT NULL DEFAULT 'not_evaluated', -- passed|failed|indeterminate|awaiting_user_review
+      expected      TEXT,
+      actual        TEXT,
+      validator_version TEXT,
+      evaluated_at  INTEGER,
+      created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    -- Evidence the validator consumed. References + sanitized summaries only —
+    -- never secrets or raw tool payloads. No FK to agent_runs: evidence must
+    -- never be cascade-deleted.
+    CREATE TABLE IF NOT EXISTS task_evidence (
+      evidence_id  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      task_id      TEXT NOT NULL,
+      run_id       TEXT,
+      criterion_id TEXT,
+      kind         TEXT NOT NULL,      -- tool_result|file|artifact|external_action|test|receipt|model_assessment
+      ref          TEXT,               -- path | artifact_id | external id | step idx
+      status       TEXT NOT NULL,      -- succeeded|failed|partial|unknown
+      summary      TEXT,               -- sanitized, human-readable
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    -- Write-ahead intent log for consequential / externally mutating actions.
+    -- Written BEFORE dispatch so a crash leaves a record that lets us tell
+    -- "never attempted" from "attempted, outcome unknown".
+    CREATE TABLE IF NOT EXISTS external_actions (
+      action_id       TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      task_id         TEXT,
+      run_id          TEXT,
+      step_id         TEXT,
+      tool            TEXT NOT NULL,
+      category        TEXT NOT NULL,          -- send|submit|purchase|publish|delete|external_write|vcs_push
+      target_system   TEXT,
+      target_identity TEXT,                   -- sanitized (e.g. domain, recipient hash)
+      fingerprint     TEXT,                   -- dedupe key for the same logical action
+      idempotency_key TEXT,
+      approval_id     TEXT,
+      approval_scope  TEXT,
+      state           TEXT NOT NULL DEFAULT 'planned',
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      dispatched_at   INTEGER,
+      external_ref    TEXT,                   -- provider receipt / message id / sha
+      confirmation_method TEXT,
+      outcome         TEXT,
+      retry_eligible  INTEGER NOT NULL DEFAULT 0,
+      error_redacted  TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_source ON agent_tasks(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_criteria_task ON task_acceptance_criteria(task_id);
+    CREATE INDEX IF NOT EXISTS idx_evidence_task ON task_evidence(task_id);
+    CREATE INDEX IF NOT EXISTS idx_extactions_task ON external_actions(task_id);
+
     -- Seed default user if none exists
     INSERT OR IGNORE INTO users (user_id, display_name) VALUES ('default', 'User');
 
@@ -1049,6 +1142,47 @@ export function runMigrations(): void {
     if (prof.created) console.log(`[Artha] Default execution profile created (mode: ${prof.mode}).`);
   } catch (err) {
     console.warn('[Artha] execution_profiles migration skipped:', err);
+  }
+
+  // Migration v23→v24 (Phase A.5): additive run-level evidence columns.
+  // The values below are ALREADY computed by the ReAct loop and then thrown
+  // away (see the evidence audit E2/E3); persisting them is what lets a
+  // completion validator work at all. Nullable, no CHECK constraints, no
+  // backfill — a legacy row keeps NULL and is projected as
+  // "unknown (pre-A.5)" rather than being relabelled verified.
+  try {
+    const runCols = db.prepare(`PRAGMA table_info(agent_runs)`).all() as { name: string }[];
+    const add = (col: string, decl: string) => {
+      if (runCols.length && !runCols.some(c => c.name === col)) {
+        db.exec(`ALTER TABLE agent_runs ADD COLUMN ${col} ${decl}`);
+      }
+    };
+    add('task_id', 'TEXT');                 // link attempt → durable objective
+    add('run_outcome', 'TEXT');             // succeeded|failed|timed_out|cancelled|interrupted
+    add('tool_calls_total', 'INTEGER');
+    add('tool_calls_failed', 'INTEGER');
+    add('tool_calls_blocked', 'INTEGER');
+    add('mutations_total', 'INTEGER');
+    add('mutations_failed', 'INTEGER');
+    add('error_detail', 'TEXT');            // terminal reason: stall|max_iterations|llm_error|…
+    add('finished_at', 'INTEGER');
+  } catch (err) {
+    console.warn('[Artha] agent_runs evidence-column migration skipped:', err);
+  }
+
+  // Startup reconciliation: a run left 'running' by an app quit is NOT live.
+  // Without this, "crashed mid-run" and "still running" are indistinguishable
+  // forever (audit §5.4). Marked interrupted, never completed.
+  try {
+    const orphaned = db.prepare(
+      `UPDATE agent_runs SET run_outcome='interrupted'
+        WHERE status='running' AND (run_outcome IS NULL OR run_outcome='')`
+    ).run();
+    if (orphaned.changes > 0) {
+      console.log(`[Artha] reconciled ${orphaned.changes} orphaned run(s) as interrupted.`);
+    }
+  } catch (err) {
+    console.warn('[Artha] run reconciliation skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');
