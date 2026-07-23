@@ -1310,8 +1310,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Re-trigger ensure (onboarding "retry" / first run). Streams progress via
   // the same `model:status` event used at launch.
   ipcMain.handle('model:ensure', async () => {
-    await ensureModelReady((s) => safeSend('model:status', s));
-    return getModelStatus();
+    // Return THIS run's terminal status, not the shared last-writer value —
+    // a concurrent launch-time run would otherwise mask a failed start.
+    return ensureModelReady((s) => safeSend('model:status', s));
   });
 
   ipcMain.handle('llm:pullModel', async (_e, name: string) => {

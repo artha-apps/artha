@@ -177,6 +177,49 @@ describe('ensureModelReady with NO active model (commit 3: honest empty state)',
   });
 });
 
+describe('ensureModelReady returns its OWN terminal status (row-10 race fix)', () => {
+  it('cloud active model → returns ready, not whatever a concurrent run wrote', async () => {
+    state.activeRow = CLOUD_ROW;
+    stubFetch({ tagsOk: false });
+    const returned = await ensureModelReady(() => {});
+    expect(returned).toMatchObject({ phase: 'ready', model: 'gpt-4o-mini' });
+    expect(returned).toEqual(getModelStatus());
+  });
+
+  it('nothing configured + Ollama absent → returns no_model with ollamaInstalled:false', async () => {
+    state.activeRow = undefined;
+    fsState.installed = false;
+    stubFetch({ tagsOk: false });
+    const returned = await ensureModelReady(() => {});
+    expect(returned).toMatchObject({ phase: 'no_model', ollamaInstalled: false });
+  });
+
+  it('server up, nothing active → returns no_model with ollamaInstalled:true', async () => {
+    state.activeRow = undefined;
+    stubFetch({ tagsOk: true, tagsModels: ['nomic-embed-text'] });
+    const returned = await ensureModelReady(() => {});
+    expect(returned).toMatchObject({ phase: 'no_model', ollamaInstalled: true });
+  });
+
+  it('local model warms → returns ready for that model', async () => {
+    state.activeRow = LOCAL_ROW;
+    stubFetch({ tagsOk: true, tagsModels: ['nomic-embed-text'] });
+    const returned = await ensureModelReady(() => {});
+    expect(returned).toMatchObject({ phase: 'ready', model: 'llama3.2:3b' });
+  });
+
+  it('a later concurrent run cannot rewrite an earlier run’s returned object', async () => {
+    state.activeRow = CLOUD_ROW;
+    stubFetch({ tagsOk: false });
+    const first = await ensureModelReady(() => {});
+    state.activeRow = undefined;                 // simulate a different run
+    fsState.installed = false;
+    await ensureModelReady(() => {});             // overwrites the shared lastStatus
+    expect(first).toMatchObject({ phase: 'ready', model: 'gpt-4o-mini' }); // unchanged
+    expect(getModelStatus().phase).toBe('no_model');                        // shared moved on
+  });
+});
+
 describe('getSemanticStatus (honest degraded states, commit 10)', () => {
   it('Ollama down → unavailable with ollama_down', async () => {
     stubFetch({ tagsOk: false });

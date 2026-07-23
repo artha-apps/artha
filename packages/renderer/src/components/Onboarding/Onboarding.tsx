@@ -60,6 +60,11 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   // True only when Ollama isn't installed at all — the one case Artha can't fix
   // itself (we can't silently install a system dependency).
   const [notInstalled, setNotInstalled] = useState(false);
+  // Runtime present but failing (e.g. the port is occupied by a broken
+  // service): the status machine reports 'error'. Without this, onboarding
+  // rendered a perpetual "Starting your local model…" spinner for a runtime
+  // that had already given up — dishonest, and no actionable next step.
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   // Optional individual-tier license: paste here OR ignore to stay Free.
   const [indivLicense, setIndivLicense] = useState('');
@@ -77,9 +82,11 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         // 'no_model' with an ollamaInstalled flag — honor both shapes (B1).
         const st = await window.artha.llm.ensureModel();
         setNotInstalled(st.phase === 'not_installed' || st.ollamaInstalled === false);
+        setRuntimeError(st.phase === 'error' ? (st.detail ?? 'The local model runtime did not start.') : null);
         online = await window.artha.llm.checkOllama();
       } else {
         setNotInstalled(false);
+        setRuntimeError(null);
       }
       setOllamaOnline(online);
       if (online) {
@@ -336,6 +343,15 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                     className="inline-flex items-center gap-1.5 text-xs text-artha-accent hover:underline">
                     Download Ollama <ExternalLink size={11} />
                   </a>
+                </div>
+              ) : runtimeError ? (
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
+                  <p className="text-sm text-artha-text font-medium mb-1">Couldn’t start the local model runtime</p>
+                  <p className="text-xs text-artha-muted leading-relaxed mb-2">{runtimeError}</p>
+                  <p className="text-xs text-artha-muted leading-relaxed">
+                    Ollama is installed but isn’t responding — something else may be using its port, or it needs a restart.
+                    Recheck below, or use your own API key instead.
+                  </p>
                 </div>
               ) : (
                 <div className="bg-artha-surface border border-artha-border rounded-xl p-4 flex items-start gap-2.5">

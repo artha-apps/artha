@@ -147,9 +147,19 @@ async function warm(model: string, numCtx: number): Promise<boolean> {
 /**
  * Ensure the local model is ready, emitting status the renderer can surface.
  * Safe to call fire-and-forget on launch — it never blocks the window.
+ *
+ * RETURNS this run's own terminal status. Callers must use the return value
+ * rather than `getModelStatus()`: launch-time and user-triggered runs can
+ * overlap, and the module-level `lastStatus` reflects whichever run wrote
+ * last. Reading the shared value made onboarding show "Starting your local
+ * model…" for a runtime that had already failed (validation row 10).
  */
-export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<void> {
-  const set = (s: ModelStatus) => { lastStatus = s; try { emit(s); } catch { /* ignore */ } };
+export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<ModelStatus> {
+  const set = (s: ModelStatus): ModelStatus => {
+    lastStatus = s;
+    try { emit(s); } catch { /* ignore */ }
+    return s;
+  };
   const m = activeModel();
   set({ phase: 'checking', model: m?.name });
 
@@ -160,9 +170,9 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
   // embeddings (memory ranking / RAG) still work, so provision the embed
   // model; if Ollama is absent, do nothing and stay quiet.
   if (m && !m.ollamaManaged) {
-    set({ phase: 'ready', model: m.name });
+    const st = set({ phase: 'ready', model: m.name });
     if (await isUp()) void ensureEmbedModel();
-    return;
+    return st;
   }
 
   if (!(await isUp())) {
@@ -172,9 +182,9 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
     // OR their own API key), not be steered to Ollama by default. The
     // ollamaInstalled flag rides along so the local onboarding path can still
     // render its install card (B1).
-    if (!ollamaInstalled()) { set({ phase: m ? 'not_installed' : 'no_model', ollamaInstalled: false }); return; }
+    if (!ollamaInstalled()) return set({ phase: m ? 'not_installed' : 'no_model', ollamaInstalled: false });
     set({ phase: 'starting', model: m?.name });
-    if (!(await startServer())) { set({ phase: m ? 'not_installed' : 'no_model', ollamaInstalled: false }); return; }
+    if (!(await startServer())) return set({ phase: m ? 'not_installed' : 'no_model', ollamaInstalled: false });
     // Cold daemon start is usually a couple seconds; poll up to 20s.
     const deadline = Date.now() + 20_000;
     let up = false;
@@ -182,21 +192,22 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
       if (await isUp()) { up = true; break; }
       await sleep(600);
     }
-    if (!up) { set({ phase: 'error', detail: 'Ollama did not start in time.' }); return; }
+    if (!up) return set({ phase: 'error', detail: 'Ollama did not start in time.' });
   }
 
   // Server up but nothing active: report the truthful empty state (the old
   // 'ready' here let a fresh install look configured when it wasn't). The
   // server is left running for onboarding's model list/pull flows.
-  if (!m) { set({ phase: 'no_model', ollamaInstalled: true }); return; }
+  if (!m) return set({ phase: 'no_model', ollamaInstalled: true });
   set({ phase: 'warming', model: m.name });
   await warm(m.name, m.numCtx);
-  set({ phase: 'ready', model: m.name });
+  const ready = set({ phase: 'ready', model: m.name });
 
   // The window is usable now — provision the embedding model in the
   // background. Without it, semantic memory ranking and RAG indexing silently
   // degrade to keyword matching and nothing ever tells the user.
   void ensureEmbedModel();
+  return ready;
 }
 
 /** The embedding model every semantic feature depends on (memory ranking,
