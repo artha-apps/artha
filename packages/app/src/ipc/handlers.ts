@@ -2444,6 +2444,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   const GOOGLE_SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
+    // Send-only scope: lets Artha dispatch mail the user has approved. It does
+    // NOT grant read/modify beyond gmail.readonly above. Every send is still
+    // gated by the always-confirm policy floor.
+    'https://www.googleapis.com/auth/gmail.send',
     'https://www.googleapis.com/auth/calendar.readonly',
     'https://www.googleapis.com/auth/drive.readonly',
   ];

@@ -179,6 +179,8 @@ const MUTATION_TOOLS = new Set([
   // Deliverables — the flagship "Artha made me a document" claim
   'docs_generate',
   'email_compose',
+  // Consequential send — actually dispatches mail (email_compose only drafts)
+  'email_send',
   // Browser state changes (reads like browser_read_dom stay out)
   'browser_click',
   'browser_type',

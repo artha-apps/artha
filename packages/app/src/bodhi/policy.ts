@@ -64,6 +64,16 @@ export interface PolicyDecision {
 
 const TIER_RANK: Record<PolicyTier, number> = { auto: 0, dry_run: 1, confirm: 2, forbid: 3 };
 
+/**
+ * Built-in approval floor: tools that dispatch a real, hard-to-reverse external
+ * action may NEVER run below 'confirm', regardless of (or in the absence of)
+ * any user policy. A user can raise these to 'forbid', but can never lower them
+ * to 'auto' — so "actually send this email" always pauses for a human, and
+ * fails closed on unattended runs. This is enforced in code, not data, so an
+ * empty or misconfigured policy table can't silently un-gate a send.
+ */
+const ALWAYS_CONFIRM_FLOOR = new Set<string>(['email_send']);
+
 /** True when `pattern` matches `toolName`. Mirrors the Skills allowlist
  *  convention: "*" = all tools; a trailing "_" = name prefix; else exact. */
 export function policyMatches(pattern: string, toolName: string): boolean {
@@ -141,7 +151,11 @@ export function evaluatePolicy(
       .prepare(`SELECT * FROM tool_policies WHERE is_enabled = 1`)
       .all() as ToolPolicy[];
 
-    let best: PolicyDecision = { tier: 'auto', matchedPattern: null, note: '' };
+    // Built-in floor first — a consequential send can never be below 'confirm',
+    // even with no policy row present.
+    let best: PolicyDecision = ALWAYS_CONFIRM_FLOOR.has(toolName)
+      ? { tier: 'confirm', matchedPattern: 'built-in:always-confirm', note: 'Sending mail always needs your approval.' }
+      : { tier: 'auto', matchedPattern: null, note: '' };
     for (const p of policies) {
       if (!policyMatches(p.pattern, toolName)) continue;
       if (p.scope === 'outside_roots' && !appliesOutsideRoots(args, roots)) continue;
@@ -151,7 +165,10 @@ export function evaluatePolicy(
     }
     return best;
   } catch {
-    return { tier: 'auto', matchedPattern: null, note: '' };
+    // Even on a DB failure, the send floor must hold.
+    return ALWAYS_CONFIRM_FLOOR.has(toolName)
+      ? { tier: 'confirm', matchedPattern: 'built-in:always-confirm', note: 'Sending mail always needs your approval.' }
+      : { tier: 'auto', matchedPattern: null, note: '' };
   }
 }
 

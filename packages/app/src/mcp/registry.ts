@@ -16,6 +16,7 @@ import { RAG_TOOL_SCHEMAS, invokeRagTool, isRagTool } from '../tools/rag';
 import { KG_TOOL_SCHEMAS, invokeKgTool, isKgTool } from '../tools/kg';
 import { CRM_TOOL_SCHEMAS, invokeCrmTool, isCrmTool } from '../tools/crm';
 import { EMAIL_TOOL_SCHEMAS, invokeEmailTool, isEmailTool } from '../tools/email';
+import { EMAIL_SEND_TOOL_SCHEMAS, invokeGmailSendTool, isGmailSendTool } from '../tools/gmailSend';
 import type { ScopeRoot } from '../db/scopes';
 import { openCredentials, sealCredentials, type StoredCredentials } from '../security/secrets';
 import { parseEnvTokens } from './envTokens';
@@ -37,6 +38,10 @@ export interface ToolContext {
   /** The active session's project (NULL = global). Scopes CRM/KG writes so they
    *  belong to the same project bucket as memories. */
   projectId?: string | null;
+  /** Task/run identity for consequential-action write-ahead logging
+   *  (external_actions), so a send can be traced back to the run that made it. */
+  taskId?: string | null;
+  runId?: string | null;
 }
 
 /**
@@ -209,7 +214,7 @@ export class MCPRegistry {
   /** Get all tool schemas — built-in tools first, then any connected MCP servers. */
   getToolSchemas(): OpenAI.ChatCompletionTool[] {
     const mcpTools = Array.from(this.connections.values()).flatMap(c => c.tools);
-    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...EMAIL_TOOL_SCHEMAS, ...mcpTools];
+    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...EMAIL_TOOL_SCHEMAS, ...EMAIL_SEND_TOOL_SCHEMAS, ...mcpTools];
   }
 
   /** Invoke a named tool — built-in tools first, then MCP servers.
@@ -236,6 +241,9 @@ export class MCPRegistry {
     }
     if (isCrmTool(toolName)) {
       return invokeCrmTool(toolName, args, ctx?.projectId);
+    }
+    if (isGmailSendTool(toolName)) {
+      return invokeGmailSendTool(toolName, args, { taskId: ctx?.taskId, runId: ctx?.runId });
     }
     if (isEmailTool(toolName)) {
       return invokeEmailTool(toolName, args);
