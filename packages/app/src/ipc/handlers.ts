@@ -1973,8 +1973,12 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('rag:rebuildIndex', async (_e, id: string) => {
     const row = getDb().prepare(`SELECT directory_path FROM rag_indexes WHERE index_id=?`).get(id) as { directory_path: string } | undefined;
-    if (!row) return;
-    return ragIndexer.buildIndex(id, row.directory_path);
+    // Returned undefined for a missing index — a no-op the caller reported as
+    // "Knowledge index rebuilt" (audit H22). And buildIndex returning 0
+    // (embedder down, everything pending) is equally not a healthy rebuild.
+    if (!row) return { ok: false, error: 'That index no longer exists.', embedded: 0 };
+    const embedded = await ragIndexer.buildIndex(id, row.directory_path);
+    return { ok: true, embedded };
   });
 
   // ── Document Generation ─────────────────────────────────────────────────

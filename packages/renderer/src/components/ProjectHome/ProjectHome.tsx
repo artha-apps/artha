@@ -134,12 +134,19 @@ export default function ProjectHome() {
     if (!project.rag_index_id || rebuilding) return;
     setRebuilding(true);
     try {
-      await window.artha.rag.rebuildIndex(project.rag_index_id);
+      const res = await window.artha.rag.rebuildIndex(project.rag_index_id);
       const rows = await window.artha.rag.listIndexes();
       const row = (rows as Array<{ index_id: string; doc_count: number }>)
         .find(r => r.index_id === project.rag_index_id);
       setChunkCount(row?.doc_count ?? 0);
-      toast.success('Knowledge index rebuilt');
+      if (!res.ok) {
+        toast.error('Index rebuild failed', res.error);
+      } else if (res.embedded === 0) {
+        // Not a healthy rebuild — likely the embedder is unavailable.
+        toast.warning('Index rebuilt, but empty', 'No chunks were embedded — semantic search needs local embeddings running.');
+      } else {
+        toast.success('Knowledge index rebuilt', `${res.embedded} chunk${res.embedded === 1 ? '' : 's'} indexed`);
+      }
     } catch {
       toast.error('Index rebuild failed');
     } finally {

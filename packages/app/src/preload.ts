@@ -498,7 +498,7 @@ const api = {
     createIndex: (name: string, dirPath: string) =>
       ipcRenderer.invoke('rag:createIndex', name, dirPath),
     deleteIndex: (id: string) => ipcRenderer.invoke('rag:deleteIndex', id),
-    rebuildIndex: (id: string) => ipcRenderer.invoke('rag:rebuildIndex', id),
+    rebuildIndex: (id: string) => ipcRenderer.invoke('rag:rebuildIndex', id) as Promise<{ ok: boolean; embedded: number; error?: string }>,
     selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory') as Promise<string | null>,
   },
 
