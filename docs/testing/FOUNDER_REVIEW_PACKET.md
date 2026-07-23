@@ -60,7 +60,8 @@ Branch revert = clean (no destructive migrations). Data rollback: old builds rea
 3. `packages/app/src/ipc/handlers.ts` (llm:addCloudModel, probeTarget, listConfigured) — renderer boundary. Check: no api_key column ever selected for the renderer; probes with modelId ignore renderer URLs (H1 fix).
 4. `packages/app/src/db/schema.ts` migration tail — ordering, VACUUM condition, per-block try/catch.
 5. `packages/app/src/llm/ollamaRuntime.ts` — lifecycle gating (`ollamaManaged`), no_model/not_installed precedence, `ollamaInstalled` flag (B1).
-6. `packages/app/src/system/qaProfile.ts` + `main.ts` top — the ONLY code that can redirect userData; verify the guards match your approval.
+6. `packages/app/src/system/qaProfile.ts` + `main.ts` top — the ONLY code that can redirect userData; verify the guards match your approval (must sit above the instance lock and telemetry boot).
+6b. `packages/app/src/rag/vectorIntegrity.ts` + `indexer.ts` — the data-integrity invariant. Check: `embed()` throws rather than returning a vector; nothing writes a placeholder; retrieval scores only `isValidVector` chunks.
 7. `packages/renderer/.../Onboarding.tsx` (ByokSetup) — the new user-facing flow; check the session-only consent language.
 8. Skim: providerPresets/capabilities (data honesty), threat model §3/§9 (must match code).
 
