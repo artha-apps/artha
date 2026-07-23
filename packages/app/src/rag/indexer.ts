@@ -251,9 +251,16 @@ let defaultIndexer: RAGIndexer | null = null;
  *  layer and the docs_generate tool so they share one on-disk index set. */
 export function getDefaultRagIndexer(): RAGIndexer {
   if (!defaultIndexer) {
+    // Resolved on FIRST USE, never at import time — main.ts may have
+    // redirected userData (QA profile isolation) after this module loaded.
     defaultIndexer = new RAGIndexer(path.join(app.getPath('userData'), 'rag-indexes'));
   }
   return defaultIndexer;
+}
+
+/** Test-only: clear the memo so a suite can simulate fresh-process semantics. */
+export function __resetDefaultIndexerForTests(): void {
+  defaultIndexer = null;
 }
 
 /** Search RAG indexes and return the globally top-k chunks by similarity.
