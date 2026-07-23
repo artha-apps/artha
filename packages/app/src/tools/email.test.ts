@@ -66,6 +66,40 @@ describe('mailto construction', () => {
   });
 });
 
+describe('provider web-compose (matches "open my Gmail")', () => {
+  it('open_in: gmail opens Gmail web compose, pre-filled, and still does not send', async () => {
+    // The user's exact reported prompt.
+    const out = JSON.parse(await call({
+      to: 'jkscanada@gmail.com',
+      subject: 'Hey this is Artha! Checkin on you',
+      body: 'Hello! yes or No?',
+      open_in: 'gmail',
+    }));
+    const url = opened.urls[0];
+    expect(url.startsWith('https://mail.google.com/mail/?')).toBe(true);
+    expect(url).toContain('view=cm');
+    const u = new URL(url);
+    expect(u.searchParams.get('to')).toBe('jkscanada@gmail.com');
+    expect(u.searchParams.get('su')).toBe('Hey this is Artha! Checkin on you');
+    expect(u.searchParams.get('body')).toBe('Hello! yes or No?');
+    expect(out.sent).toBe(false);                       // still the user's click
+    expect(out.opened_in).toMatch(/gmail web compose/i);
+  });
+
+  it('open_in: outlook and yahoo target the right compose hosts', async () => {
+    await call({ to: 'a@b.com', subject: 's', body: 'b', open_in: 'outlook' });
+    expect(opened.urls[0]).toContain('outlook.live.com/mail/0/deeplink/compose');
+    opened.urls = [];
+    await call({ to: 'a@b.com', subject: 's', body: 'b', open_in: 'yahoo' });
+    expect(opened.urls[0]).toContain('compose.mail.yahoo.com');
+  });
+
+  it('an unknown open_in value falls back to the desktop mailto client', async () => {
+    await call({ to: 'a@b.com', subject: 's', body: 'b', open_in: 'protonmail' });
+    expect(opened.urls[0].startsWith('mailto:')).toBe(true);
+  });
+});
+
 describe('input validation happens before the OS is involved', () => {
   it('rejects a missing recipient', async () => {
     expect(await call({ to: '', subject: 's', body: 'b' })).toMatch(/^Error: "to" is required/);
@@ -89,7 +123,7 @@ describe('failure reporting', () => {
     opened.fail = true;
     const out = await call({ to: 'a@b.com', subject: 's', body: 'b' });
     expect(out).toMatch(/^Error:/);
-    expect(out).toMatch(/draft was not opened/i);
+    expect(out).toMatch(/was not opened/i);
   });
 
   it('warns instead of silently truncating a very long message', async () => {

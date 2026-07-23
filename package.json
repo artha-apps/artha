@@ -1,8 +1,8 @@
 {
   "name": "artha",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Artha \u2014 Local-first AI productivity agent. Document workflows, MCP tools, zero cloud.",
+  "description": "Artha — Local-first AI productivity agent. Document workflows, MCP tools, zero cloud.",
   "author": "Shree Labs Inc. <support@artha.space>",
   "license": "UNLICENSED",
   "main": "packages/app/dist/main.js",
@@ -70,7 +70,7 @@
   "build": {
     "appId": "ai.artha.app",
     "productName": "Artha",
-    "copyright": "Copyright \u00a9 2026 Shree Labs Inc. All rights reserved.",
+    "copyright": "Copyright © 2026 Shree Labs Inc. All rights reserved.",
     "npmRebuild": false,
     "directories": {
       "output": "dist"

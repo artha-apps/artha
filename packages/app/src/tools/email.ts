@@ -29,11 +29,16 @@ export const EMAIL_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'email_compose',
       description:
-        "Prepare an email and open it in the user's default mail client with recipient, " +
-        'subject and body pre-filled, ready for them to review and send. ' +
-        'IMPORTANT: this does NOT send the email — the user sends it themselves. ' +
-        'Artha cannot send email in the background. Never tell the user their email ' +
-        'has been sent; say the draft is open for their review.',
+        'Compose an email and open it pre-filled for the user to review and send. ' +
+        'USE THIS TOOL for ANY request to send, write, draft or compose an email — ' +
+        "including phrasings like \"open my Gmail and send…\" or \"email X\". Prefer it " +
+        'over browser automation: do NOT navigate to gmail.com and click around, that ' +
+        'hits the login wall. If the user names their provider (Gmail, Outlook, Yahoo), ' +
+        "pass `open_in` so it opens THAT provider's web compose; otherwise it opens the " +
+        "user's default mail client. " +
+        'IMPORTANT: this does NOT send the email — it opens it ready to send and the user ' +
+        'presses send. Artha cannot send email in the background. Never tell the user their ' +
+        'email has been sent; say the message is open, pre-filled, for them to review and send.',
       parameters: {
         type: 'object',
         properties: {
@@ -42,6 +47,14 @@ export const EMAIL_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
           body: { type: 'string', description: 'Plain-text body of the message.' },
           cc: { type: 'string', description: 'Optional CC addresses, comma-separated.' },
           bcc: { type: 'string', description: 'Optional BCC addresses, comma-separated.' },
+          open_in: {
+            type: 'string',
+            enum: ['default', 'gmail', 'outlook', 'yahoo'],
+            description:
+              "Where to open the pre-filled message. 'gmail'/'outlook'/'yahoo' open that " +
+              "provider's web compose in the browser (best when the user says 'open my Gmail'); " +
+              "'default' (the fallback) opens the user's default desktop mail client.",
+          },
         },
         required: ['to', 'subject', 'body'],
       },
@@ -60,11 +73,13 @@ function looksLikeAddress(a: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a.trim());
 }
 
+export type OpenIn = 'default' | 'gmail' | 'outlook' | 'yahoo';
+
+interface Draft { to: string; subject: string; body: string; cc?: string; bcc?: string; }
+
 /** mailto: is a URL — every field must be encoded or a body containing an
  *  ampersand silently truncates the message. */
-function buildMailto(a: {
-  to: string; subject: string; body: string; cc?: string; bcc?: string;
-}): string {
+function buildMailto(a: Draft): string {
   const params = new URLSearchParams();
   params.set('subject', a.subject);
   params.set('body', a.body);
@@ -73,6 +88,36 @@ function buildMailto(a: {
   // encodeURIComponent (not URLSearchParams' + form encoding) for the address,
   // and swap +→%20 so spaces in the body survive as spaces, not plus signs.
   return `mailto:${encodeURIComponent(a.to.trim())}?${params.toString().replace(/\+/g, '%20')}`;
+}
+
+/** Web-compose URLs open the provider's compose window in the browser with the
+ *  message pre-filled — matching a user request to "open my Gmail". These never
+ *  send; the compose window still requires the user to press send. Each provider
+ *  uses different field names; unknown fields are simply ignored by the provider. */
+function buildWebCompose(kind: Exclude<OpenIn, 'default'>, a: Draft): string {
+  const enc = (s: string) => encodeURIComponent(s);
+  const to = a.to.trim();
+  switch (kind) {
+    case 'gmail': {
+      // Gmail full-screen compose. `su`=subject, `body`, `cc`, `bcc`.
+      const p = [`view=cm`, `fs=1`, `to=${enc(to)}`, `su=${enc(a.subject)}`, `body=${enc(a.body)}`];
+      if (a.cc?.trim()) p.push(`cc=${enc(a.cc.trim())}`);
+      if (a.bcc?.trim()) p.push(`bcc=${enc(a.bcc.trim())}`);
+      return `https://mail.google.com/mail/?${p.join('&')}`;
+    }
+    case 'outlook': {
+      const p = [`to=${enc(to)}`, `subject=${enc(a.subject)}`, `body=${enc(a.body)}`];
+      if (a.cc?.trim()) p.push(`cc=${enc(a.cc.trim())}`);
+      if (a.bcc?.trim()) p.push(`bcc=${enc(a.bcc.trim())}`);
+      return `https://outlook.live.com/mail/0/deeplink/compose?${p.join('&')}`;
+    }
+    case 'yahoo': {
+      const p = [`to=${enc(to)}`, `subject=${enc(a.subject)}`, `body=${enc(a.body)}`];
+      if (a.cc?.trim()) p.push(`cc=${enc(a.cc.trim())}`);
+      if (a.bcc?.trim()) p.push(`bcc=${enc(a.bcc.trim())}`);
+      return `https://compose.mail.yahoo.com/?${p.join('&')}`;
+    }
+  }
 }
 
 export async function invokeEmailTool(
@@ -86,6 +131,10 @@ export async function invokeEmailTool(
   const body = typeof args.body === 'string' ? args.body : '';
   const cc = typeof args.cc === 'string' ? args.cc : undefined;
   const bcc = typeof args.bcc === 'string' ? args.bcc : undefined;
+  const openIn: OpenIn =
+    args.open_in === 'gmail' || args.open_in === 'outlook' || args.open_in === 'yahoo'
+      ? args.open_in
+      : 'default';
 
   if (!to) return 'Error: "to" is required — no recipient was provided.';
   const invalid = to.split(',').map(s => s.trim()).filter(a => a && !looksLikeAddress(a));
@@ -96,15 +145,21 @@ export async function invokeEmailTool(
     return 'Error: the email has no subject and no body — nothing to compose.';
   }
 
-  const url = buildMailto({ to, subject, body, cc, bcc });
-  // Some mail clients refuse very long mailto URLs; warn rather than silently
-  // truncating the user's message.
-  const oversized = url.length > 2000;
+  const draft = { to, subject, body, cc, bcc };
+  const url = openIn === 'default' ? buildMailto(draft) : buildWebCompose(openIn, draft);
+  // mailto: URLs can be refused by some desktop clients when very long; web
+  // compose URLs tolerate far more. Only warn for the desktop path.
+  const oversized = openIn === 'default' && url.length > 2000;
+  const where =
+    openIn === 'default' ? 'your default mail client'
+    : openIn === 'gmail' ? 'Gmail web compose'
+    : openIn === 'outlook' ? 'Outlook web compose'
+    : 'Yahoo web compose';
 
   try {
     await shell.openExternal(url);
   } catch (err) {
-    return `Error: could not open your mail client — ${err instanceof Error ? err.message : String(err)}. The draft was not opened.`;
+    return `Error: could not open ${where} — ${err instanceof Error ? err.message : String(err)}. The message was not opened.`;
   }
 
   return JSON.stringify({
@@ -112,10 +167,10 @@ export async function invokeEmailTool(
     sent: false,
     to,
     subject,
-    opened_in: 'default mail client',
-    user_action_required: 'The draft is open in your mail client. Review it and press send — Artha cannot send it for you.',
+    opened_in: where,
+    user_action_required: `The email is open and pre-filled in ${where}. Review it and press Send — Artha cannot send it for you.`,
     ...(oversized
-      ? { warning: 'The message is long; some mail clients truncate large drafts. Check the body before sending.' }
+      ? { warning: 'The message is long; some desktop mail clients truncate large drafts. Check the body before sending.' }
       : {}),
   });
 }
