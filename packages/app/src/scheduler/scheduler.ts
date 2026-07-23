@@ -16,6 +16,7 @@
 import * as schedule from 'node-schedule';
 import { app } from 'electron';
 import { getDb } from '../db/schema';
+import { userFacingOutcome, legacyStatusToOutcome, type RunOutcome } from '../bodhi/taskModel';
 import { sendNotification } from '../notify';
 import { startCheckIn, finishCheckIn, addBreadcrumb, captureException } from '../sentry';
 
@@ -60,7 +61,10 @@ export class SchedulerService {
   /** The daily 03:00 health-check job (distinct from user tasks). */
   private healthJob: schedule.Job | null = null;
   /** Injected by init() — avoids circular import with the orchestrator. */
-  private runTask: ((prompt: string) => Promise<void>) | null = null;
+  private runTask: ((prompt: string) => Promise<{ sessionId: string } | void>) | null = null;
+  /** Task ids with a run in flight — prevents a slow hourly job from
+   *  overlapping itself and racing its own last_status writes. */
+  private inFlight = new Set<string>();
 
   static getInstance(): SchedulerService {
     if (!SchedulerService.instance) SchedulerService.instance = new SchedulerService();
@@ -75,7 +79,7 @@ export class SchedulerService {
    *                (typically `orchestrator.handleMessage(sessionId, prompt)`
    *                wrapped to create a fresh session).
    */
-  async init(runner: (prompt: string) => Promise<void>): Promise<void> {
+  async init(runner: (prompt: string) => Promise<{ sessionId: string } | void>): Promise<void> {
     this.runTask = runner;
     const db = getDb();
     const tasks = db
@@ -272,22 +276,116 @@ export class SchedulerService {
   // ── Private ──────────────────────────────────────────────────────────────
 
   /** Wrap the runner with DB bookkeeping (last_run_at, last_status, run_count). */
+  /**
+   * Read what ACTUALLY happened in the run this fire started, and project it
+   * through the shared outcome function so the scheduler notification uses the
+   * same wording rules as every other surface (no surface may manufacture the
+   * word "complete" on its own).
+   */
+  private readRunOutcome(
+    db: ReturnType<typeof getDb>,
+    sessionId: string | undefined,
+  ): { lastStatus: string; runId: string | null; taskStatus: string; detail: string; title: string } {
+    // No session means handleMessage returned before creating a run at all —
+    // the approval dead-end (audit S1). That is emphatically not a completion.
+    if (!sessionId) {
+      return {
+        lastStatus: 'blocked', runId: null, taskStatus: 'awaiting_approval',
+        detail: 'requires your approval before it can continue. No consequential action was performed.',
+        title: 'Artha — scheduled task needs approval',
+      };
+    }
+    const row = db.prepare(
+      `SELECT run_id, status, run_outcome, tool_calls_total, tool_calls_failed,
+              tool_calls_blocked, error_detail
+         FROM agent_runs WHERE session_id=? ORDER BY created_at DESC LIMIT 1`
+    ).get(sessionId) as {
+      run_id: string; status: string; run_outcome: string | null;
+      tool_calls_total: number | null; tool_calls_failed: number | null;
+      tool_calls_blocked: number | null; error_detail: string | null;
+    } | undefined;
+
+    if (!row) {
+      return {
+        lastStatus: 'blocked', runId: null, taskStatus: 'awaiting_approval',
+        detail: 'did not execute — it is waiting for approval or was stopped before starting.',
+        title: 'Artha — scheduled task did not run',
+      };
+    }
+
+    const outcome = userFacingOutcome({
+      run: {
+        outcome: (row.run_outcome as RunOutcome) ?? legacyStatusToOutcome(row.status),
+        toolCallsTotal: row.tool_calls_total ?? 0,
+        toolCallsFailed: row.tool_calls_failed ?? 0,
+        toolCallsBlocked: row.tool_calls_blocked ?? 0,
+        mutationsTotal: 0,
+        mutationsFailed: 0,
+        errorDetail: row.error_detail,
+      },
+      criteria: [],
+      acceptanceMode: 'system_verified',
+      externalActionStates: [],
+      evidenceCount: (row.tool_calls_total ?? 0) - (row.tool_calls_failed ?? 0),
+      legacy: row.run_outcome == null,
+    });
+
+    const lastStatus =
+      outcome.taskStatus === 'completed' ? 'ok'
+      : outcome.taskStatus === 'failed' ? 'error'
+      : outcome.taskStatus === 'cancelled' ? 'cancelled'
+      : outcome.taskStatus === 'awaiting_approval' ? 'blocked'
+      : 'unverified';
+
+    const title =
+      lastStatus === 'error' ? 'Artha — scheduled task failed'
+      : lastStatus === 'ok' ? 'Artha — scheduled task done'
+      : 'Artha — scheduled task ran, not verified';
+
+    return { lastStatus, runId: row.run_id, taskStatus: outcome.taskStatus, detail: outcome.message, title };
+  }
+
   private makeRunner(taskId: string, prompt: string): () => void {
     return async () => {
       const db = getDb();
+
+      // Overlap guard: without this, an hourly job whose run exceeds an hour
+      // starts a second concurrent run, double-counts run_count, and the two
+      // last_status writes race — one run's 'error' silently overwritten by
+      // the other's 'ok' (audit §5.4).
+      if (this.inFlight.has(taskId)) {
+        console.warn(`[Artha] Scheduled task ${taskId} skipped: previous run still in flight.`);
+        return;
+      }
+      this.inFlight.add(taskId);
+
       const now = Math.floor(Date.now() / 1000);
       db.prepare(`UPDATE scheduled_tasks SET last_run_at=?, last_status='running', run_count=run_count+1 WHERE task_id=?`)
         .run(now, taskId);
 
       try {
         const taskRow = db.prepare(`SELECT name FROM scheduled_tasks WHERE task_id=?`).get(taskId) as { name: string } | undefined;
-        await this.runTask!(prompt);
-        db.prepare(`UPDATE scheduled_tasks SET last_status='ok' WHERE task_id=?`).run(taskId);
-        sendNotification('Artha — scheduled task complete', taskRow?.name ?? prompt.slice(0, 60));
+        const label = taskRow?.name ?? prompt.slice(0, 60);
+        const handle = await this.runTask!(prompt);
+
+        // The executor returning proves NOTHING — every orchestrator failure
+        // path breaks rather than throws, so 'the promise resolved' was
+        // reported as success for stalls, cancellations, LLM errors,
+        // all-tools-failed runs, and plans that never executed at all
+        // (audit C2/S1-S3). Read the real outcome instead.
+        const outcome = this.readRunOutcome(db, (handle as { sessionId?: string } | void)?.sessionId);
+        db.prepare(`UPDATE scheduled_tasks SET last_status=?, last_run_id=?, last_outcome=?, last_detail=? WHERE task_id=?`)
+          .run(outcome.lastStatus, outcome.runId, outcome.taskStatus, outcome.detail, taskId);
+        sendNotification(outcome.title, `${label} — ${outcome.detail}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Artha] Scheduled task ${taskId} failed:`, msg);
-        db.prepare(`UPDATE scheduled_tasks SET last_status='error' WHERE task_id=?`).run(taskId);
+        db.prepare(`UPDATE scheduled_tasks SET last_status='error', last_outcome='failed', last_detail=? WHERE task_id=?`)
+          .run(msg.slice(0, 300), taskId);
+        const nameRow = db.prepare(`SELECT name FROM scheduled_tasks WHERE task_id=?`).get(taskId) as { name?: string } | undefined;
+        sendNotification('Artha — scheduled task failed', `${nameRow?.name ?? prompt.slice(0, 60)} — ${msg.slice(0, 120)}`);
+      } finally {
+        this.inFlight.delete(taskId);
       }
 
       // One-shot tasks: disable after firing so they don't re-trigger.

@@ -26,6 +26,8 @@ import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
 import { getRunContext } from './runContext';
+import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
+import { classifyToolResult, isFailure, countsAsCompletedMutation } from './toolOutcome';
 import OpenAI from 'openai';
 import {
   startCitationCollection,
@@ -155,15 +157,37 @@ interface TrackedMutation {
   success: boolean;
 }
 
-/** Tools that change filesystem state — only these are tracked for verification. */
+/**
+ * Tools whose calls change state and must therefore be VERIFIED before the
+ * run may describe them as done.
+ *
+ * This set previously covered filesystem tools only — and two of its entries
+ * (`fs_write_file`, `fs_rename_file`) do not exist. That left the features
+ * users actually run outside verification entirely: "I created your Q3
+ * report", "I submitted the form" and "I clicked through and booked it" were
+ * unverified model prose, while desktop control — the highest-blast-radius
+ * capability in the product — produced no mutation evidence at all
+ * (shipped-surface audit C5/H29).
+ */
 const MUTATION_TOOLS = new Set([
+  // Filesystem (only these exist — see tools/filesystem.ts)
   'fs_move_file',
   'fs_move_batch',
   'fs_copy_file',
   'fs_delete_file',
   'fs_create_directory',
-  'fs_write_file',
-  'fs_rename_file',
+  // Deliverables — the flagship "Artha made me a document" claim
+  'docs_generate',
+  'email_compose',
+  // Browser state changes (reads like browser_read_dom stay out)
+  'browser_click',
+  'browser_type',
+  'browser_navigate',
+  // Desktop control — drives the real cursor and keyboard
+  'desktop_click',
+  'desktop_type',
+  'desktop_key',
+  'desktop_move_mouse',
 ]);
 
 // ── Orchestrator ─────────────────────────────────────────────────────────────
@@ -1262,6 +1286,13 @@ RULES — follow exactly, no exceptions:
     // annotated deterministically — the model cannot talk its way past it.
     let toolCallsTotal = 0;
     let toolCallErrors = 0;
+    // Blocked calls are NOT failures of the tool — they are policy refusals
+    // (unattended runs auto-block confirm-tier tools). Counted separately so a
+    // scheduled run that was blocked can say so instead of reporting success.
+    let toolCallsBlocked = 0;
+    /** Which terminal path the loop actually took — drives the end-of-run
+     *  notification so it can never claim completion for a stopped run. */
+    let terminalOutcome: 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'interrupted' = 'interrupted';
     const reasoningSteps: ReasoningStep[] = [];
     // Resolved once for the whole loop: showReasoningEnabled() hits SQLite, so it
     // must not be called per token inside the throttled onReasoning callback.
@@ -1375,6 +1406,13 @@ RULES — follow exactly, no exceptions:
         emit('agent:token', '_Task stopped by user._');
         recordStep(stepIdx++, 'final', { reason: 'cancelled' });
         db.prepare(`UPDATE agent_runs SET status='cancelled' WHERE run_id=?`).run(args.runId);
+        terminalOutcome = 'cancelled';
+        persistRunFacts(db, args.runId, {
+          outcome: 'cancelled', toolCallsTotal, toolCallsFailed: toolCallErrors,
+          toolCallsBlocked, mutationsTotal: mutations.length,
+          mutationsFailed: mutations.filter(m => !m.success).length,
+          errorDetail: 'cancelled_by_user',
+        });
         break;
       }
 
@@ -1421,6 +1459,13 @@ RULES — follow exactly, no exceptions:
         emit('agent:token', `\n\n⚠️ Error: ${m}`);
         recordStep(stepIdx++, 'final', { error: m });
         db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+        terminalOutcome = 'failed';
+        persistRunFacts(db, args.runId, {
+          outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
+          toolCallsBlocked, mutationsTotal: mutations.length,
+          mutationsFailed: mutations.filter(m => !m.success).length,
+          errorDetail: m.slice(0, 200),
+        });
         break;
       }
 
@@ -1559,18 +1604,32 @@ RULES — follow exactly, no exceptions:
           }
           }
 
-          toolCallsTotal++;
-          if (toolStatus !== 'ok' || toolResult.startsWith('Error:')) toolCallErrors++;
+          // Classify what the call ACTUALLY did by inspecting the result,
+          // rather than trusting the `Error:` prose convention. This is
+          // upstream of receipts, tallies, run facts, the verified summary
+          // and skill success rates, so it is the one place worth getting
+          // right (shipped-surface audit, top-5 item 1).
+          const outcome = classifyToolResult(toolCall.function.name, toolResult, {
+            thrown: toolStatus === 'error',
+            blocked: receiptStatus === 'blocked',
+          });
+          // A partial batch is neither a clean success nor a clean failure;
+          // reflect it in the status the UI and evidence chain both read.
+          if (outcome.status !== 'succeeded') toolStatus = 'error';
 
-          // Anti-hallucination: only count a mutation as having happened when it
-          // actually executed AND succeeded — a blocked or dry-run call must
-          // never be reported as done.
+          toolCallsTotal++;
+          if (isFailure(outcome)) toolCallErrors++;
+          if (receiptStatus === 'blocked') toolCallsBlocked++;
+
+          // Anti-hallucination: only count a mutation as having happened when
+          // it FULLY succeeded — blocked, dry-run and partial batches (e.g.
+          // 1 of 50 files moved) must never be reported as done.
           if (MUTATION_TOOLS.has(toolCall.function.name)) {
             mutations.push({
               tool: toolCall.function.name,
               args: parsedArgs,
               result: toolResult,
-              success: receiptStatus === 'ok' && toolStatus === 'ok' && !toolResult.startsWith('Error:'),
+              success: receiptStatus === 'ok' && countsAsCompletedMutation(outcome),
             });
           }
 
@@ -1622,6 +1681,11 @@ RULES — follow exactly, no exceptions:
             type: 'tool_result',
             name: toolCall.function.name,
             result: toolResult,
+            // The status was computed three lines above and persisted to
+            // agent_steps, but dropped here — so the live ExecutionLog
+            // rendered EVERY result, including errors, with a green check
+            // (audit C6). It travels now.
+            status: toolStatus,
           });
         }
         emptyCount = 0;
@@ -1719,8 +1783,26 @@ RULES — follow exactly, no exceptions:
         }
 
         recordStep(stepIdx++, 'final', { content: finalText });
+        // `status='completed'` means ONLY that the executor finished. Whether
+        // the user's objective was achieved is decided later, from the facts
+        // persisted below (bodhi/taskModel.deriveTaskStatus) — never here.
         db.prepare(`UPDATE agent_runs SET status='completed' WHERE run_id=?`).run(args.runId);
         db.prepare(`UPDATE agent_states SET status='completed' WHERE workflow_id=?`).run(args.workflowId);
+        terminalOutcome = 'succeeded';
+        persistRunFacts(db, args.runId, {
+            outcome: 'succeeded', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: null,
+          });
+        // Evidence: one sanitized record per mutation actually attempted.
+        for (const m of mutations) {
+          recordEvidence(db, {
+            runId: args.runId, kind: 'tool_result', ref: m.tool,
+            status: m.success ? 'succeeded' : 'failed',
+            summary: `${m.tool} ${m.success ? 'succeeded' : 'failed'}`,
+          });
+        }
         finalEmitted = true;
         break;
 
@@ -1729,6 +1811,13 @@ RULES — follow exactly, no exceptions:
         if (emptyCount >= 3) {
           recordStep(stepIdx++, 'final', { reason: 'stall' });
           db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+          terminalOutcome = 'failed';
+          persistRunFacts(db, args.runId, {
+            outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: 'stall',
+          });
           break;
         }
       }
@@ -1737,6 +1826,15 @@ RULES — follow exactly, no exceptions:
     if (!finalEmitted && iterations >= 60) {
       recordStep(stepIdx++, 'final', { reason: 'max_iterations' });
       db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+      // Hitting the iteration cap is PARTIAL work, not a clean failure — the
+      // outcome distinction is what lets the projection say so honestly.
+      terminalOutcome = 'timed_out';
+      persistRunFacts(db, args.runId, {
+            outcome: 'timed_out', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: 'max_iterations',
+          });
     }
 
     // Restore the parent loop's citation token (null at the top level). A bare
@@ -1744,12 +1842,20 @@ RULES — follow exactly, no exceptions:
     // citation collection after it delegated to a sub-capability.
     setActiveCitationToken(prevCitationToken);
 
-    // Fire a native notification when a long-running task finishes (> 10 s)
-    // so the user knows the agent is done even if they switched apps.
+    // Notify when a long run ends (> 10 s) — but say what ACTUALLY happened.
+    // This sat outside every status branch, so a user who pressed Stop, or
+    // whose run stalled or errored, still got "task complete" (audit C3).
     if (args.startMs && Date.now() - args.startMs > 10_000) {
       const g = args.goal;
       const goalSnippet = g.length > 60 ? g.slice(0, 57) + '…' : g;
-      sendNotification('Artha — task complete', goalSnippet);
+      const title =
+        terminalOutcome === 'succeeded'   ? 'Artha — run finished'
+        : terminalOutcome === 'cancelled' ? 'Artha — task stopped'
+        : terminalOutcome === 'timed_out' ? 'Artha — task hit its limit'
+        : terminalOutcome === 'failed'    ? 'Artha — task failed'
+        :                                   'Artha — run ended';
+      // "finished" ≠ "your objective is done": verification happens elsewhere.
+      sendNotification(title, goalSnippet);
     }
 
     emit('agent:streamEnd');

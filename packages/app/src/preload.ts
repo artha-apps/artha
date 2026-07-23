@@ -213,6 +213,23 @@ const api = {
       sessionId: string;
       capability: string;
     }>,
+    /** Stop a running task. Delegate previously had no cancel path at all. */
+    cancel: (runId: string) => ipcRenderer.invoke('delegate:cancel', runId) as Promise<{
+      ok: boolean; alreadyFinished?: boolean; error?: string;
+    }>,
+    /** Continue an existing task in ITS OWN session, preserving context. */
+    continue: (sessionId: string, message: string) =>
+      ipcRenderer.invoke('delegate:continue', sessionId, message) as Promise<{
+        ok: boolean; runId?: string; sessionId?: string; error?: string;
+      }>,
+    /** The task's conversation so far (user + agent messages, one thread). */
+    thread: (sessionId: string) => ipcRenderer.invoke('delegate:thread', sessionId) as Promise<
+      { sender_type: string; content: string; created_at: number }[]
+    >,
+    /** All Delegate tasks, newest first — more than one can now exist. */
+    list: () => ipcRenderer.invoke('delegate:list') as Promise<
+      { session_id: string; title: string; created_at: number; last_run_id: string | null; last_status: string | null }[]
+    >,
     /** Poll a running Task; terminal responses carry the output + artifacts. */
     status: (runId: string, sessionId: string) =>
       ipcRenderer.invoke('delegate:status', runId, sessionId) as Promise<{
@@ -447,7 +464,9 @@ const api = {
       ipcRenderer.invoke('mcp:getAuditLog', limit),
     // Install URIs of every installed MCP server — lets the Marketplace restore
     // the "Installed" badge from the DB instead of in-memory state.
-    listInstalledIds: () => ipcRenderer.invoke('mcp:listInstalledIds') as Promise<string[]>,
+    listInstalledIds: () => ipcRenderer.invoke('mcp:listInstalledIds') as Promise<
+      { uri: string; connected: boolean; status: string; error: string | null }[]
+    >,
     // Install URIs of servers that have stored credentials (no secrets returned).
     listConfiguredUris: () => ipcRenderer.invoke('mcp:listConfiguredUris') as Promise<string[]>,
   },

@@ -227,10 +227,23 @@ export async function invokeBrowserTool(name: string, args: Record<string, unkno
       return JSON.stringify({ clicked: args.selector, url, title });
     }
     case 'browser_type': {
-      await typeInto(wc, String(args.selector ?? ''), String(args.text ?? ''), {
+      const report = await typeInto(wc, String(args.selector ?? ''), String(args.text ?? ''), {
         submit: Boolean(args.submit),
       });
-      return JSON.stringify({ typed_into: args.selector, submitted: Boolean(args.submit) });
+      // `submitted` used to echo the REQUEST (`args.submit`), so the agent
+      // would tell the user "I submitted your application" for a submit that
+      // was validation-blocked, disabled, or intercepted. Report the observed
+      // outcome, and make an unconfirmed submit an explicit failure so the
+      // model cannot treat it as done.
+      const wantedSubmit = Boolean(args.submit);
+      if (wantedSubmit && report && !report.formSubmitted) {
+        return `Error: typed into ${String(args.selector ?? '')} but the form was NOT submitted (${report.reason ?? 'unconfirmed'}). Verify the page state before claiming the submission happened.`;
+      }
+      return JSON.stringify({
+        typed_into: args.selector,
+        submitted: wantedSubmit ? Boolean(report?.formSubmitted) : false,
+        submit_detail: report?.reason,
+      });
     }
     case 'browser_wait_for': {
       await waitForSelector(wc, String(args.selector ?? ''), typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined);
@@ -252,13 +265,21 @@ export async function invokeBrowserTool(name: string, args: Record<string, unkno
     }
     case 'browser_get_url':
       return JSON.stringify(getUrl(wc));
-    case 'browser_back':
-      return JSON.stringify({ went_back: back(wc) });
-    case 'browser_forward':
-      return JSON.stringify({ went_forward: forward(wc) });
-    case 'browser_reload':
-      reload(wc);
-      return JSON.stringify({ reloaded: true });
+    case 'browser_back': {
+      const wentBack = await back(wc);
+      const after = getUrl(wc);
+      return JSON.stringify({ went_back: wentBack, url: after.url, title: after.title });
+    }
+    case 'browser_forward': {
+      const wentFwd = await forward(wc);
+      const after = getUrl(wc);
+      return JSON.stringify({ went_forward: wentFwd, url: after.url, title: after.title });
+    }
+    case 'browser_reload': {
+      await reload(wc);
+      const after = getUrl(wc);
+      return JSON.stringify({ reloaded: true, url: after.url, title: after.title });
+    }
     case 'browser_request_user': {
       const reason = String(args.reason ?? 'manual step required');
       emitter.emit?.('browser:autoOpen', null);

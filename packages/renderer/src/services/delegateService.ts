@@ -93,6 +93,8 @@ export interface ExecuteHooks {
   onStage: (status: DelegateStatus) => void;
   /** Update a single plan step's status as it runs. */
   onStep: (index: number, status: DelegatePlanStep['status']) => void;
+  /** Task identity, as soon as the backend assigns it. */
+  onIds?: (ids: { runId: string; sessionId: string }) => void;
 }
 
 /** The pluggable engine. MVP = mock; later = real orchestrator/workflow/model. */
@@ -309,11 +311,15 @@ export const ipcDelegateEngine: DelegateEngine = {
   async execute(plan, hooks) {
     hooks.onStage('executing');
     const { runId, sessionId, capability } = await window.artha.delegate.start(plan.goal);
+    // Surface the task identity to the store. These were previously local
+    // variables that died with the function, which is why the UI could not
+    // stop a run, continue a task, or link to its evidence.
+    hooks.onIds?.({ runId, sessionId });
     // eslint-disable-next-line no-console
     console.info(`[Delegate] started run ${runId} (capability: ${capability}) — polling…`);
 
     const steps = plan.steps;
-    let cursor = 0;
+    const cursor = 0;
     if (steps[cursor]) hooks.onStep(steps[cursor].index, 'running');
 
     const startedAt = Date.now();
@@ -333,12 +339,17 @@ export const ipcDelegateEngine: DelegateEngine = {
       console.info(`[Delegate] run ${runId}: ${st.status} (${st.stepCount} steps)`);
 
       if (st.status === 'completed') {
-        for (let i = cursor; i < steps.length; i++) hooks.onStep(steps[i].index, 'done');
+        // Previously every plan step was force-stamped 'done' here purely
+      // because the RUN reached a terminal state — asserting step-level
+      // success for steps that were never sent to the backend (audit U1).
         hooks.onStage('reviewing');
         await wait(400);
         hooks.onStage('completed');
         return {
-          summary: st.output?.trim() || 'Task completed.',
+          // Never invent a completion sentence. If the agent produced no
+        // output, say so — the renderer must not author the claim (audit U3).
+        summary: st.output?.trim()
+          || 'The run finished but produced no output, so completion could not be verified.',
           files: st.files ?? [],
           nextActions: [
             'Review the output',
@@ -353,13 +364,10 @@ export const ipcDelegateEngine: DelegateEngine = {
         throw new Error('Task failed during execution.');
       }
 
-      // Still running — advance one step (but hold the last until it truly ends)
-      // so the timeline shows motion without claiming completion.
-      if (cursor < steps.length - 1) {
-        hooks.onStep(steps[cursor].index, 'done');
-        cursor++;
-        hooks.onStep(steps[cursor].index, 'running');
-      }
+      // NOTE: we deliberately do NOT advance steps on a timer any more.
+      // A green check per 1.2s of wall clock asserted per-step success the UI
+      // had no evidence for (audit U2). Real per-step state needs the backend
+      // step trace; until that is wired, the plan shows as illustrative.
 
       if (Date.now() - startedAt > MAX_POLL_MS) throw new Error('Delegate task timed out.');
     }

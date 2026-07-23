@@ -15,6 +15,7 @@ import { DOCS_TOOL_SCHEMAS, invokeDocsTool, isDocsTool } from '../tools/docs';
 import { RAG_TOOL_SCHEMAS, invokeRagTool, isRagTool } from '../tools/rag';
 import { KG_TOOL_SCHEMAS, invokeKgTool, isKgTool } from '../tools/kg';
 import { CRM_TOOL_SCHEMAS, invokeCrmTool, isCrmTool } from '../tools/crm';
+import { EMAIL_TOOL_SCHEMAS, invokeEmailTool, isEmailTool } from '../tools/email';
 import type { ScopeRoot } from '../db/scopes';
 import { openCredentials, sealCredentials, type StoredCredentials } from '../security/secrets';
 import { parseEnvTokens } from './envTokens';
@@ -164,6 +165,24 @@ export class MCPRegistry {
       this.connections.set(id, { id, name, client, tools: openaiTools });
       this.recordStatus(id, 'connected', null);
       console.log(`[MCP] Connected: ${name} (${tools.length} tools)`);
+
+      // A crashed stdio child used to leave the connection in the map, its
+      // tools in the schema list, and a green "Connected" badge in the UI
+      // forever — there was no close/error handler anywhere (audit H8). Drop
+      // the connection and record the failure so the panel can offer Retry.
+      const onGone = (reason: string) => {
+        if (!this.connections.has(id)) return;   // already torn down
+        this.connections.delete(id);
+        this.recordStatus(id, 'error', reason);
+        console.warn(`[MCP] Disconnected: ${name} — ${reason}`);
+      };
+      const transportAny = transport as unknown as {
+        onclose?: () => void;
+        onerror?: (e: unknown) => void;
+      };
+      transportAny.onclose = () => onGone('The server process exited.');
+      transportAny.onerror = (e: unknown) =>
+        onGone(e instanceof Error ? e.message : 'The server connection failed.');
     } catch (err) {
       // Persist the failure so the UI can show "not connected" + Retry rather
       // than implying the row is live. The row (and its encrypted credentials)
@@ -190,7 +209,7 @@ export class MCPRegistry {
   /** Get all tool schemas — built-in tools first, then any connected MCP servers. */
   getToolSchemas(): OpenAI.ChatCompletionTool[] {
     const mcpTools = Array.from(this.connections.values()).flatMap(c => c.tools);
-    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...mcpTools];
+    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...EMAIL_TOOL_SCHEMAS, ...mcpTools];
   }
 
   /** Invoke a named tool — built-in tools first, then MCP servers.
@@ -218,10 +237,21 @@ export class MCPRegistry {
     if (isCrmTool(toolName)) {
       return invokeCrmTool(toolName, args, ctx?.projectId);
     }
+    if (isEmailTool(toolName)) {
+      return invokeEmailTool(toolName, args);
+    }
     for (const conn of this.connections.values()) {
       const hasTool = conn.tools.some(t => t.function.name === toolName);
       if (hasTool) {
         const result = await conn.client.callTool({ name: toolName, arguments: args });
+        // MCP signals failure with `isError: true` and NO exception and no
+        // "Error:" prefix — so every MCP tool failure was being recorded as a
+        // success, corrupting receipts, tallies and every evidence surface
+        // downstream (audit C4). Surface it in the one shape the orchestrator
+        // recognises as a failure.
+        if ((result as { isError?: boolean }).isError) {
+          return `Error: ${toolName} failed — ${JSON.stringify(result.content)}`;
+        }
         return JSON.stringify(result.content);
       }
     }

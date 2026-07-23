@@ -297,7 +297,7 @@ function lanStatus(): { running: boolean; url: string | null; localIp: string | 
  *   GET  /skills — full list of enabled skill objects
  *   POST /chat   — forward a message to the orchestrator; streams NDJSON reply
  */
-function startLanServer(): { running: boolean; url: string | null; localIp: string | null; error?: string } {
+async function startLanServer(): Promise<{ running: boolean; url: string | null; localIp: string | null; error?: string }> {
   if (lanServer) return lanStatus();
   // Gate: solo tiers may NOT bind the LAN port. This is the central
   // solo→Team monetisation wall; the persona-onboarding flow paints a clear
@@ -486,12 +486,44 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
     json(404, { error: 'Not found' });
   });
 
-  server.on('error', (err) => {
-    console.error('[Artha] LAN server error:', err);
-    lanServer = null;
+  // AWAIT the bind before claiming the server is running. Previously listen()
+  // was fire-and-forget and `lanServer` was assigned immediately, so on
+  // EADDRINUSE the panel had already painted "Server running", the URL and a
+  // QR code the user shares with teammates — and the async error handler
+  // nulled the server a tick later with nothing re-rendering (audit H24).
+  const bindResult = await new Promise<{ ok: true } | { ok: false; error: string }>(resolve => {
+    let settled = false;
+    const done = (r: { ok: true } | { ok: false; error: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      console.error('[Artha] LAN server error:', err);
+      lanServer = null;
+      done({
+        ok: false,
+        error: err.code === 'EADDRINUSE'
+          ? `Port ${LAN_PORT} is already in use — another Artha instance may be running.`
+          : (err.message || 'The LAN server could not start.'),
+      });
+    });
+    server.listen(LAN_PORT, '0.0.0.0', () => {
+      console.log(`[Artha] LAN server listening on http://${lanLocalIp ?? '0.0.0.0'}:${LAN_PORT}`);
+      done({ ok: true });
+    });
   });
-  server.listen(LAN_PORT, '0.0.0.0', () => {
-    console.log(`[Artha] LAN server listening on http://${lanLocalIp ?? '0.0.0.0'}:${LAN_PORT}`);
+
+  if (!bindResult.ok) {
+    lanServer = null;
+    return { ...lanStatus(), error: bindResult.error };
+  }
+
+  // Only now is it true. Keep listening for later failures so a server that
+  // dies mid-session stops reporting as running.
+  server.on('error', (err) => {
+    console.error('[Artha] LAN server error (post-bind):', err);
+    lanServer = null;
   });
   lanServer = server;
   return lanStatus();
@@ -542,7 +574,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   try {
     if (currentEntitlements().lanServer) {
       const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
-      if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) startLanServer();
+      if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) void startLanServer();
     }
   } catch (err) {
     console.warn('[Artha] LAN autostart check failed:', err);
@@ -797,6 +829,67 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return { runId, sessionId, capability: capability?.id ?? 'delegate-operator' };
   });
 
+  // Stop a running Delegate task. Delegate had NO way to cancel: the renderer
+  // discarded the runId, so a long or hung run could not be stopped from the
+  // UI at all and kept executing with full tool access. The workflow id lives
+  // on the run row, so we can cancel without changing startCapability.
+  ipcMain.handle('delegate:cancel', (_e, runId: string) => {
+    const row = getDb()
+      .prepare(`SELECT workflow_id, status FROM agent_runs WHERE run_id=?`)
+      .get(runId) as { workflow_id: string; status: string } | undefined;
+    if (!row) return { ok: false, error: 'That task no longer exists.' };
+    if (row.status !== 'running') return { ok: true, alreadyFinished: true };
+    orchestrator.cancelWorkflow(row.workflow_id);
+    return { ok: true, alreadyFinished: false };
+  });
+
+  // Continue an existing Delegate task IN ITS OWN session, so follow-ups keep
+  // the task's context, plan and history instead of silently starting an
+  // unrelated run.
+  ipcMain.handle('delegate:continue', async (_e, sessionId: string, message: string) => {
+    const db = getDb();
+    const exists = db.prepare(`SELECT session_id FROM chat_sessions WHERE session_id=?`).get(sessionId);
+    if (!exists) return { ok: false, error: 'That task no longer exists.' };
+    db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`)
+      .run(sessionId, message);
+    const registry = new CapabilityRegistry(SkillRegistry.getInstance());
+    const capability = await registry.select(message);
+    let taskPlaybook: { name: string; instructions: string } | null = null;
+    if (capability?.skillSlug) {
+      const resolved = (await SkillRegistry.getInstance().resolve(`/${capability.skillSlug}`)).skill;
+      if (resolved) taskPlaybook = { name: resolved.name, instructions: resolved.instructions };
+    }
+    const runId = orchestrator.startCapability({
+      sessionId, goal: message, skill: buildOperatorSkill(taskPlaybook),
+    });
+    return { ok: true, runId, sessionId };
+  });
+
+  // The task's conversation so far — user messages and agent replies in one
+  // thread, so the task view can be a real conversation rather than a
+  // one-shot result panel.
+  ipcMain.handle('delegate:thread', (_e, sessionId: string) => {
+    return getDb().prepare(
+      `SELECT sender_type, content, created_at FROM messages
+        WHERE session_id=? ORDER BY rowid ASC`
+    ).all(sessionId) as { sender_type: string; content: string; created_at: number }[];
+  });
+
+  // Every Delegate task, newest first — replaces the single-task localStorage
+  // slot so more than one task can exist.
+  ipcMain.handle('delegate:list', () => {
+    return getDb().prepare(
+      `SELECT s.session_id, s.title, s.created_at,
+              (SELECT r.run_id FROM agent_runs r WHERE r.session_id = s.session_id
+                ORDER BY r.created_at DESC LIMIT 1) AS last_run_id,
+              (SELECT r.status FROM agent_runs r WHERE r.session_id = s.session_id
+                ORDER BY r.created_at DESC LIMIT 1) AS last_status
+         FROM chat_sessions s
+        WHERE s.origin='delegate'
+        ORDER BY s.created_at DESC LIMIT 50`
+    ).all() as { session_id: string; title: string; created_at: number; last_run_id: string | null; last_status: string | null }[];
+  });
+
   // Poll a running Task: maps the Task status to a Delegate-facing state, and
   // once terminal returns the final agent message + any artifacts produced.
   ipcMain.handle('delegate:status', (_e, runId: string, sessionId: string) => {
@@ -1037,7 +1130,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
              IFNULL(cs.title, '')  AS session_title,
              IFNULL(cs.origin, 'chat') AS session_origin,
              (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id) AS calls,
-             (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id AND tr.is_mutation = 1) AS mutations
+             (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id AND tr.is_mutation = 1 AND tr.status = 'ok') AS mutations
       FROM agent_runs ar
       LEFT JOIN chat_sessions cs ON cs.session_id = ar.session_id
       ORDER BY ar.created_at DESC
@@ -1344,6 +1437,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       const reader = (res.body as ReadableStream<Uint8Array>).getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      /** Set when any streamed line carries an error — Ollama does not use a
+       *  non-200 status for pull failures. */
+      let streamError: string | null = null;
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1355,9 +1451,34 @@ export function registerIpcHandlers(window: BrowserWindow): void {
           try {
             const obj = JSON.parse(line) as { status?: string; completed?: number; total?: number; error?: string };
             const percent = obj.total && obj.completed ? Math.round((obj.completed / obj.total) * 100) : undefined;
+            if (obj.error) streamError = obj.error;
             emit({ name, status: obj.status ?? 'pulling', completed: obj.completed, total: obj.total, percent, error: obj.error });
           } catch { /* skip partial line */ }
         }
+      }
+
+      // Ollama returns HTTP 200 and reports failures as an {"error": …} LINE,
+      // then ends the stream normally. This used to fall through to an
+      // unconditional success — so a bad tag / 404 manifest / full disk
+      // finished onboarding with a broken active model (audit C1).
+      if (streamError) {
+        emit({ name, status: 'error', error: streamError });
+        return false;
+      }
+      // Don't take the stream's word for it: confirm the tag actually exists.
+      try {
+        const tags = await fetch('http://localhost:11434/api/tags');
+        const json = await tags.json() as { models?: { name: string }[] };
+        const present = (json.models ?? []).some(
+          m => m.name === name || m.name.startsWith(`${name}:`) || name.startsWith(`${m.name}:`)
+        );
+        if (!present) {
+          emit({ name, status: 'error', error: 'The download finished but the model is not installed. Try again.' });
+          return false;
+        }
+      } catch {
+        emit({ name, status: 'error', error: 'Could not confirm the model was installed.' });
+        return false;
       }
       emit({ name, status: 'success', percent: 100 });
       return true;
@@ -1734,10 +1855,20 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // URI (mcp_server_uri). The Marketplace uses this to restore the "Installed"
   // badge across panel navigations instead of relying on in-memory state.
   ipcMain.handle('mcp:listInstalledIds', () => {
+    // Returns the URI plus its REAL connection state. Previously this returned
+    // every row with a URI, and the Marketplace rendered "✓ Installed" from
+    // mere existence — including servers whose connect had failed, since the
+    // row is deliberately written before (and kept after) a failed handshake
+    // (shipped-surface audit H7).
     const rows = getDb().prepare(
-      `SELECT mcp_server_uri FROM tools WHERE mcp_server_uri IS NOT NULL`
-    ).all() as { mcp_server_uri: string }[];
-    return rows.map(r => r.mcp_server_uri);
+      `SELECT mcp_server_uri, conn_status, conn_error FROM tools WHERE mcp_server_uri IS NOT NULL`
+    ).all() as { mcp_server_uri: string; conn_status: string | null; conn_error: string | null }[];
+    return rows.map(r => ({
+      uri: r.mcp_server_uri,
+      connected: r.conn_status === 'connected',
+      status: r.conn_status ?? 'unknown',
+      error: r.conn_error,
+    }));
   });
 
   ipcMain.handle('mcp:getAuditLog', (_e, limit = 200) => {

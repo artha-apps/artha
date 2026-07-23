@@ -106,8 +106,15 @@ export function describeEffect(
 /** Tools that change durable state — flagged in the receipt so the UI can show
  *  a "changed your files" badge and the audit view can filter to real effects. */
 export const RECEIPT_MUTATION_TOOLS = new Set([
+  // Kept in sync with MUTATION_TOOLS in agent/orchestrator.ts. Dead entries
+  // (fs_write_file, fs_rename_file) removed; the state-changing capabilities
+  // users actually run added, so receipts stop under-reporting real effects.
   'fs_move_file', 'fs_move_batch', 'fs_copy_file', 'fs_delete_file',
-  'fs_create_directory', 'fs_write_file', 'fs_rename_file',
+  'fs_create_directory',
+  'docs_generate',
+  'email_compose',
+  'browser_click', 'browser_type', 'browser_navigate',
+  'desktop_click', 'desktop_type', 'desktop_key', 'desktop_move_mouse',
 ]);
 
 /** Persist one receipt. Best-effort: a logging failure must never break a run. */
@@ -144,7 +151,12 @@ export function listReceiptRuns(limit = 50): { run_id: string; goal: string; ses
     SELECT r.run_id        AS run_id,
            MAX(r.ts)       AS ts,
            COUNT(*)        AS calls,
-           SUM(r.is_mutation) AS mutations,
+           -- Count only mutations that actually SUCCEEDED. is_mutation marks
+           -- "this tool changes state", independent of outcome, so summing it
+           -- reported "1 changed file" for a change that was successfully
+           -- BLOCKED by policy — claiming damage in exactly the case where it
+           -- was prevented (shipped-surface audit H9).
+           SUM(CASE WHEN r.is_mutation = 1 AND r.status = 'ok' THEN 1 ELSE 0 END) AS mutations,
            IFNULL(ar.goal, '') AS goal,
            IFNULL(ar.session_id, '') AS session_id
     FROM tool_receipts r

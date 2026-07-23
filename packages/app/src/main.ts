@@ -163,7 +163,10 @@ async function createWindow(): Promise<void> {
     const { getDb } = await import('./db/schema');
     const db = getDb();
     const sessionId = crypto.randomUUID();
-    db.prepare(`INSERT INTO chat_sessions (session_id, title) VALUES (?, ?)`).run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
+    // origin='scheduled' so these sessions are identifiable without the old
+    // title-prefix heuristic (and stay out of the normal chat sidebar).
+    db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'scheduled')`)
+      .run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
     // Dynamically import to avoid circular deps — orchestrator is already constructed by registerIpcHandlers.
     const { AgentOrchestrator } = await import('./agent/orchestrator');
     const { runWithContext } = await import('./agent/runContext');
@@ -173,6 +176,9 @@ async function createWindow(): Promise<void> {
     await runWithContext({ actor: 'scheduler', lan: false, unattended: true }, () =>
       orch.handleMessage(sessionId, prompt),
     );
+    // Hand the session back so the scheduler can read the run's REAL outcome
+    // instead of inferring success from "the promise resolved".
+    return { sessionId };
   }).catch(err => console.error('[Artha] Scheduler init failed:', err));
 
   // Load renderer
