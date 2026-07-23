@@ -27,6 +27,7 @@ import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getS
 import { buildShallowTree } from './folderTree';
 import { getRunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
+import { classifyToolResult, isFailure, countsAsCompletedMutation } from './toolOutcome';
 import OpenAI from 'openai';
 import {
   startCitationCollection,
@@ -1581,19 +1582,32 @@ RULES — follow exactly, no exceptions:
           }
           }
 
+          // Classify what the call ACTUALLY did by inspecting the result,
+          // rather than trusting the `Error:` prose convention. This is
+          // upstream of receipts, tallies, run facts, the verified summary
+          // and skill success rates, so it is the one place worth getting
+          // right (shipped-surface audit, top-5 item 1).
+          const outcome = classifyToolResult(toolCall.function.name, toolResult, {
+            thrown: toolStatus === 'error',
+            blocked: receiptStatus === 'blocked',
+          });
+          // A partial batch is neither a clean success nor a clean failure;
+          // reflect it in the status the UI and evidence chain both read.
+          if (outcome.status !== 'succeeded') toolStatus = 'error';
+
           toolCallsTotal++;
-          if (toolStatus !== 'ok' || toolResult.startsWith('Error:')) toolCallErrors++;
+          if (isFailure(outcome)) toolCallErrors++;
           if (receiptStatus === 'blocked') toolCallsBlocked++;
 
-          // Anti-hallucination: only count a mutation as having happened when it
-          // actually executed AND succeeded — a blocked or dry-run call must
-          // never be reported as done.
+          // Anti-hallucination: only count a mutation as having happened when
+          // it FULLY succeeded — blocked, dry-run and partial batches (e.g.
+          // 1 of 50 files moved) must never be reported as done.
           if (MUTATION_TOOLS.has(toolCall.function.name)) {
             mutations.push({
               tool: toolCall.function.name,
               args: parsedArgs,
               result: toolResult,
-              success: receiptStatus === 'ok' && toolStatus === 'ok' && !toolResult.startsWith('Error:'),
+              success: receiptStatus === 'ok' && countsAsCompletedMutation(outcome),
             });
           }
 
