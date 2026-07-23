@@ -1185,5 +1185,38 @@ export function runMigrations(): void {
     console.warn('[Artha] run reconciliation skipped:', err);
   }
 
+  // Migration v24→v25 (Phase A.5): scheduler truthfulness columns + startup
+  // reconciliation. Previously scheduled_tasks held only a 3-valued
+  // last_status where 'ok' meant "the promise resolved", with NO link to the
+  // run it started — so a task could show a green check for a run that
+  // stalled, was cancelled, or never executed (audit C2/S1-S3).
+  try {
+    const cols = db.prepare(`PRAGMA table_info(scheduled_tasks)`).all() as { name: string }[];
+    const add = (col: string, decl: string) => {
+      if (cols.length && !cols.some(c => c.name === col)) {
+        db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN ${col} ${decl}`);
+      }
+    };
+    add('last_run_id', 'TEXT');     // the inspectable handle that was missing
+    add('last_outcome', 'TEXT');    // projected task status
+    add('last_detail', 'TEXT');     // honest one-line explanation
+  } catch (err) {
+    console.warn('[Artha] scheduled_tasks truthfulness migration skipped:', err);
+  }
+
+  // A scheduled task left 'running' by an app quit is not live. Mirrors the
+  // agent_runs reconciliation so the panel stops spinning forever.
+  try {
+    const r = db.prepare(
+      `UPDATE scheduled_tasks
+          SET last_status='unverified', last_outcome='partially_completed',
+              last_detail='Artha closed while this run was in progress; completion was not verified.'
+        WHERE last_status='running'`
+    ).run();
+    if (r.changes > 0) console.log(`[Artha] reconciled ${r.changes} interrupted scheduled task(s).`);
+  } catch (err) {
+    console.warn('[Artha] scheduled task reconciliation skipped:', err);
+  }
+
   console.log('[Artha] Database migrations applied.');
 }
