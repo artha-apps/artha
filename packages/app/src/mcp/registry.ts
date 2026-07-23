@@ -15,6 +15,7 @@ import { DOCS_TOOL_SCHEMAS, invokeDocsTool, isDocsTool } from '../tools/docs';
 import { RAG_TOOL_SCHEMAS, invokeRagTool, isRagTool } from '../tools/rag';
 import { KG_TOOL_SCHEMAS, invokeKgTool, isKgTool } from '../tools/kg';
 import { CRM_TOOL_SCHEMAS, invokeCrmTool, isCrmTool } from '../tools/crm';
+import { EMAIL_TOOL_SCHEMAS, invokeEmailTool, isEmailTool } from '../tools/email';
 import type { ScopeRoot } from '../db/scopes';
 import { openCredentials, sealCredentials, type StoredCredentials } from '../security/secrets';
 import { parseEnvTokens } from './envTokens';
@@ -208,7 +209,7 @@ export class MCPRegistry {
   /** Get all tool schemas — built-in tools first, then any connected MCP servers. */
   getToolSchemas(): OpenAI.ChatCompletionTool[] {
     const mcpTools = Array.from(this.connections.values()).flatMap(c => c.tools);
-    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...mcpTools];
+    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...EMAIL_TOOL_SCHEMAS, ...mcpTools];
   }
 
   /** Invoke a named tool — built-in tools first, then MCP servers.
@@ -235,6 +236,9 @@ export class MCPRegistry {
     }
     if (isCrmTool(toolName)) {
       return invokeCrmTool(toolName, args, ctx?.projectId);
+    }
+    if (isEmailTool(toolName)) {
+      return invokeEmailTool(toolName, args);
     }
     for (const conn of this.connections.values()) {
       const hasTool = conn.tools.some(t => t.function.name === toolName);

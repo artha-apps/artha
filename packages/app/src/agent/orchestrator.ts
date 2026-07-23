@@ -178,6 +178,7 @@ const MUTATION_TOOLS = new Set([
   'fs_create_directory',
   // Deliverables — the flagship "Artha made me a document" claim
   'docs_generate',
+  'email_compose',
   // Browser state changes (reads like browser_read_dom stay out)
   'browser_click',
   'browser_type',

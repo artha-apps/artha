@@ -112,6 +112,7 @@ export const RECEIPT_MUTATION_TOOLS = new Set([
   'fs_move_file', 'fs_move_batch', 'fs_copy_file', 'fs_delete_file',
   'fs_create_directory',
   'docs_generate',
+  'email_compose',
   'browser_click', 'browser_type', 'browser_navigate',
   'desktop_click', 'desktop_type', 'desktop_key', 'desktop_move_mouse',
 ]);
