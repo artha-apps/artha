@@ -14,6 +14,10 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import { app } from 'electron';
+import { sealPlaintextApiKeys, sealPlaintextColumns } from '../security/secretString';
+import { resealRawCredentialBlobs } from '../security/secrets';
+import { normalizeProviderIds } from '../llm/providerKind';
+import { ensureDefaultProfile } from '../llm/profiles';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
 let db: Database.Database | null = null;
@@ -968,6 +972,83 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] context_packs is_shared migration skipped:', err);
+  }
+
+  // Migration v19→v20 (revised by Commit 3.5): seal plaintext BYOK api_keys
+  // at rest. runMigrations() executes post-`ready`, so safeStorage is usable.
+  // Idempotent. When no trustworthy keychain exists the rows are left intact
+  // but LOCKED (the read path refuses them — no indefinite plaintext use);
+  // they seal on the next launch/read once a keychain is available. After a
+  // successful pass we verify no sealable value remains, then checkpoint the
+  // WAL and VACUUM so the old plaintext bytes don't survive in WAL frames or
+  // freelist pages. Log output is sanitized counts only — never key material.
+  let totalSealed = 0;
+  try {
+    const res = sealPlaintextApiKeys(db);
+    totalSealed += res.sealed;
+    if (res.sealed || res.failed || res.pending) {
+      console.log(
+        `[Artha] api_key seal migration: ${res.sealed} sealed, ${res.failed} failed, ` +
+        `${res.pending} pending (no secure keychain), ${res.unsealedRemaining} remaining.`
+      );
+    }
+  } catch (err) {
+    console.warn('[Artha] api_key seal migration skipped:', err);
+  }
+
+  // Migration v21→v22 (commit 4.1): seal Google OAuth tokens at rest (same
+  // rules as api_keys — keychain absent leaves rows intact + counted), and
+  // re-seal any legacy v1:raw MCP credential blobs (register R5).
+  try {
+    const oauth = sealPlaintextColumns(db, {
+      table: 'oauth_tokens', idColumn: 'provider', valueColumns: ['access_token', 'refresh_token'],
+    });
+    totalSealed += oauth.sealed;
+    if (oauth.sealed || oauth.failed || oauth.pending) {
+      console.log(
+        `[Artha] oauth_tokens seal migration: ${oauth.sealed} sealed, ${oauth.failed} failed, ` +
+        `${oauth.pending} pending, ${oauth.unsealedRemaining} remaining.`
+      );
+    }
+    const resealed = resealRawCredentialBlobs(db);
+    totalSealed += resealed;
+    if (resealed) console.log(`[Artha] MCP credential reseal: ${resealed} legacy raw blob(s) upgraded.`);
+  } catch (err) {
+    console.warn('[Artha] oauth/MCP seal migration skipped:', err);
+  }
+
+  // One cleanup pass for every seal above: old plaintext bytes must not
+  // survive in WAL frames or freelist pages after a successful migration.
+  if (totalSealed > 0) {
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)');
+      db.exec('VACUUM');
+    } catch (err) {
+      console.warn('[Artha] post-seal WAL/VACUUM cleanup skipped:', err);
+    }
+  }
+
+  // Migration v20→v21: canonical provider ids on llm_models. Repairs legacy
+  // rows stamped with the 'ollama' schema default but pointing at a remote
+  // base_url — those are user-added OpenAI-compatible endpoints → 'custom'.
+  // Provider-aware runtime behaviour (warm-up/unload/banner gating) keys off
+  // this id, so it must be trustworthy before ollamaRuntime consults it.
+  try {
+    const n = normalizeProviderIds(db);
+    if (n) console.log(`[Artha] provider id normalization: ${n} row(s) repaired.`);
+  } catch (err) {
+    console.warn('[Artha] provider id normalization skipped:', err);
+  }
+
+  // Migration v22→v23 (commit 10): execution_profiles table + ONE implicit
+  // "Default" profile synthesized from the active model. v0 is schema-only:
+  // llm_models.is_active stays authoritative, so existing users see zero
+  // behaviour change; Phase B routing fills the reserved slots.
+  try {
+    const prof = ensureDefaultProfile(db);
+    if (prof.created) console.log(`[Artha] Default execution profile created (mode: ${prof.mode}).`);
+  } catch (err) {
+    console.warn('[Artha] execution_profiles migration skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

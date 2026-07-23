@@ -21,8 +21,13 @@ const SNIPPET_CHARS = 320;
 
 /** Render retrieval hits as a numbered, source-labelled list. Empty hits get an
  *  actionable message so the model doesn't fabricate file contents. */
-export function formatRagResults(query: string, hits: RagHit[]): string {
+export function formatRagResults(query: string, hits: RagHit[], semanticUnavailable = false): string {
   if (hits.length === 0) {
+    // Never report "nothing matched" when the retriever could not run — that
+    // reads as a content answer and invites the model to fill the gap.
+    if (semanticUnavailable) {
+      return `Semantic search is unavailable right now (local embeddings are not running), so your indexed files could NOT be searched for "${query}". This is not a statement about their contents. Tell the user to start Ollama (or install the embedding model) — or read specific files directly instead.`;
+    }
     return `No matching passages found in your indexed files for "${query}". The user may need to add an index in the RAG panel.`;
   }
   const lines = hits.map((h, i) => {

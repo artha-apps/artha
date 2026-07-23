@@ -21,14 +21,24 @@ import { spawn, execFile, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import { getDb } from '../db/schema';
+import { isOllamaManaged } from './providerKind';
 
 const execFileAsync = promisify(execFile);
 const OLLAMA_HOST = 'http://localhost:11434';
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 export type ModelStatusPhase =
-  | 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'error';
-export interface ModelStatus { phase: ModelStatusPhase; model?: string; detail?: string; }
+  | 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'no_model' | 'error';
+export interface ModelStatus {
+  phase: ModelStatusPhase;
+  model?: string;
+  detail?: string;
+  /** Present on 'no_model': whether Ollama exists on this machine. Onboarding
+   *  needs the distinction ('no_model' deliberately replaces the install nag
+   *  for configure-later users, but the LOCAL setup path must still show the
+   *  install card when Ollama is genuinely absent — review finding B1). */
+  ollamaInstalled?: boolean;
+}
 
 /** Did Artha spawn the server this session? Gates "stop on quit". */
 let startedByArtha = false;
@@ -102,14 +112,21 @@ async function startServer(): Promise<boolean> {
   return false;
 }
 
-/** Active model name + context window from the DB (mirrors getActiveLLMClient). */
-function activeModel(): { name: string; numCtx: number } | undefined {
+/** Active model row from the DB (mirrors getActiveLLMClient), including
+ *  whether its lifecycle is ours to manage. Ollama warm-up/unload/auto-start
+ *  must NEVER fire for a cloud/BYOK active model — that used to POST cloud
+ *  model names at localhost and show a false "Ollama isn't installed" nag. */
+function activeModel(): { name: string; numCtx: number; ollamaManaged: boolean } | undefined {
   try {
     const row = getDb()
-      .prepare(`SELECT ollama_name, context_window FROM llm_models WHERE is_active=1 LIMIT 1`)
-      .get() as { ollama_name: string; context_window: number } | undefined;
+      .prepare(`SELECT ollama_name, context_window, provider, base_url FROM llm_models WHERE is_active=1 LIMIT 1`)
+      .get() as { ollama_name: string; context_window: number; provider?: string; base_url?: string } | undefined;
     if (!row?.ollama_name) return undefined;
-    return { name: row.ollama_name, numCtx: row.context_window ?? 8192 };
+    return {
+      name: row.ollama_name,
+      numCtx: row.context_window ?? 8192,
+      ollamaManaged: isOllamaManaged(row.provider, row.base_url),
+    };
   } catch { return undefined; }
 }
 
@@ -130,16 +147,44 @@ async function warm(model: string, numCtx: number): Promise<boolean> {
 /**
  * Ensure the local model is ready, emitting status the renderer can surface.
  * Safe to call fire-and-forget on launch — it never blocks the window.
+ *
+ * RETURNS this run's own terminal status. Callers must use the return value
+ * rather than `getModelStatus()`: launch-time and user-triggered runs can
+ * overlap, and the module-level `lastStatus` reflects whichever run wrote
+ * last. Reading the shared value made onboarding show "Starting your local
+ * model…" for a runtime that had already failed (validation row 10).
  */
-export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<void> {
-  const set = (s: ModelStatus) => { lastStatus = s; try { emit(s); } catch { /* ignore */ } };
+export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<ModelStatus> {
+  const set = (s: ModelStatus): ModelStatus => {
+    lastStatus = s;
+    try { emit(s); } catch { /* ignore */ }
+    return s;
+  };
   const m = activeModel();
   set({ phase: 'checking', model: m?.name });
 
+  // Cloud/BYOK active model: nothing local to start or warm — the provider is
+  // remote and ready by definition. No server auto-start, no warm-up, no
+  // install nag. The ONLY localhost traffic allowed on this path is a single
+  // read-only reachability probe: if the user ALSO has Ollama running, local
+  // embeddings (memory ranking / RAG) still work, so provision the embed
+  // model; if Ollama is absent, do nothing and stay quiet.
+  if (m && !m.ollamaManaged) {
+    const st = set({ phase: 'ready', model: m.name });
+    if (await isUp()) void ensureEmbedModel();
+    return st;
+  }
+
   if (!(await isUp())) {
-    if (!ollamaInstalled()) { set({ phase: 'not_installed' }); return; }
+    // "Install Ollama" is only the right message when a LOCAL model is (or is
+    // about to be) the active one. With nothing configured at all, the honest
+    // state is 'no_model' — the user should choose a setup path (local model
+    // OR their own API key), not be steered to Ollama by default. The
+    // ollamaInstalled flag rides along so the local onboarding path can still
+    // render its install card (B1).
+    if (!ollamaInstalled()) return set({ phase: m ? 'not_installed' : 'no_model', ollamaInstalled: false });
     set({ phase: 'starting', model: m?.name });
-    if (!(await startServer())) { set({ phase: 'not_installed' }); return; }
+    if (!(await startServer())) return set({ phase: m ? 'not_installed' : 'no_model', ollamaInstalled: false });
     // Cold daemon start is usually a couple seconds; poll up to 20s.
     const deadline = Date.now() + 20_000;
     let up = false;
@@ -147,18 +192,31 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
       if (await isUp()) { up = true; break; }
       await sleep(600);
     }
-    if (!up) { set({ phase: 'error', detail: 'Ollama did not start in time.' }); return; }
+    if (!up) return set({ phase: 'error', detail: 'Ollama did not start in time.' });
   }
 
-  if (!m) { set({ phase: 'ready' }); return; } // server up, no active model configured yet
+  // Server up but nothing active: report the truthful empty state (the old
+  // 'ready' here let a fresh install look configured when it wasn't). The
+  // server is left running for onboarding's model list/pull flows.
+  if (!m) return set({ phase: 'no_model', ollamaInstalled: true });
   set({ phase: 'warming', model: m.name });
-  await warm(m.name, m.numCtx);
-  set({ phase: 'ready', model: m.name });
+  // A failed load (model deleted while its row stayed active, or a squatter
+  // answering /api/tags) must NOT be reported as ready — the first message
+  // would fail with a raw provider error instead of an actionable state.
+  if (!(await warm(m.name, m.numCtx))) {
+    return set({
+      phase: 'error',
+      model: m.name,
+      detail: `${m.name} could not be loaded. It may have been removed — pick another model in Settings → Models.`,
+    });
+  }
+  const ready = set({ phase: 'ready', model: m.name });
 
   // The window is usable now — provision the embedding model in the
   // background. Without it, semantic memory ranking and RAG indexing silently
   // degrade to keyword matching and nothing ever tells the user.
   void ensureEmbedModel();
+  return ready;
 }
 
 /** The embedding model every semantic feature depends on (memory ranking,
@@ -191,11 +249,38 @@ export async function ensureEmbedModel(): Promise<boolean> {
   }
 }
 
+/** Whether semantic features (memory ranking, RAG vector search) actually
+ *  work right now — they require local Ollama + the embed model. Consumed by
+ *  the honest degraded-state notices (Phase A commit 10): before this, a
+ *  missing embedder silently produced zero-vector indexes and keyword-only
+ *  memory with no indication anywhere. */
+export type SemanticStatus =
+  | { available: true }
+  | { available: false; reason: 'ollama_down' | 'embed_model_missing' };
+
+export async function getSemanticStatus(): Promise<SemanticStatus> {
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 1500);
+    const res = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: c.signal });
+    clearTimeout(t);
+    if (!res.ok) return { available: false, reason: 'ollama_down' };
+    const json = await res.json() as { models?: { name: string }[] };
+    const installed = (json.models ?? []).some(
+      t2 => t2.name === EMBED_MODEL || t2.name.startsWith(`${EMBED_MODEL}:`)
+    );
+    return installed ? { available: true } : { available: false, reason: 'embed_model_missing' };
+  } catch {
+    return { available: false, reason: 'ollama_down' };
+  }
+}
+
 /** Evict the active model from memory (`keep_alive: 0`). Best-effort; called on
  *  quit so a multi-GB model isn't left resident after Artha closes. */
 export async function unloadActiveModel(): Promise<void> {
   const m = activeModel();
-  if (!m) return;
+  // Cloud/BYOK model: nothing resident in local Ollama to evict.
+  if (!m || !m.ollamaManaged) return;
   try {
     await fetch(`${OLLAMA_HOST}/api/generate`, {
       method: 'POST',

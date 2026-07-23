@@ -84,7 +84,12 @@ describe('filesystem hard sandbox', () => {
     expect(out).toContain('standalone file scope');
   });
 
-  it('still blocks OS-system directories regardless of scopes', async () => {
+  // POSIX-ONLY: asserts the macOS/Linux blocklist (/etc, /System, …). On
+  // Windows those paths don't exist, so the call fails with ENOENT before
+  // reaching the guard. Skipped there rather than asserting a behaviour the
+  // code does not implement — see the Windows system-path gap recorded in
+  // docs/testing/SECURITY_TRIAGE_DEPENDENCIES.md (pre-existing, not Phase A).
+  it.skipIf(process.platform === 'win32')('still blocks OS-system directories regardless of scopes', async () => {
     await expect(invokeFilesystemTool('fs_list_directory', { path: '/etc' }, []))
       .rejects.toThrow(/system directory/i);
   });
@@ -108,7 +113,12 @@ describe('filesystem hard sandbox', () => {
       .rejects.toThrow(/outside this chat's selected folders/i);
   });
 
-  it('blocks a symlink that points at a system directory', async () => {
+  // POSIX-ONLY: asserts the macOS/Linux blocklist (/etc, /System, …). On
+  // Windows those paths don't exist, so the call fails with ENOENT before
+  // reaching the guard. Skipped there rather than asserting a behaviour the
+  // code does not implement — see the Windows system-path gap recorded in
+  // docs/testing/SECURITY_TRIAGE_DEPENDENCIES.md (pre-existing, not Phase A).
+  it.skipIf(process.platform === 'win32')('blocks a symlink that points at a system directory', async () => {
     const roots: ScopeRoot[] = [{ path: root, kind: 'folder' }];
     const link = path.join(root, 'etc-link');
     try { fs.symlinkSync('/etc', link); } catch { return; /* skip if unsupported */ }

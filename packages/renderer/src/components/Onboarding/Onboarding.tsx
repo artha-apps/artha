@@ -2,11 +2,15 @@
  * Onboarding — first-run guided setup. Shown as a full-screen overlay until the
  * user has a working model (or explicitly skips).
  *
- * Forked flow (added with the licensing/team SKUs):
+ * Flow:
  *   Step 0 — persona pick: Individual (B2C) vs Organization admin (B2B).
- *     • Individual → existing Ollama+model flow, with an optional Pro license
- *       paste at the top.
- *     • Organization → OrgSetup sub-flow (license → start hub → provision seats).
+ *   Individual → execution-mode pick (Phase A commit 8):
+ *     • Local models   → existing Ollama+model flow
+ *     • My own API key → BYOK sub-flow (preset → key → discover → test →
+ *       activate). Cloud-only users never touch Ollama here.
+ *     • Configure later → exits into the honest no_model state (banner +
+ *       chat deep-links take over) — never a silent localhost failure.
+ *   Organization → OrgSetup sub-flow (license → start hub → provision seats).
  *
  * This kills the biggest first-run drop-off (a blank app that does nothing
  * because no model is configured) and also splits the funnel cleanly between
@@ -15,7 +19,7 @@
 import { useEffect, useState } from 'react';
 import {
   Bot, Download, CheckCircle2, RefreshCw, ExternalLink, Cpu, ArrowRight,
-  Cloud, User, Building2, KeyRound,
+  Cloud, User, Building2, KeyRound, Lock, HardDrive, Shield,
 } from 'lucide-react';
 import OrgSetup from './OrgSetup';
 import MemoryImport from '../MemoryImport/MemoryImport';
@@ -38,11 +42,12 @@ type Persona = 'individual' | 'org_admin' | null;
  */
 export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [persona, setPersona] = useState<Persona>(null);
-  // Sub-step of the individual flow: 'setup' (model) → 'byom' (Bring Your Own
-  // Memory). onboardingComplete is persisted when leaving 'setup', so closing
-  // the app on the BYOM step still counts as onboarded — BYOM is a bonus, never
+  // Sub-step of the individual flow: 'path' (execution-mode pick) → 'setup'
+  // (local Ollama) | 'byok' (own API key) → 'byom' (Bring Your Own Memory).
+  // onboardingComplete is persisted when leaving setup/byok, so closing the
+  // app on the BYOM step still counts as onboarded — BYOM is a bonus, never
   // a gate.
-  const [step, setStep] = useState<'setup' | 'byom'>('setup');
+  const [step, setStep] = useState<'path' | 'setup' | 'byok' | 'byom'>('path');
 
   // Individual-path state (existing flow).
   const [ollamaOnline, setOllamaOnline] = useState<boolean | null>(null);
@@ -55,6 +60,11 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   // True only when Ollama isn't installed at all — the one case Artha can't fix
   // itself (we can't silently install a system dependency).
   const [notInstalled, setNotInstalled] = useState(false);
+  // Runtime present but failing (e.g. the port is occupied by a broken
+  // service): the status machine reports 'error'. Without this, onboarding
+  // rendered a perpetual "Starting your local model…" spinner for a runtime
+  // that had already given up — dishonest, and no actionable next step.
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   // Optional individual-tier license: paste here OR ignore to stay Free.
   const [indivLicense, setIndivLicense] = useState('');
@@ -67,12 +77,16 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       let online = await window.artha.llm.checkOllama();
       if (!online) {
         // Artha starts Ollama itself — the user is never told to run a command.
-        // `not_installed` is the only case we can't fix automatically.
+        // A missing install is the one case we can't fix automatically. During
+        // onboarding no model is active yet, so the status arrives as
+        // 'no_model' with an ollamaInstalled flag — honor both shapes (B1).
         const st = await window.artha.llm.ensureModel();
-        setNotInstalled(st.phase === 'not_installed');
+        setNotInstalled(st.phase === 'not_installed' || st.ollamaInstalled === false);
+        setRuntimeError(st.phase === 'error' ? (st.detail ?? 'The local model runtime did not start.') : null);
         online = await window.artha.llm.checkOllama();
       } else {
         setNotInstalled(false);
+        setRuntimeError(null);
       }
       setOllamaOnline(online);
       if (online) {
@@ -88,10 +102,11 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
     }
   };
 
-  // Only kick off Ollama discovery once the user picks Individual — the org
-  // admin path doesn't need a local model on the admin's machine (the hub
-  // host does, but that's a separate machine in the canonical deployment).
-  useEffect(() => { if (persona === 'individual') refresh(); }, [persona]);
+  // Kick off Ollama discovery only when the user picks the LOCAL path — the
+  // BYOK and org-admin paths never need Ollama on this machine, so they make
+  // zero localhost probes from onboarding.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (persona === 'individual' && step === 'setup') refresh(); }, [persona, step]);
 
   // Subscribe to live pull progress.
   useEffect(() => {
@@ -208,6 +223,63 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         <OrgSetup onDone={onDone} onBack={() => setPersona(null)} />
       )}
 
+      {/* Individual flow — execution-mode pick (local / BYOK / later) */}
+      {persona === 'individual' && step === 'path' && (
+        <div className="w-full max-w-lg bg-artha-surface-raised border border-artha-border rounded-2xl shadow-modal p-8 animate-scale-in">
+          <div className="flex items-center justify-between mb-6">
+            <button onClick={() => setPersona(null)} className="text-xs text-artha-muted hover:text-artha-text transition-colors">← Back</button>
+            <span className="text-[11px] uppercase tracking-wide text-artha-muted">Solo setup</span>
+          </div>
+
+          <div className="flex flex-col items-center text-center mb-6">
+            <h1 className="text-2xl font-bold text-gradient-emerald mb-1 tracking-tight">Where should intelligence run?</h1>
+            <p className="text-sm text-artha-muted">Your choice — and you can mix both later.</p>
+          </div>
+
+          <div className="space-y-3">
+            <button onClick={() => setStep('setup')}
+              className="w-full flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent/40 hover:bg-artha-accent/5 transition-all text-left">
+              <HardDrive size={18} className="text-artha-accent shrink-0 mt-0.5" />
+              <span className="flex-1">
+                <span className="block text-sm font-medium text-artha-text">Run models on this computer</span>
+                <span className="block text-xs text-artha-muted">Maximum privacy — everything stays on your machine. Uses Ollama; needs ~8 GB RAM for good models.</span>
+              </span>
+              <ArrowRight size={14} className="text-artha-muted shrink-0 mt-1" />
+            </button>
+
+            <button onClick={() => setStep('byok')}
+              className="w-full flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent/40 hover:bg-artha-accent/5 transition-all text-left">
+              <KeyRound size={18} className="text-artha-accent shrink-0 mt-0.5" />
+              <span className="flex-1">
+                <span className="block text-sm font-medium text-artha-text">Use my own API key</span>
+                <span className="block text-xs text-artha-muted">OpenAI, Anthropic, Gemini, OpenRouter, Groq, DeepSeek and more. You pay the provider directly — often pennies a day. No powerful hardware needed.</span>
+              </span>
+              <ArrowRight size={14} className="text-artha-muted shrink-0 mt-1" />
+            </button>
+
+            <button onClick={skip}
+              className="w-full flex items-start gap-3 px-4 py-3 rounded-xl bg-artha-surface border border-artha-border hover:border-artha-accent/40 hover:bg-artha-accent/5 transition-all text-left">
+              <ArrowRight size={18} className="text-artha-muted shrink-0 mt-0.5" />
+              <span className="flex-1">
+                <span className="block text-sm font-medium text-artha-text">Configure later</span>
+                <span className="block text-xs text-artha-muted">Look around first. Artha will show exactly where to set up a model when you're ready.</span>
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Individual flow — BYOK (own API key) setup */}
+      {persona === 'individual' && step === 'byok' && (
+        <ByokSetup
+          onBack={() => setStep('path')}
+          onDone={async () => {
+            await window.artha.settings.set({ persona: 'individual', onboardingComplete: true });
+            setStep('byom');
+          }}
+        />
+      )}
+
       {/* Individual flow — Bring Your Own Memory (optional, after model setup) */}
       {persona === 'individual' && step === 'byom' && (
         <div className="w-full max-w-lg bg-artha-surface-raised border border-artha-border rounded-2xl shadow-modal p-8 animate-scale-in">
@@ -219,11 +291,11 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         </div>
       )}
 
-      {/* Individual flow — existing Ollama+model steps */}
+      {/* Individual flow — existing Ollama+model steps (LOCAL path) */}
       {persona === 'individual' && step === 'setup' && (
         <div className="w-full max-w-lg bg-artha-surface-raised border border-artha-border rounded-2xl shadow-modal p-8 animate-scale-in">
           <div className="flex items-center justify-between mb-6">
-            <button onClick={() => setPersona(null)} className="text-xs text-artha-muted hover:text-artha-text transition-colors">← Back</button>
+            <button onClick={() => setStep('path')} className="text-xs text-artha-muted hover:text-artha-text transition-colors">← Back</button>
             <span className="text-[11px] uppercase tracking-wide text-artha-muted">Solo setup</span>
           </div>
 
@@ -271,6 +343,15 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                     className="inline-flex items-center gap-1.5 text-xs text-artha-accent hover:underline">
                     Download Ollama <ExternalLink size={11} />
                   </a>
+                </div>
+              ) : runtimeError ? (
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
+                  <p className="text-sm text-artha-text font-medium mb-1">Couldn’t start the local model runtime</p>
+                  <p className="text-xs text-artha-muted leading-relaxed mb-2">{runtimeError}</p>
+                  <p className="text-xs text-artha-muted leading-relaxed">
+                    Ollama is installed but isn’t responding — something else may be using its port, or it needs a restart.
+                    Recheck below, or use your own API key instead.
+                  </p>
                 </div>
               ) : (
                 <div className="bg-artha-surface border border-artha-border rounded-xl p-4 flex items-start gap-2.5">
@@ -363,11 +444,208 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
           )}
 
           {/* Footer hint */}
-          <div className="mt-6 pt-4 border-t border-artha-border flex items-center justify-center gap-1.5 text-[11px] text-artha-muted">
-            <Cloud size={11} /> Prefer a cloud model? Add one anytime in Settings → Models.
-          </div>
+          <button onClick={() => setStep('byok')}
+            className="mt-6 pt-4 border-t border-artha-border w-full flex items-center justify-center gap-1.5 text-[11px] text-artha-muted hover:text-artha-text transition-colors">
+            <Cloud size={11} /> Prefer your own API key instead? Set it up now →
+          </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Preset shape served by llm:listProviderPresets (see llm/providerPresets.ts). */
+interface OnbPreset {
+  id: string; label: string; kind: string;
+  baseUrl: string; baseUrlTemplate?: string;
+  keyRequired: boolean; keyHint: string; modelHint: string;
+  docsUrl: string; note?: string;
+}
+
+const ONB_FALLBACK_PRESETS: OnbPreset[] = [
+  { id: 'openai', label: 'OpenAI', kind: 'cloud', baseUrl: 'https://api.openai.com/v1', keyRequired: true, keyHint: 'sk-…', modelHint: 'gpt-4o-mini', docsUrl: 'https://platform.openai.com/api-keys' },
+  { id: 'anthropic', label: 'Anthropic', kind: 'cloud', baseUrl: 'https://api.anthropic.com/v1', keyRequired: true, keyHint: 'sk-ant-…', modelHint: 'claude-sonnet-4-6', docsUrl: 'https://console.anthropic.com/settings/keys' },
+  { id: 'custom', label: 'Custom (OpenAI-compatible)', kind: 'custom', baseUrl: '', baseUrlTemplate: 'https://{host}/v1', keyRequired: false, keyHint: 'if needed', modelHint: 'model-name', docsUrl: 'https://artha.space/docs' },
+];
+
+/**
+ * BYOK onboarding sub-flow — compact version of the ModelsPanel cloud form:
+ * provider → key → discover models → test → save & activate. Same IPC, same
+ * credential policy (keychain-sealed persistence; session-only offer when no
+ * trustworthy keychain exists; never plaintext).
+ */
+function ByokSetup({ onDone, onBack }: { onDone: () => void | Promise<void>; onBack: () => void }) {
+  const [presets, setPresets] = useState<OnbPreset[]>(ONB_FALLBACK_PRESETS);
+  const [providerId, setProviderId] = useState('openai');
+  const [baseUrl, setBaseUrl] = useState(ONB_FALLBACK_PRESETS[0].baseUrl);
+  const [apiKey, setApiKey] = useState('');
+  const [model, setModel] = useState('');
+  const [discovered, setDiscovered] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState<'discover' | 'test' | 'save' | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [error, setError] = useState('');
+  const [storagePrompt, setStoragePrompt] = useState<string | null>(null);
+
+  useEffect(() => {
+    window.artha.llm.listProviderPresets?.()
+      .then(p => { if (Array.isArray(p) && p.length) setPresets(p as OnbPreset[]); })
+      .catch(() => {});
+  }, []);
+
+  const preset = presets.find(p => p.id === providerId) ?? presets[presets.length - 1];
+
+  const pick = (p: OnbPreset) => {
+    setProviderId(p.id);
+    setBaseUrl(p.baseUrl);
+    setDiscovered(null);
+    setTestResult(null);
+    setError('');
+  };
+
+  const discover = async () => {
+    if (!baseUrl.trim()) { setError('Enter the base URL first'); return; }
+    setBusy('discover'); setError('');
+    try {
+      const res = await window.artha.llm.discoverModels({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim() || undefined });
+      if (res.ok) {
+        setDiscovered(res.models);
+        if (res.models.length && !model) setModel(res.models[0]);
+        if (!res.models.length) setError('No models listed — type the model name manually.');
+      } else {
+        setError(res.error.message);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reach the endpoint.');
+    } finally { setBusy(null); }
+  };
+
+  const save = async (persistence?: 'session') => {
+    if (!model.trim()) { setError('Pick or type a model name'); return; }
+    if (!baseUrl.trim()) { setError('Base URL is required'); return; }
+    if (preset.keyRequired && !apiKey.trim()) { setError(`${preset.label} requires an API key`); return; }
+    setBusy('save'); setError('');
+    try {
+      // Prove the config before activating — a broken first chat is exactly
+      // the deceptive failure this flow exists to prevent.
+      const test = await window.artha.llm.testConnection({
+        baseUrl: baseUrl.trim(), apiKey: apiKey.trim() || undefined, model: model.trim(),
+      });
+      if (!test.ok) { setTestResult({ ok: false, text: test.error.message }); return; }
+      setTestResult({ ok: true, text: `Connected in ${test.latencyMs} ms` });
+      const res = await window.artha.llm.addCloudModel({
+        provider: providerId,
+        label: `${preset.label}: ${model.trim()}`,
+        model: model.trim(),
+        baseUrl: baseUrl.trim(),
+        apiKey: apiKey.trim(),
+        activate: true,
+        persistence,
+      });
+      if ('error' in res) {
+        if (res.error === 'secure_storage_unavailable') setStoragePrompt(res.message);
+        else setError(res.message);
+        return;
+      }
+      await onDone();
+    } catch (err) {
+      // A rejected IPC (DB error, seal failure) must never strand the user
+      // on a green "Connected" with nothing advancing (review M4).
+      setError(err instanceof Error ? err.message : 'Saving the model failed — try again.');
+    } finally { setBusy(null); }
+  };
+
+  return (
+    <div className="w-full max-w-lg bg-artha-surface-raised border border-artha-border rounded-2xl shadow-modal p-8 animate-scale-in max-h-[90vh] overflow-y-auto">
+      <div className="flex items-center justify-between mb-6">
+        <button onClick={onBack} className="text-xs text-artha-muted hover:text-artha-text transition-colors">← Back</button>
+        <span className="text-[11px] uppercase tracking-wide text-artha-muted">Solo setup · your API key</span>
+      </div>
+
+      <div className="flex flex-col items-center text-center mb-5">
+        <h1 className="text-2xl font-bold text-gradient-emerald mb-1 tracking-tight">Connect your provider</h1>
+        <p className="text-sm text-artha-muted">Your key is encrypted on this device and sent only to the provider you choose.</p>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-1.5">
+          {presets.map(p => (
+            <button key={p.id} onClick={() => pick(p)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+                providerId === p.id
+                  ? 'bg-artha-accent/20 text-artha-text border border-artha-accent/30'
+                  : 'bg-artha-surface border border-artha-border text-artha-muted hover:text-artha-text'
+              }`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {(preset.note || preset.docsUrl) && (
+          <p className="text-[11px] text-artha-muted leading-relaxed">
+            {preset.note}{preset.note ? ' ' : ''}
+            <a href={preset.docsUrl} target="_blank" rel="noreferrer" className="text-artha-accent hover:underline">Get a key ↗</a>
+          </p>
+        )}
+
+        {!preset.baseUrl && (
+          <input value={baseUrl} onChange={e => { setBaseUrl(e.target.value); setDiscovered(null); }}
+            placeholder={preset.baseUrlTemplate ?? 'https://your-endpoint/v1'}
+            className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
+        )}
+
+        <div className="relative">
+          <Lock size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-artha-muted" />
+          <input type="password" value={apiKey} onChange={e => { setApiKey(e.target.value); setTestResult(null); }}
+            placeholder={`API key ${preset.keyRequired ? '' : '(optional)'} — ${preset.keyHint}`}
+            className="w-full bg-artha-surface border border-artha-border rounded-lg pl-8 pr-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
+        </div>
+
+        <div className="flex gap-2">
+          <input value={model} list="onb-discovered-models"
+            onChange={e => { setModel(e.target.value); setTestResult(null); }}
+            placeholder={preset.modelHint}
+            className="flex-1 bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
+          <button onClick={() => void discover()} disabled={busy !== null}
+            className="px-3 py-2 rounded-lg border border-artha-border text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors disabled:opacity-50 whitespace-nowrap">
+            {busy === 'discover' ? <RefreshCw size={12} className="animate-spin" /> : 'Find models'}
+          </button>
+        </div>
+        <datalist id="onb-discovered-models">
+          {(discovered ?? []).map(m => <option key={m} value={m} />)}
+        </datalist>
+
+        {testResult && (
+          <p className={`text-xs ${testResult.ok ? 'text-artha-success' : 'text-artha-danger'}`}>{testResult.text}</p>
+        )}
+        {error && <p className="text-xs text-artha-danger">{error}</p>}
+
+        {/* No trustworthy keychain: refuse persistence, offer session-only. */}
+        {storagePrompt && (
+          <div className="flex items-start gap-2 text-xs bg-artha-warn/10 border border-artha-warn/30 rounded-lg px-3 py-2.5">
+            <Shield size={13} className="text-artha-warn shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-artha-text font-medium">Secure key storage isn’t available on this system</p>
+              <p className="text-artha-muted mt-0.5">{storagePrompt}</p>
+              <div className="flex items-center gap-2 mt-2">
+                <button onClick={() => { setStoragePrompt(null); void save('session'); }} disabled={busy !== null}
+                  className="px-2.5 py-1 rounded-lg bg-artha-warn/15 hover:bg-artha-warn/25 text-artha-warn font-medium transition-colors disabled:opacity-50">
+                  Use for this session only
+                </button>
+                <button onClick={() => setStoragePrompt(null)}
+                  className="px-2.5 py-1 rounded-lg bg-artha-s2 hover:bg-artha-s3 text-artha-muted transition-colors">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <button onClick={() => void save()} disabled={busy !== null}
+          className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-sm font-medium text-artha-on-accent transition-all duration-200 active:scale-95 disabled:opacity-40">
+          {busy === 'save' ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+          Test &amp; start with {model.trim() || 'this model'}
+        </button>
+      </div>
     </div>
   );
 }

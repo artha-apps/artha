@@ -45,6 +45,15 @@ import { getBriefing, markBriefingSeen } from '../briefing/briefing';
 import { spawnEnv } from '../system/nodePath';
 import { MCPRegistry, parseEnvTokens } from '../mcp/registry';
 import { sealCredentials, openCredentials, isAtRestEncryptionAvailable, type StoredCredentials } from '../security/secrets';
+import {
+  sealSecretString, openSecretString, isSecretEncryptionAvailable, SESSION_SENTINEL, SecureStorageUnavailableError,
+} from '../security/secretString';
+import { setSessionKey, getSessionKey, deleteSessionKey } from '../security/sessionKeys';
+import { PROVIDER_PRESETS } from '../llm/providerPresets';
+import { discoverModels, testConnection } from '../llm/providerProbe';
+import { getEffectiveCapabilities } from '../llm/capabilities';
+import { isOllamaManaged } from '../llm/providerKind';
+import { usableApiKey } from '../llm/client';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
@@ -66,7 +75,8 @@ import {
   setPackShared, describeSharedPacks,
 } from '../agent/contextPacks';
 import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } from '../sentry';
-import { ensureModelReady, getModelStatus } from '../llm/ollamaRuntime';
+import { ensureModelReady, getModelStatus, getSemanticStatus } from '../llm/ollamaRuntime';
+import { getDefaultProfile } from '../llm/profiles';
 import { FREE_ENTITLEMENTS } from '../license/entitlements';
 import { invalidateEntitlements, parseAndVerify } from '../license/verify';
 import { usedSeats } from '../license/seats';
@@ -86,7 +96,12 @@ import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 let orchestrator: AgentOrchestrator;
 // Singleton RAG indexer shared by the standalone RAG panel and the scope
 // auto-indexer so they write to the same chunk store.
-const ragIndexer = getDefaultRagIndexer();
+// Resolved LAZILY (not at module load): handlers.ts is imported before
+// main.ts applies the QA profile override, so capturing the indexer here
+// would bind it to the DEFAULT userData path and write index files
+// outside an isolated profile. getDefaultRagIndexer() memoizes on first
+// real use, by which time app.setPath('userData') has run.
+const ragIndexer = { buildIndex: (id: string, dir: string) => getDefaultRagIndexer().buildIndex(id, dir) };
 
 // ── IDE MCP HTTP server ─────────────────────────────────────────────────────
 // The IDE Integration panel writes editor configs pointing at
@@ -1300,8 +1315,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Re-trigger ensure (onboarding "retry" / first run). Streams progress via
   // the same `model:status` event used at launch.
   ipcMain.handle('model:ensure', async () => {
-    await ensureModelReady((s) => safeSend('model:status', s));
-    return getModelStatus();
+    // Return THIS run's terminal status, not the shared last-writer value —
+    // a concurrent launch-time run would otherwise mask a failed start.
+    return ensureModelReady((s) => safeSend('model:status', s));
   });
 
   ipcMain.handle('llm:pullModel', async (_e, name: string) => {
@@ -1365,8 +1381,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       if (!res.ok && res.status !== 404) {
         return { ok: false, error: `Ollama responded ${res.status}` };
       }
-      // Clean up the DB row (active flag included) so the model fully disappears.
+      // Clean up the DB row (active flag included) so the model fully
+      // disappears — and any in-memory session key with it (L1).
+      const row = getDb().prepare(`SELECT model_id FROM llm_models WHERE ollama_name=?`).get(name) as { model_id: string } | undefined;
       getDb().prepare(`DELETE FROM llm_models WHERE ollama_name=?`).run(name);
+      if (row) deleteSessionKey(row.model_id);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -1397,7 +1416,64 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       db.prepare(`INSERT INTO llm_models (model_id, name, ollama_name, base_url, api_key, is_active) VALUES (?,?,?,?,?,1)`)
         .run(id, modelName, modelName, 'http://localhost:11434/v1', 'ollama');
     }
+    // Keep runtime status honest across switches (clears no_model, warms a
+    // newly-activated local model, goes quiet for cloud) — M4/M5.
+    void ensureModelReady((s) => safeSend('model:status', s));
     return true;
+  });
+
+  // Provider preset registry — static data (llm/providerPresets.ts); the
+  // renderer renders whatever this returns, so new providers ship data-only.
+  ipcMain.handle('llm:listProviderPresets', () => PROVIDER_PRESETS);
+
+  // Resolve key + TARGET for a probe. Two modes, deliberately asymmetric:
+  //   - apiKey (pre-save): the renderer supplies both URL and the key it
+  //     already holds — nothing stored is at stake.
+  //   - modelId (saved row): the key resolves main-side AND the base URL is
+  //     taken from the ROW, never from the renderer. Otherwise a compromised
+  //     renderer could pair a saved key with an attacker URL and exfiltrate
+  //     it through the main process (security review H1).
+  const probeTarget = (opts: { baseUrl?: string; apiKey?: string; modelId?: string }):
+    { baseUrl?: string; key?: string; error?: string } => {
+    if (opts.modelId) {
+      const row = getDb().prepare(`SELECT model_id, base_url, api_key FROM llm_models WHERE model_id=?`)
+        .get(opts.modelId) as { model_id: string; base_url: string; api_key: string | null } | undefined;
+      if (!row) return { error: 'Model not found.' };
+      try {
+        return { baseUrl: row.base_url, key: usableApiKey(getDb(), row.model_id, row.api_key) };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    if (!opts.baseUrl?.trim()) return { error: 'Base URL is required.' };
+    return { baseUrl: opts.baseUrl, key: opts.apiKey };
+  };
+
+  // The default execution profile (v0: mode + reserved slots; is_active on
+  // llm_models remains authoritative for model choice until Phase B routing).
+  ipcMain.handle('llm:getExecutionProfile', () => getDefaultProfile(getDb()) ?? null);
+
+  // Do semantic features (memory ranking / RAG vectors) actually work right
+  // now? Drives the honest degraded-state notices instead of silent
+  // zero-vector indexes and keyword-only memory.
+  ipcMain.handle('llm:semanticStatus', () => getSemanticStatus());
+
+  // Effective capabilities for a provider (static registry ⊕ runtime probes).
+  ipcMain.handle('llm:getCapabilities', (_e, opts: { capabilityKey: string; model?: string }) =>
+    getEffectiveCapabilities(opts.capabilityKey, opts.model));
+
+  // Model discovery (GET /v1/models) with normalized, key-free errors.
+  ipcMain.handle('llm:discoverModels', async (_e, opts: { baseUrl?: string; apiKey?: string; modelId?: string }) => {
+    const t = probeTarget(opts);
+    if (t.error || !t.baseUrl) return { ok: false, error: { kind: 'auth', retryable: false, message: t.error ?? 'Base URL is required.' } };
+    return discoverModels(t.baseUrl, t.key);
+  });
+
+  // One cheap completion proving base URL + key + model work together.
+  ipcMain.handle('llm:testConnection', async (_e, opts: { baseUrl?: string; apiKey?: string; modelId?: string; model: string }) => {
+    const t = probeTarget(opts);
+    if (t.error || !t.baseUrl) return { ok: false, error: { kind: 'auth', retryable: false, message: t.error ?? 'Base URL is required.' } };
+    return testConnection(t.baseUrl, t.key, opts.model);
   });
 
   // ── Cloud models (BYOK, opt-in) ──────────────────────────────────────────
@@ -1406,31 +1482,72 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // provider the user explicitly configured. Local Ollama stays the default;
   // nothing here is enabled unless the user adds and activates a cloud model.
   ipcMain.handle('llm:listConfigured', () => {
-    return getDb().prepare(
-      `SELECT model_id, name, ollama_name, base_url, provider, context_window, is_active
+    // key_state is DERIVED — the api_key value itself never reaches the
+    // renderer. 'session' downgrades to 'session_expired' when the in-memory
+    // key died with a previous process (honest re-enter state).
+    const rows = getDb().prepare(
+      `SELECT model_id, name, ollama_name, base_url, provider, context_window, is_active,
+              CASE
+                WHEN api_key IS NULL OR api_key = '' OR api_key = 'ollama' THEN 'none'
+                WHEN api_key LIKE 'v1:enc:%' THEN 'sealed'
+                WHEN api_key = '${SESSION_SENTINEL}' THEN 'session'
+                ELSE 'locked'
+              END AS key_state
        FROM llm_models ORDER BY added_at DESC`
-    ).all();
+    ).all() as ({ model_id: string; key_state: string } & Record<string, unknown>)[];
+    return rows.map(r =>
+      r.key_state === 'session' && !getSessionKey(r.model_id)
+        ? { ...r, key_state: 'session_expired' }
+        : r
+    );
   });
 
   ipcMain.handle('llm:addCloudModel', (_e, m: {
-    provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean;
+    provider: string; label: string; model: string; baseUrl: string; apiKey: string;
+    activate?: boolean; persistence?: 'session';
   }) => {
     const db = getDb();
-    const existing = db.prepare(`SELECT model_id FROM llm_models WHERE ollama_name=?`).get(m.model) as { model_id: string } | undefined;
+    const secure = isSecretEncryptionAvailable();
+    // Credential policy (Commit 3.5): a key is persisted ONLY keychain-sealed.
+    // With no trustworthy keychain, the caller must explicitly opt into
+    // session-only (in-memory, gone on restart) — otherwise refuse with
+    // remediation. Base64/plaintext persistence does not exist anymore.
+    // A BLANK key (keyless providers: remote Ollama, custom endpoints) has
+    // nothing to protect — no gate, no sealing, no session mode (H3).
+    const hasKey = !!m.apiKey?.trim();
+    const sessionOnly = hasKey && m.persistence === 'session';
+    if (hasKey && !secure && !sessionOnly) {
+      return { error: 'secure_storage_unavailable' as const, message: new SecureStorageUnavailableError().message };
+    }
+    const storedKey = !hasKey ? '' : sessionOnly ? SESSION_SENTINEL : sealSecretString(m.apiKey);
+    const existing = db.prepare(`SELECT model_id, provider, base_url FROM llm_models WHERE ollama_name=?`)
+      .get(m.model) as { model_id: string; provider?: string; base_url?: string } | undefined;
+    // Never silently convert an installed LOCAL model's row into a remote one
+    // just because the names collide (L2) — refuse with a clear message.
+    if (existing && isOllamaManaged(existing.provider, existing.base_url)) {
+      return {
+        error: 'name_conflict' as const,
+        message: `"${m.model}" is already an installed local model. Use a different name/tag for the remote entry.`,
+      };
+    }
     const id = existing?.model_id ?? crypto.randomUUID();
     if (existing) {
       db.prepare(`UPDATE llm_models SET name=?, base_url=?, api_key=?, provider=? WHERE model_id=?`)
-        .run(m.label || m.model, m.baseUrl, m.apiKey, m.provider, id);
+        .run(m.label || m.model, m.baseUrl, storedKey, m.provider, id);
     } else {
       db.prepare(`INSERT INTO llm_models (model_id, name, ollama_name, base_url, api_key, provider, is_active)
                   VALUES (?,?,?,?,?,?,0)`)
-        .run(id, m.label || m.model, m.model, m.baseUrl, m.apiKey, m.provider);
+        .run(id, m.label || m.model, m.model, m.baseUrl, storedKey, m.provider);
     }
+    if (sessionOnly) setSessionKey(id, m.apiKey);
     if (m.activate) {
       db.prepare(`UPDATE llm_models SET is_active=0`).run();
       db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(id);
+      // Refresh the runtime status so a lingering no_model banner clears and
+      // lifecycle state matches the new active model (M4/M5).
+      void ensureModelReady((s) => safeSend('model:status', s));
     }
-    return { model_id: id };
+    return { model_id: id, persistence: sessionOnly ? ('session' as const) : ('persistent' as const) };
   });
 
   // Clamp to [512, 128 000] so a user typo can't break the model call (most
@@ -1445,11 +1562,13 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const db = getDb();
     db.prepare(`UPDATE llm_models SET is_active=0`).run();
     db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(modelId);
+    void ensureModelReady((s) => safeSend('model:status', s)); // M4/M5
     return true;
   });
 
   ipcMain.handle('llm:removeModel', (_e, modelId: string) => {
     getDb().prepare(`DELETE FROM llm_models WHERE model_id=?`).run(modelId);
+    deleteSessionKey(modelId); // drop any in-memory session key with the row
     return true;
   });
 
@@ -2196,6 +2315,15 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('oauth:startFlow', async (_e, opts: { provider: string }): Promise<{ success: boolean; error?: string }> => {
     try {
       if (opts?.provider !== 'google') return { success: false, error: `Unsupported provider: ${opts?.provider}` };
+      // OAuth tokens are only ever persisted keychain-sealed. With no
+      // trustworthy keychain, refuse up front (before Google is contacted)
+      // rather than fail after consent — same policy as BYOK keys.
+      if (!isSecretEncryptionAvailable()) {
+        return {
+          success: false,
+          error: 'Secure key storage is unavailable on this system, so Artha can’t save Google sign-in tokens. Enable a system keychain (e.g. GNOME Keyring / KWallet with Secret Service on Linux) and try again.',
+        };
+      }
       const db = getDb();
       const clientId = readSettings().google_client_id as string | undefined;
       if (!clientId) return { success: false, error: 'No Google Client ID configured. Add it in the Cloud panel’s Setup section first.' };
@@ -2257,7 +2385,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
                  access_token=excluded.access_token,
                  refresh_token=COALESCE(excluded.refresh_token, oauth_tokens.refresh_token),
                  expires_at=excluded.expires_at, scope=excluded.scope`
-            ).run(tok.access_token ?? null, tok.refresh_token ?? null, expiresAt, tok.scope ?? GOOGLE_SCOPES.join(' '));
+            ).run(
+              // Sealed before they ever touch the DB (startFlow already
+              // verified a trustworthy keychain exists).
+              tok.access_token ? sealSecretString(tok.access_token) : null,
+              tok.refresh_token ? sealSecretString(tok.refresh_token) : null,
+              expiresAt,
+              tok.scope ?? GOOGLE_SCOPES.join(' ')
+            );
             finish({ success: true });
           } catch (e) {
             finish({ success: false, error: e instanceof Error ? e.message : String(e) });
@@ -2293,6 +2428,8 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const row = db.prepare(`SELECT access_token FROM oauth_tokens WHERE provider=?`).get(provider) as { access_token: string | null } | undefined;
     db.prepare(`DELETE FROM oauth_tokens WHERE provider=?`).run(provider);
     if (row?.access_token) {
+      // Stored sealed; open only for the outbound revoke call.
+      row.access_token = openSecretString(row.access_token);
       try {
         await fetch('https://oauth2.googleapis.com/revoke', {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

@@ -53,3 +53,17 @@ describe('formatIndexList', () => {
     expect(out).toContain('- Docs (3 chunks)');
   });
 });
+
+describe('formatRagResults — degraded retriever honesty (review M2)', () => {
+  it('says the files could NOT be searched when semantic retrieval is unavailable', () => {
+    const out = formatRagResults('tax rules', [], true);
+    expect(out).toMatch(/could NOT be searched/i);
+    expect(out).toMatch(/not a statement about their contents/i);
+    expect(out).not.toMatch(/No matching passages/i);   // never a content claim
+  });
+
+  it('keeps the ordinary no-match message when the retriever DID run', () => {
+    const out = formatRagResults('tax rules', [], false);
+    expect(out).toMatch(/No matching passages/i);
+  });
+});

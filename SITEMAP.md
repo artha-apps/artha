@@ -15,7 +15,14 @@
 | `scripts/sign-license.mjs` | Offline seller-side CLI — `--genkeys` mints the Ed25519 keypair once; `--tier/--seats/--org/--days` issues a signed license token. Private key stays in `~/.artha-license-key.pem` (gitignored) and never ships |
 | `.github/workflows/ci.yml` | CI: typecheck + lint + test on push/PR |
 | `.github/workflows/release.yml` | Release: build DMG/EXE/DEB, code-sign + notarize macOS (via `CSC_*`/`APPLE_*` secrets), and publish to `artha-apps/artha` GitHub Releases on tag push |
+| `docs/architecture/ARTHA_PLATFORM_VISION_AND_EXECUTION_MODES.md` | Phase 0 decision record — platform thesis (user control), local-first definition, four execution modes (Local/BYOK/Cloud-deferred/Hybrid), BYOK vs BYOC terminology, three external-provider paths, execution profiles, long-term module map, descoped items, engineering principles, honesty boundaries |
+| `docs/architecture/ARTHA_AUTOMATION_OBJECT_MODEL.md` | Phase E foundation decision record — the ONE shared task-and-automation object model (Task=agent_runs, Capability=skills, Schedule, Routine, Workflow, Tag, Artifact, Approval, usage ledger) that Scheduler/Routines/Workflows/Dispatch/Cowork are views over; additive-migration table evolution plan |
 | `docs/deploy/org-hub.md` | Runbook for standing up the org hub (Team/Business) — dedicated-host (Option A, recommended) + interim Docker (Option B), sizing, network, updates, backups, license issuance, member quick-connect, shared context packs (GET /packs, /chat packId) |
+| `docs/architecture/ARTHA_MONETIZATION_TECHNICAL_FOUNDATION.md` | Technical foundation for metering/cost/budgets/entitlement gating — current license+Stripe state, Phase B `usage_ledger` design, price registry, budgets, provisional entitlement map, three-path economics, Phase H cloud gate. NOT pricing; GTM docs unchanged |
+| `docs/architecture/ARTHA_PROVIDER_AND_RUNTIME_ARCHITECTURE.md` | Phase 0 decision record — current provider coupling audit, shared provider/runtime SDK boundaries (injectable ports), provider roster + gateway strategy, capability registry, execution-profile schema, headless-core process boundary (D-P7), browser substrate decision (D-P8: WebContentsView + CDP, no bundled Playwright), local-runtime seams, mock-provider test strategy |
+| `docs/architecture/ARTHA_PHASED_ROADMAP.md` | Phase 0→H roadmap with acceptance gates, Phase A commits 4–10 plan, 46-row feature-group traceability matrix (status/code/work/DB/security/tests/phase), residual-assumptions register (Ollama/localhost/local-planner/single-model/Electron-host), preserved future commitments |
+| `docs/architecture/ARTHA_SECURITY_THREAT_MODEL.md` | Security threat model — assets, trust boundaries (IPC/MCP/browser/LAN/cloud/desktop/Sentry/update), normative credential-storage + tag-enforcement policy, control classification table, browser-agent & prompt-injection layered mitigations, 10 threat scenarios; marks planned controls Phase A/B/C |
+| `docs/testing/PHASE_A_MANUAL_TEST_MATRIX.md` | Rendered-UI half of the Phase A smoke strategy — 14 founder-required scenarios (onboarding paths, discovery, switching, restart, keychain-absent, upgrade migration) with steps/expected/automation status; `ARTHA_FORCE_NO_KEYCHAIN=1` usage |
 | `docs/user-guide.md` | Non-technical end-user guide: quick-start (install → first task) + Part 2 "every feature, step by step" (numbered steps + Try-this per feature). Mirrors the in-app guide copy |
 | `docs/user-guide-slides.html` | Self-contained HTML slide deck of the user guide — one feature per slide, keyboard/click/swipe nav, print-to-PDF. Same copy as `user-guide.md` |
 
@@ -56,7 +63,7 @@
 | `src/skills/registry.ts` | `SkillRegistry` singleton — loads/creates/toggles YAML skill files, resolves `/slug` + auto-match, filters tool schemas per skill |
 | `src/skills/util.ts` | Pure skill helpers — slug normalisation, `/slug` parsing, import parsing, tool-allowlist filtering (unit-tested) |
 | **bundles/** | |
-| `src/bundles/bundle.ts` | Skill-bundle import/export — HMAC-signed manifest, golden-content hashing, `ENV:` secret stripping |
+| `src/bundles/bundle.ts` | Skill-bundle import/export — SHA-256 integrity checksum on the manifest (unkeyed: detects modification, does NOT prove authorship; keyed signing planned), golden-content hashing, `ENV:` secret stripping |
 | **router/** | |
 | `src/router/benchmark.ts` | Model capability probes (plan / tool-args / synthesis) that score local Ollama models for the model router; `benchmarkModel()` probes ONE model (post-install Model Fit fill-in), `runBenchmark()` sweeps the fleet |
 | **ipc/** | |
@@ -184,7 +191,7 @@
 | `ProvenancePanel.tsx` | Source attribution for agent answers (`.artha-receipt.json` sidecar) |
 | `TimeTravelPanel.tsx` | Session replay / history — fork a run from any past step |
 | `RouterPanel.tsx` | Model router config — benchmark + manual overrides |
-| `BundlesPanel.tsx` | Skill bundle management — HMAC-signed export / import |
+| `BundlesPanel.tsx` | Skill bundle management — integrity-checksummed export / import (SHA-256; authenticity signing planned) |
 | `vite.config.ts` | Vite config — React plugin, build output to `dist/` |
 | `tailwind.config.js` | Tailwind config — artha colour palette |
 | `tsconfig.json` | TypeScript config for renderer (ESNext, bundler resolution) |

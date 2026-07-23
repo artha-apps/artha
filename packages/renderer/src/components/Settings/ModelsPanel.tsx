@@ -17,7 +17,8 @@ interface OllamaModel {
   details?: { parameter_size?: string; quantization_level?: string; family?: string };
 }
 
-/** A saved model row (local or cloud) from `llm_models`. */
+/** A saved model row (local or cloud) from `llm_models`. `key_state` is
+ *  derived in the main process — key material never reaches this component. */
 interface ConfiguredModel {
   model_id: string;
   name: string;
@@ -26,14 +27,31 @@ interface ConfiguredModel {
   provider: string;
   context_window: number;
   is_active: number;
+  key_state?: 'none' | 'sealed' | 'session' | 'session_expired' | 'locked';
 }
 
-/** Provider presets for the BYOK form. base_url is OpenAI-compatible for all. */
-const CLOUD_PROVIDERS: Record<string, { label: string; baseUrl: string; modelHint: string }> = {
-  openai: { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', modelHint: 'gpt-4o-mini' },
-  anthropic: { label: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', modelHint: 'claude-sonnet-4-6' },
-  custom: { label: 'Custom (OpenAI-compatible)', baseUrl: '', modelHint: 'model-name' },
-};
+/** Provider preset shape (mirrors llm/providerPresets.ts, served over IPC). */
+interface ProviderPreset {
+  id: string;
+  label: string;
+  kind: 'cloud' | 'gateway' | 'runtime-remote' | 'custom';
+  baseUrl: string;
+  baseUrlTemplate?: string;
+  keyRequired: boolean;
+  keyHint: string;
+  modelHint: string;
+  docsUrl: string;
+  capabilityKey: string;
+  note?: string;
+}
+
+/** Offline fallback (non-Electron/test contexts) — the IPC registry is the
+ *  source of truth; this only keeps the form usable if that call fails. */
+const FALLBACK_PRESETS: ProviderPreset[] = [
+  { id: 'openai', label: 'OpenAI', kind: 'cloud', baseUrl: 'https://api.openai.com/v1', keyRequired: true, keyHint: 'sk-…', modelHint: 'gpt-4o-mini', docsUrl: 'https://platform.openai.com/api-keys', capabilityKey: 'openai' },
+  { id: 'anthropic', label: 'Anthropic', kind: 'cloud', baseUrl: 'https://api.anthropic.com/v1', keyRequired: true, keyHint: 'sk-ant-…', modelHint: 'claude-sonnet-4-6', docsUrl: 'https://console.anthropic.com/settings/keys', capabilityKey: 'anthropic' },
+  { id: 'custom', label: 'Custom (OpenAI-compatible)', kind: 'custom', baseUrl: '', baseUrlTemplate: 'https://{host}/v1', keyRequired: false, keyHint: 'if your endpoint needs one', modelHint: 'model-name', docsUrl: 'https://artha.space/docs', capabilityKey: 'custom' },
+];
 
 /** Result of `llm:detectHardware` — feeds the "Recommended" hint. */
 interface HardwareInfo {
@@ -292,12 +310,26 @@ export default function ModelsPanel() {
   // BYOK cloud state — form fields + saved rows from `llm_models`.
   const [configured, setConfigured] = useState<ConfiguredModel[]>([]);
   const [showCloudForm, setShowCloudForm] = useState(false);
-  const [cloudProvider, setCloudProvider] = useState<keyof typeof CLOUD_PROVIDERS>('openai');
+  const [presets, setPresets] = useState<ProviderPreset[]>(FALLBACK_PRESETS);
+  const [cloudProvider, setCloudProvider] = useState<string>('openai');
   const [cloudModel, setCloudModel] = useState('');
-  const [cloudBaseUrl, setCloudBaseUrl] = useState(CLOUD_PROVIDERS.openai.baseUrl);
+  const [cloudBaseUrl, setCloudBaseUrl] = useState(FALLBACK_PRESETS[0].baseUrl);
   const [cloudKey, setCloudKey] = useState('');
+  // Discovery + connection-test state (commit 6 IPC).
+  const [discovered, setDiscovered] = useState<string[] | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [testState, setTestState] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+  // Effective capabilities for the selected preset (registry ⊕ probes).
+  const [caps, setCaps] = useState<Record<string, string> | null>(null);
   const [savingCloud, setSavingCloud] = useState(false);
   const [cloudError, setCloudError] = useState('');
+  // No trustworthy OS keychain: the save was REFUSED and the user must choose
+  // session-only use (or fix their keychain). We never persist a key that
+  // isn't keychain-sealed — base64/plaintext storage does not exist.
+  const [storagePrompt, setStoragePrompt] = useState<string | null>(null);
+  // The key was accepted for THIS SESSION ONLY (in memory, gone on restart).
+  const [sessionNotice, setSessionNotice] = useState(false);
 
   // Tab controls which list is shown: models already on disk vs the pull catalog.
   const [tab, setTab] = useState<'installed' | 'browse'>('installed');
@@ -318,6 +350,12 @@ export default function ModelsPanel() {
 
     // Model Fit data — benchmark rows measured on THIS machine. Best-effort.
     window.artha.router.listProfiles().then(setProfiles).catch(() => setProfiles([]));
+
+    // Provider presets — IPC registry is authoritative; fallback keeps the
+    // BYOK form usable if the call fails (non-Electron/test contexts).
+    window.artha.llm.listProviderPresets?.()
+      .then(p => { if (Array.isArray(p) && p.length) setPresets(p as ProviderPreset[]); })
+      .catch(() => {});
 
     // 2. Configured (saved) models — cloud BYOK must show even when Ollama is offline
     window.artha.llm.listConfigured().then(c => {
@@ -430,26 +468,84 @@ export default function ModelsPanel() {
     }
   };
 
-  const pickProvider = (p: keyof typeof CLOUD_PROVIDERS) => {
-    setCloudProvider(p);
-    setCloudBaseUrl(CLOUD_PROVIDERS[p].baseUrl);
+  /** Currently selected preset (falls back to custom-shaped defaults). */
+  const curPreset: ProviderPreset =
+    presets.find(p => p.id === cloudProvider) ?? presets[presets.length - 1];
+
+  const pickProvider = (p: ProviderPreset) => {
+    setCloudProvider(p.id);
+    setCloudBaseUrl(p.baseUrl); // '' for template presets → user fills it in
+    setDiscovered(null);
+    setTestState(null);
+    setCloudError('');
+    window.artha.llm.getCapabilities?.({ capabilityKey: p.capabilityKey })
+      .then(setCaps).catch(() => setCaps(null));
   };
 
-  const saveCloudModel = async () => {
+  /** GET /v1/models through the main process — populates the model datalist. */
+  const discover = async () => {
+    if (!cloudBaseUrl.trim()) { setCloudError('Base URL is required to find models'); return; }
+    setDiscovering(true);
+    setCloudError('');
+    setTestState(null);
+    try {
+      const res = await window.artha.llm.discoverModels({ baseUrl: cloudBaseUrl.trim(), apiKey: cloudKey.trim() || undefined });
+      if (res.ok) {
+        setDiscovered(res.models);
+        if (res.models.length === 0) setCloudError('This endpoint lists no models — type the model name manually.');
+      } else {
+        setDiscovered(null);
+        setCloudError(res.error.message);
+      }
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  /** One cheap completion proving URL + key + model work together. */
+  const testConn = async () => {
+    if (!cloudModel.trim() || !cloudBaseUrl.trim()) { setCloudError('Base URL and model name are required to test'); return; }
+    setTesting(true);
+    setCloudError('');
+    try {
+      const res = await window.artha.llm.testConnection({
+        baseUrl: cloudBaseUrl.trim(), apiKey: cloudKey.trim() || undefined, model: cloudModel.trim(),
+      });
+      setTestState(res.ok
+        ? { ok: true, text: `Connected — ${cloudModel.trim()} replied in ${res.latencyMs} ms` }
+        : { ok: false, text: res.error.message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const saveCloudModel = async (persistence?: 'session') => {
     if (!cloudModel.trim()) { setCloudError('Model name is required'); return; }
     if (!cloudBaseUrl.trim()) { setCloudError('Base URL is required'); return; }
-    if (!cloudKey.trim()) { setCloudError('API key is required'); return; }
+    if (curPreset.keyRequired && !cloudKey.trim()) { setCloudError(`${curPreset.label} requires an API key`); return; }
     setSavingCloud(true);
     setCloudError('');
     try {
-      await window.artha.llm.addCloudModel({
+      const res = await window.artha.llm.addCloudModel({
         provider: cloudProvider,
-        label: `${CLOUD_PROVIDERS[cloudProvider].label}: ${cloudModel.trim()}`,
+        label: `${curPreset.label}: ${cloudModel.trim()}`,
         model: cloudModel.trim(),
         baseUrl: cloudBaseUrl.trim(),
         apiKey: cloudKey.trim(),
         activate: true,
+        persistence,
       });
+      if ('error' in res) {
+        if (res.error === 'secure_storage_unavailable') {
+          // Keychain unavailable: keep the form open, offer session-only use.
+          setStoragePrompt(res.message);
+        } else {
+          setCloudError(res.message); // e.g. name_conflict with a local model
+        }
+        return;
+      }
+      setStoragePrompt(null);
+      setSessionNotice(res.persistence === 'session');
       setShowCloudForm(false);
       setCloudModel(''); setCloudKey('');
       setActiveModelState(cloudModel.trim());
@@ -937,6 +1033,49 @@ export default function ModelsPanel() {
           </p>
         </div>
 
+        {/* No trustworthy OS keychain: the save was refused. Offer the honest
+            alternatives — session-only use, or fix the keychain and retry.
+            A key is never written to disk unless it is keychain-sealed. */}
+        {storagePrompt && (
+          <div className="flex items-start gap-2 mb-4 text-xs bg-artha-warn/10 border border-artha-warn/30 rounded-lg px-3 py-2.5">
+            <Shield size={13} className="text-artha-warn shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="leading-relaxed text-artha-text font-medium">Secure key storage isn’t available on this system</p>
+              <p className="leading-relaxed text-artha-muted mt-0.5">{storagePrompt}</p>
+              <div className="flex items-center gap-2 mt-2">
+                <button
+                  onClick={() => { setStoragePrompt(null); void saveCloudModel('session'); }}
+                  disabled={savingCloud}
+                  className="px-2.5 py-1 rounded-lg bg-artha-warn/15 hover:bg-artha-warn/25 text-artha-warn font-medium transition-colors disabled:opacity-50"
+                >
+                  Use for this session only
+                </button>
+                <button
+                  onClick={() => setStoragePrompt(null)}
+                  className="px-2.5 py-1 rounded-lg bg-artha-s2 hover:bg-artha-s3 text-artha-muted transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+              <p className="leading-relaxed text-artha-muted mt-2">
+                Session-only means the key lives in memory and is cleared when Artha closes —
+                you’ll enter it again next launch.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* The key was accepted for this session only — say so plainly. */}
+        {sessionNotice && (
+          <div className="flex items-start gap-2 mb-4 text-xs bg-artha-s2 border border-artha-border rounded-lg px-3 py-2.5">
+            <Shield size={13} className="text-artha-accent shrink-0 mt-0.5" />
+            <p className="leading-relaxed text-artha-muted">
+              This key is held in memory for the current session and will be removed when Artha
+              closes. You’ll be asked to enter it again after a restart.
+            </p>
+          </div>
+        )}
+
         {/* Configured cloud models */}
         {cloudModels.length > 0 && (
           <div className="space-y-2 mb-4">
@@ -951,6 +1090,16 @@ export default function ModelsPanel() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-artha-text truncate">{m.name}</p>
                     <code className="text-[11px] text-artha-muted font-mono truncate block">{m.base_url}</code>
+                    {/* Honest key state — derived main-side, no key material. */}
+                    {m.key_state === 'session' && (
+                      <span className="text-[10px] text-artha-warn">Key held for this session only — cleared when Artha closes</span>
+                    )}
+                    {m.key_state === 'session_expired' && (
+                      <span className="text-[10px] text-artha-danger">Session key expired — re-enter the key to use this model</span>
+                    )}
+                    {m.key_state === 'locked' && (
+                      <span className="text-[10px] text-artha-danger">Key locked — enable a system keychain and restart, or re-enter the key</span>
+                    )}
                   </div>
                   {isActive ? (
                     <span className="flex items-center gap-1 text-xs text-artha-accent font-medium">
@@ -975,48 +1124,110 @@ export default function ModelsPanel() {
         {/* Add-cloud form */}
         {showCloudForm && (
           <div className="bg-artha-s2 border border-artha-border rounded-xl p-4 space-y-3">
-            <div className="flex gap-1.5">
-              {(Object.keys(CLOUD_PROVIDERS) as (keyof typeof CLOUD_PROVIDERS)[]).map(p => (
-                <button key={p} onClick={() => pickProvider(p)}
+            <div className="flex flex-wrap gap-1.5">
+              {presets.map(p => (
+                <button key={p.id} onClick={() => pickProvider(p)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    cloudProvider === p
+                    cloudProvider === p.id
                       ? 'bg-artha-accent/20 text-artha-text border border-artha-accent/30'
                       : 'bg-artha-surface border border-artha-border text-artha-muted hover:text-artha-text'
                   }`}>
-                  {CLOUD_PROVIDERS[p].label}
+                  {p.label}
                 </button>
               ))}
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-artha-muted mb-1">Model name</label>
-              <input value={cloudModel} onChange={e => setCloudModel(e.target.value)}
-                placeholder={CLOUD_PROVIDERS[cloudProvider].modelHint}
-                className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
-            </div>
+            {/* Preset-specific honesty note (gateway routing, remote-runtime
+                lifecycle, Azure deployment naming) + key docs link. */}
+            {(curPreset.note || curPreset.docsUrl) && (
+              <p className="text-[11px] text-artha-muted leading-relaxed">
+                {curPreset.note}{curPreset.note ? ' ' : ''}
+                <a href={curPreset.docsUrl} target="_blank" rel="noreferrer" className="text-artha-accent hover:underline">
+                  Get a key / docs ↗
+                </a>
+              </p>
+            )}
 
-            {cloudProvider === 'custom' && (
+            {/* What this provider can do (capability registry; 'varies' =
+                depends on the model you pick) + its data-retention honesty note. */}
+            {caps && (
+              <div className="space-y-1">
+                <div className="flex flex-wrap gap-1">
+                  {([['toolCalling', 'Tools'], ['structuredOutput', 'JSON'], ['reasoning', 'Reasoning'], ['vision', 'Vision'], ['embeddings', 'Embeddings'], ['usageReporting', 'Usage']] as const).map(([k, label]) => {
+                    const v = caps[k];
+                    const tone = v === 'yes' ? 'text-artha-success bg-artha-success/10'
+                      : v === 'no' ? 'text-artha-muted bg-artha-s2 line-through'
+                      : 'text-artha-warn bg-artha-warn/10';
+                    return (
+                      <span key={k} title={`${label}: ${v}`} className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${tone}`}>
+                        {label}{v === 'varies' ? '·varies' : v === 'unknown' ? '·?' : ''}
+                      </span>
+                    );
+                  })}
+                </div>
+                {typeof caps.dataRetentionNote === 'string' && (
+                  <p className="text-[10px] text-artha-subtle leading-relaxed">{caps.dataRetentionNote}</p>
+                )}
+              </div>
+            )}
+
+            {/* Base URL — fixed presets hide it; template presets require it. */}
+            {!curPreset.baseUrl && (
               <div>
                 <label className="block text-xs font-medium text-artha-muted mb-1">Base URL (OpenAI-compatible)</label>
-                <input value={cloudBaseUrl} onChange={e => setCloudBaseUrl(e.target.value)}
-                  placeholder="https://your-endpoint/v1"
+                <input value={cloudBaseUrl} onChange={e => { setCloudBaseUrl(e.target.value); setDiscovered(null); setTestState(null); }}
+                  placeholder={curPreset.baseUrlTemplate ?? 'https://your-endpoint/v1'}
                   className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
               </div>
             )}
 
             <div>
               <label className="block text-xs font-medium text-artha-muted mb-1 flex items-center gap-1.5">
-                <Lock size={11} /> API key
+                <Lock size={11} /> API key{curPreset.keyRequired ? '' : ' (optional for this provider)'}
               </label>
-              <input type="password" value={cloudKey} onChange={e => setCloudKey(e.target.value)}
-                placeholder="sk-…"
+              <input type="password" value={cloudKey} onChange={e => { setCloudKey(e.target.value); setTestState(null); }}
+                placeholder={curPreset.keyHint}
                 className="w-full bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-artha-muted mb-1">Model</label>
+              <div className="flex gap-2">
+                <input value={cloudModel} list="artha-discovered-models"
+                  onChange={e => { setCloudModel(e.target.value); setTestState(null); }}
+                  placeholder={curPreset.modelHint}
+                  className="flex-1 bg-artha-surface border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none font-mono" />
+                <button onClick={() => void discover()} disabled={discovering}
+                  title="List this endpoint's models (GET /v1/models)"
+                  className="px-3 py-2 rounded-lg border border-artha-border text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors disabled:opacity-50 whitespace-nowrap">
+                  {discovering ? <RefreshCw size={12} className="animate-spin" /> : 'Find models'}
+                </button>
+              </div>
+              <datalist id="artha-discovered-models">
+                {(discovered ?? []).map(m => <option key={m} value={m} />)}
+              </datalist>
+              {discovered && discovered.length > 0 && (
+                <p className="text-[11px] text-artha-muted mt-1">
+                  {discovered.length} models found — pick from the list or keep typing.
+                </p>
+              )}
+            </div>
+
+            {/* Connection test — proves URL + key + model together, pre-save. */}
+            <div className="flex items-center gap-2">
+              <button onClick={() => void testConn()} disabled={testing}
+                className="px-3 py-1.5 rounded-lg border border-artha-border text-xs text-artha-muted hover:text-artha-text hover:bg-artha-text/5 transition-colors disabled:opacity-50">
+                {testing ? <RefreshCw size={12} className="animate-spin" /> : 'Test connection'}
+              </button>
+              {testState && (
+                <p className={`text-xs ${testState.ok ? 'text-artha-success' : 'text-artha-danger'}`}>{testState.text}</p>
+              )}
             </div>
 
             {cloudError && <p className="text-xs text-artha-danger">{cloudError}</p>}
 
             <div className="flex gap-2">
-              <button onClick={saveCloudModel} disabled={savingCloud}
+              <button onClick={() => void saveCloudModel()} disabled={savingCloud}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-40 text-sm font-medium transition-colors">
                 {savingCloud ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
                 Save &amp; activate

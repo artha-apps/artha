@@ -16,11 +16,23 @@
  */
 import type * as Sentry from '@sentry/electron/main';
 
+/** Redact credential-shaped substrings anywhere they could ride an error
+ *  message — provider 401 bodies can echo partial keys, and a future logging
+ *  mistake shouldn't become a telemetry leak (security review L5). */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/\b(sk|gsk|ghp|xoxb|ya29|AIza)[-_][A-Za-z0-9._-]{6,}/g, '<redacted-key>')
+    .replace(/\bsk-[A-Za-z0-9._-]{6,}/g, '<redacted-key>')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/g, 'Bearer <redacted>')
+    .replace(/\bv1:(enc|raw|session)[^\s"']*/g, '<redacted-envelope>');
+}
+
 export function scrubEvent<T extends Sentry.Event>(event: T): T | null {
   // Replace absolute paths (……/Users/foo/bar/baz.ts → <path>/baz.ts) anywhere
-  // they appear in human-readable text. Keeps the filename so stacks stay useful.
+  // they appear in human-readable text, and credential-shaped substrings with
+  // redaction markers. Keeps filenames so stacks stay useful.
   const stripPaths = (text: string): string =>
-    text.replace(/(?:\/[^\s/:]+)+\/([^\s/:]+)/g, '<path>/$1');
+    redactSecrets(text.replace(/(?:\/[^\s/:]+)+\/([^\s/:]+)/g, '<path>/$1'));
 
   // Exception values/messages may contain interpolated paths or content.
   if (event.exception?.values) {

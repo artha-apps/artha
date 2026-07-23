@@ -10,6 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Cpu, Check, Search, Loader2 } from 'lucide-react';
+import { activeModelFromStatus } from '../../lib/modelStatusLabel';
 
 export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
   const [open, setOpen] = useState(false);
@@ -24,6 +25,18 @@ export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
   useEffect(() => {
     window.artha.llm.getActiveModel().then(setActive).catch(() => setActive(null));
   }, [refreshKey]);
+
+  // Stay current WITHOUT interaction: every activation path emits
+  // `model:status` with the model name (onboarding finish, model switch,
+  // BYOK add). Before this subscription the chip sat on "No model" after
+  // onboarding until the user happened to click something (validation row 1
+  // defect — stale state, missing invalidation).
+  useEffect(() => {
+    const off = window.artha.llm.onModelStatus((s) => {
+      setActive(cur => activeModelFromStatus(cur, s));
+    });
+    return () => { off(); };
+  }, []);
 
   // Pull the model list each time the dropdown opens (cheap, and picks up any
   // model the user just pulled). Union of installed Ollama models + configured

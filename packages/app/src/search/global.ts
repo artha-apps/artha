@@ -15,6 +15,7 @@
  * "search" action can opt into the slower semantic re-rank.
  */
 import { getDb } from '../db/schema';
+import { isValidVector, EMBED_DIM } from '../rag/vectorIntegrity';
 
 const OLLAMA_EMBED_URL = 'http://localhost:11434/api/embeddings';
 const EMBED_MODEL = 'nomic-embed-text';
@@ -41,7 +42,9 @@ async function embed(text: string): Promise<number[] | null> {
       body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000) }),
     });
     const json = (await res.json()) as { embedding?: number[] };
-    return Array.isArray(json.embedding) && json.embedding.length ? json.embedding : null;
+    // Validate before use: the invariant forbids COMPARING a knowingly
+    // invalid vector, not just storing one.
+    return isValidVector(json.embedding, EMBED_DIM) ? json.embedding : null;
   } catch {
     return null;
   }

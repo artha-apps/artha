@@ -12,11 +12,15 @@ import type { SkillMetric, SkillModelStats, SkillToolUsage, SkillFailure } from 
  */
 export type ArthaAPI = typeof api;
 
-/** Phase of the local-model startup flow (auto-start Ollama + pre-warm). */
+/** Phase of the model startup flow (auto-start Ollama + pre-warm for local
+ *  models; immediate 'ready' for cloud models; 'no_model' = nothing is
+ *  configured at all — the honest empty state, never a fake default). */
 export interface ModelStatus {
-  phase: 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'error';
+  phase: 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'no_model' | 'error';
   model?: string;
   detail?: string;
+  /** On 'no_model': whether Ollama exists (onboarding's install card, B1). */
+  ollamaInstalled?: boolean;
 }
 
 /** A parsed Bring-Your-Own-Memory entry, exchanged with the BYOM importer.
@@ -364,8 +368,42 @@ const api = {
     // Cloud models (BYOK, opt-in). Keys are stored locally and only sent to the
     // provider the user configured; local Ollama remains the default.
     listConfigured: () => ipcRenderer.invoke('llm:listConfigured'),
-    addCloudModel: (m: { provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean }) =>
-      ipcRenderer.invoke('llm:addCloudModel', m),
+    // Default execution profile (v0 schema; Phase B routing consumes it).
+    getExecutionProfile: () => ipcRenderer.invoke('llm:getExecutionProfile') as Promise<Record<string, unknown> | null>,
+    // Honest semantic-feature status (embeddings available or why not).
+    semanticStatus: () => ipcRenderer.invoke('llm:semanticStatus') as Promise<
+      { available: true } | { available: false; reason: 'ollama_down' | 'embed_model_missing' }
+    >,
+    // Effective capabilities: static per-provider registry overlaid with
+    // runtime probe facts (e.g. "this model can't think").
+    getCapabilities: (opts: { capabilityKey: string; model?: string }) =>
+      ipcRenderer.invoke('llm:getCapabilities', opts) as Promise<Record<string, string>>,
+    // Probes: pass apiKey for a just-typed key, or modelId for a saved model
+    // (its sealed key is resolved in the main process, never sent here).
+    discoverModels: (opts: { baseUrl: string; apiKey?: string; modelId?: string }) =>
+      ipcRenderer.invoke('llm:discoverModels', opts) as Promise<
+        { ok: true; models: string[] } |
+        { ok: false; error: { kind: string; status?: number; message: string; retryable: boolean } }
+      >,
+    testConnection: (opts: { baseUrl: string; apiKey?: string; modelId?: string; model: string }) =>
+      ipcRenderer.invoke('llm:testConnection', opts) as Promise<
+        { ok: true; latencyMs: number; model: string } |
+        { ok: false; error: { kind: string; status?: number; message: string; retryable: boolean } }
+      >,
+    // Static provider preset registry (data-only; see llm/providerPresets.ts).
+    listProviderPresets: () => ipcRenderer.invoke('llm:listProviderPresets') as Promise<{
+      id: string; label: string; kind: 'cloud' | 'gateway' | 'runtime-remote' | 'custom';
+      baseUrl: string; baseUrlTemplate?: string; keyRequired: boolean; keyHint: string;
+      modelHint: string; docsUrl: string; capabilityKey: string; note?: string;
+    }[]>,
+    // Persist policy: with a trustworthy OS keychain the key is sealed at
+    // rest; without one the call REFUSES unless persistence:'session' is
+    // passed (in-memory key, cleared on quit). See security/secretString.ts.
+    addCloudModel: (m: { provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean; persistence?: 'session' }) =>
+      ipcRenderer.invoke('llm:addCloudModel', m) as Promise<
+        { model_id: string; persistence: 'persistent' | 'session' } |
+        { error: 'secure_storage_unavailable' | 'name_conflict'; message: string }
+      >,
     setActiveModelById: (modelId: string) =>
       ipcRenderer.invoke('llm:setActiveModelById', modelId),
     setContextWindow: (modelId: string, tokens: number) =>

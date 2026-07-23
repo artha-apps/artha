@@ -20,6 +20,7 @@
 import { getDb } from '../db/schema';
 import { getRunContext } from './runContext';
 import { getSessionScopes } from '../db/scopes';
+import { isValidVector, EMBED_DIM } from '../rag/vectorIntegrity';
 
 const OLLAMA_EMBED_URL = 'http://localhost:11434/api/embeddings';
 const EMBED_MODEL = 'nomic-embed-text';
@@ -59,7 +60,10 @@ export async function embedText(text: string): Promise<number[] | null> {
       body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
     });
     const json = (await res.json()) as { embedding?: number[] };
-    return Array.isArray(json.embedding) && json.embedding.length ? json.embedding : null;
+    // Validate before caching: empty, all-zero, non-finite or wrong-dimension
+    // payloads are treated as "unavailable" rather than persisted — Artha
+    // never stores a knowingly invalid vector (see rag/vectorIntegrity.ts).
+    return isValidVector(json.embedding, EMBED_DIM) ? json.embedding : null;
   } catch {
     return null;
   }
@@ -136,12 +140,14 @@ function loadCandidateMemories(projectId: string | null, cap = 40): MemoryRow[] 
   return rows;
 }
 
-/** Parse a cached embedding column value; null on missing/corrupt. */
+/** Parse a cached embedding column value; null on missing/corrupt/INVALID.
+ *  Legacy rows holding an all-zero or malformed vector are rejected here, so
+ *  they are excluded from similarity and re-embedded by the lazy backfill. */
 function parseEmbedding(json: string | null): number[] | null {
   if (!json) return null;
   try {
     const v = JSON.parse(json) as unknown;
-    return Array.isArray(v) && v.length && typeof v[0] === 'number' ? (v as number[]) : null;
+    return isValidVector(v, EMBED_DIM) ? v : null;
   } catch {
     return null;
   }

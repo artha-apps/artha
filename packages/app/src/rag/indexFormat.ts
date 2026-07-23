@@ -12,8 +12,15 @@ export interface Chunk {
   filePath: string;
   /** The chunk text, trimmed, as returned by `chunkOnBoundaries`. */
   text: string;
-  /** Dense embedding vector from Ollama nomic-embed-text (768 dimensions). */
-  embedding: number[];
+  /** Dense embedding vector from Ollama nomic-embed-text (768 dimensions),
+   *  or `null` when the embedder was unavailable at index time — the chunk
+   *  text is kept (keyword use + later re-embedding) but the chunk NEVER
+   *  carries a fabricated placeholder vector (Phase A integrity invariant). */
+  embedding: number[] | null;
+  /** 'pending_embedding' when embedding is null. Absent = embedded normally.
+   *  Additive field: older readers ignore it; the tolerant parser keeps
+   *  reading pre-patch files unchanged. */
+  state?: 'pending_embedding';
 }
 
 /** Persisted index payload. Legacy indexes were a bare `Chunk[]`; v2 wraps the

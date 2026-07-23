@@ -23,6 +23,7 @@ import { SchedulerService } from './scheduler/scheduler';
 import { initSentry, withTransaction, captureException, setOllamaConnectedTag } from './sentry';
 import { startHealthCheckpointing, stopHealthCheckpointing } from './db/health';
 import { ensureModelReady, unloadActiveModel, stopOllamaIfStarted } from './llm/ollamaRuntime';
+import { resolveQaProfile } from './system/qaProfile';
 
 /** Probe whether the local Ollama runtime is reachable. Best-effort with a
  *  short timeout so a missing Ollama can't stall startup. Drives the
@@ -247,6 +248,31 @@ async function createWindow(): Promise<void> {
     autoUpdater.checkForUpdatesAndNotify().catch((err) => {
       console.error('[Artha] checkForUpdatesAndNotify rejected:', err);
     });
+  }
+}
+
+// ── QA profile isolation (validation infrastructure, founder-approved) ─────
+// MUST run before ANYTHING userData-scoped — including the single-instance
+// lock below (the lock is keyed on userData, so an isolated QA profile gets
+// its own lock and never collides with, or focuses, the user's real running
+// app) and initTelemetryBeforeReady (which opens the DB). Guarded —
+// production launches without the explicit flags are untouched; in QA mode
+// an invalid path refuses to start rather than risk the live profile.
+// See system/qaProfile.ts for the full policy.
+{
+  const qa = resolveQaProfile(process.env, app.getPath('userData'), app.isPackaged);
+  if (qa.action === 'fatal') {
+    console.error(`[Artha] ${qa.reason}`);
+    // app.exit() only terminates synchronously before the main message loop
+    // owns the process; here it merely SCHEDULES a quit and execution would
+    // fall through to the instance lock and initDatabase() — opening the LIVE
+    // profile, the exact outcome this guard exists to prevent. process.exit()
+    // makes "refuse to run" actually mean it.
+    app.exit(1);
+    process.exit(1);
+  } else if (qa.action === 'apply' && qa.resolvedPath) {
+    app.setPath('userData', qa.resolvedPath);
+    console.log(`[Artha] ${qa.reason}`);
   }
 }
 

@@ -8,9 +8,10 @@
  * the "not installed" and "error" states are persistent (they need action).
  */
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, CheckCircle2, AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertTriangle, ExternalLink, RefreshCw, Settings2 } from 'lucide-react';
+import { useChatStore } from '../stores/chat';
 
-type Phase = 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'error';
+type Phase = 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'no_model' | 'error';
 interface ModelStatus { phase: Phase; model?: string; detail?: string }
 
 export default function ModelStatusBanner() {
@@ -29,7 +30,7 @@ export default function ModelStatusBanner() {
       if (s.phase === 'starting' || s.phase === 'warming') {
         showedWork.current = true;
         setVisible(true);
-      } else if (s.phase === 'not_installed' || s.phase === 'error') {
+      } else if (s.phase === 'not_installed' || s.phase === 'no_model' || s.phase === 'error') {
         setVisible(true);
       } else if (s.phase === 'ready') {
         // Only confirm if we showed work; otherwise stay silent (already warm).
@@ -58,6 +59,27 @@ export default function ModelStatusBanner() {
   };
 
   const { phase, model, detail } = status;
+
+  // Persistent: nothing configured at all → point at BOTH setup paths (local
+  // model or BYOK key), never steer to Ollama by default. This replaces the
+  // old behaviour where a configure-later user saw either a false "install
+  // Ollama" nag or a silent localhost failure on first send.
+  if (phase === 'no_model') {
+    return (
+      <Card tone="warn" icon={<Settings2 size={16} className="text-artha-warn" />}>
+        <p className="text-sm font-medium text-artha-text">No model configured</p>
+        <p className="text-xs text-artha-muted mt-0.5 leading-relaxed">
+          Pick a local model, or add your own API key from any provider — either works.
+        </p>
+        <button
+          onClick={() => useChatStore.getState().setActiveView('models')}
+          className="mt-2 inline-flex items-center gap-1.5 text-xs text-artha-accent hover:underline"
+        >
+          Open Model Settings <ExternalLink size={11} />
+        </button>
+      </Card>
+    );
+  }
 
   // Persistent: Ollama not installed → guide to download (can't auto-install).
   if (phase === 'not_installed') {

@@ -54,7 +54,10 @@ function relativeTime(unixSec: number): string {
 
 /**
  * Bundles panel — export an agent run to a signed `.artha-bundle` file, or
- * import one to verify its HMAC signature, inspect the manifest, and check for
+ * import one to verify its integrity checksum (unkeyed SHA-256 — detects
+ * accidental corruption/modification but does NOT prove who authored the
+ * bundle; keyed/public-key signing is a planned upgrade), inspect the
+ * manifest, and check for
  * missing MCP servers needed to replay it deterministically.
  */
 export default function BundlesPanel() {
@@ -222,10 +225,13 @@ export default function BundlesPanel() {
                   : <ShieldAlert size={20} className="text-artha-danger mt-0.5" />}
                 <div className="flex-1">
                   <p className={`text-sm font-semibold ${imported.signatureValid ? 'text-artha-success' : 'text-artha-danger'}`}>
-                    {imported.signatureValid ? 'Signature valid' : 'Signature INVALID — bundle has been modified'}
+                    {imported.signatureValid ? 'Integrity check passed' : 'Integrity check FAILED — bundle content was altered'}
                   </p>
                   <p className="text-xs text-artha-muted mt-1">
                     Bundle <code className="font-mono">{imported.bundleId.slice(0, 12)}…</code> · {imported.stepCount} steps · {imported.artifactNames.length} artifacts
+                  </p>
+                  <p className="text-xs text-artha-muted mt-1">
+                    Checksum confirms the content wasn’t modified in transit — it does not prove who created the bundle. Only import bundles from people you trust.
                   </p>
                 </div>
               </div>
