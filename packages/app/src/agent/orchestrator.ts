@@ -1551,11 +1551,15 @@ RULES — follow exactly, no exceptions:
             toolResult = `Dry run (policy): would call ${toolCall.function.name} with ${JSON.stringify(parsedArgs)}. It was NOT executed — describe this to the user as a preview of what would happen.`;
             receiptStatus = 'skipped'; policyHandled = true;
           } else if (decision.tier === 'confirm') {
-            // Confirm only works when a desktop user is watching. Silent runs
-            // (Delegate / sub-capability), LAN requests, and scheduled tasks have
-            // nobody to approve, so they fail closed instead of hanging a modal.
+            // Confirm needs a human to answer. Only truly unattended runs — LAN
+            // requests and scheduled tasks (which set rc.unattended, see
+            // main.ts) — fail closed. NOTE: `silent` does NOT mean unattended:
+            // Delegate and sub-capability runs are silent (fast model, no verbose
+            // streaming) but a desktop user IS watching and can approve via the
+            // app-level ToolApprovalModal. Treating silent as unattended blocked
+            // email_send in Delegate — the exact "it won't send" bug.
             const rc = getRunContext();
-            const unattended = args.silent || !!rc?.lan || !!rc?.unattended;
+            const unattended = !!rc?.lan || !!rc?.unattended;
             if (unattended) {
               toolResult = `Error: ${toolCall.function.name} needs interactive approval (policy rule "${decision.matchedPattern}") but this run is unattended, so it was blocked.`;
               toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;

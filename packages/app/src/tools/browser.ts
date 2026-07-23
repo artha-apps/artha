@@ -190,6 +190,14 @@ export function setBrowserToolEmitter(e: ToolEmitter): void {
   emitter = e;
 }
 
+/** Ask the renderer to open + attach the browser pane, so a subsequent drive
+ *  happens in a RENDERED view. email_send uses this: Gmail's send only fires
+ *  reliably when the view is actually attached/painted (a hidden BrowserView
+ *  clicks Send but nothing dispatches). */
+export function requestBrowserPaneOpen(): void {
+  emitter.emit?.('browser:autoOpen', null);
+}
+
 /**
  * Dispatch a browser tool call. Fetches the singleton BrowserController and
  * asserts agent ownership before forwarding to the appropriate action helper.
