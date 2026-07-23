@@ -157,8 +157,15 @@ export async function invokeDocsTool(name: string, args: Record<string, unknown>
     contextChunks: contextChunks.length ? contextChunks : undefined,
   });
 
-  // Open the finished file in its native app — the payoff moment.
-  shell.openPath(result.filePath).catch(() => { /* non-fatal */ });
+  // Open the finished file in its native app. shell.openPath RESOLVES with an
+  // error STRING (it never rejects), so a .catch can't observe failure — we
+  // report the real open result to the model instead of assuming it opened.
+  let openError = '';
+  try {
+    openError = await shell.openPath(result.filePath);
+  } catch (err) {
+    openError = err instanceof Error ? err.message : String(err);
+  }
 
   // Persist to artifacts table so ArtifactsPanel can list this file.
   try {
@@ -169,9 +176,19 @@ export async function invokeDocsTool(name: string, args: Record<string, unknown>
     ).run(path.basename(result.filePath), result.filePath, type, sizeBytes);
   } catch { /* non-fatal — artifact log is best-effort */ }
 
-  return [
+  const parts = [
     `Created ${path.basename(result.filePath)} (${type.toUpperCase()}) at ${result.filePath}.`,
-    `${result.anchors} provenance-anchored section(s); receipt written to ${path.basename(result.receiptPath)}.${ragNote}`,
-    `The file has been opened.`,
-  ].join(' ');
+  ];
+  if (result.degraded) {
+    // Never present a degraded fallback as the structured deliverable.
+    parts.push(
+      `⚠️ The model did not return structured content, so this document is a single block of text — NOT the structured ${type.toUpperCase()} that was requested. Tell the user, and offer to regenerate (a stronger model produces better structure).`,
+    );
+  } else {
+    parts.push(`${result.anchors} provenance-anchored section(s); receipt written to ${path.basename(result.receiptPath)}.${ragNote}`);
+  }
+  parts.push(openError
+    ? `Note: the file could not be opened automatically (${openError}); it is saved at the path above.`
+    : 'The file has been opened.');
+  return parts.join(' ');
 }

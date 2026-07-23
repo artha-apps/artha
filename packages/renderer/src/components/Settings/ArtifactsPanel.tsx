@@ -6,6 +6,7 @@
  * one-stop place to find everything Artha has produced for them.
  */
 import { useEffect, useState } from 'react';
+import { toast } from '../../stores/toast';
 import { FolderOpen, Trash2, FileText, FileSpreadsheet, Presentation, File, RefreshCw } from 'lucide-react';
 
 interface Artifact {
@@ -61,9 +62,14 @@ export default function ArtifactsPanel() {
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
-  /** Ask the OS to open the file with its default application (e.g. Word for .docx). */
+  /** Ask the OS to open the file with its default application (e.g. Word for
+   *  .docx). Reports failure (moved/deleted file, no handler) instead of
+   *  silently doing nothing — shell.openPath resolves with an error string. */
   const open = async (filePath: string) => {
-    await window.artha.artifacts.open(filePath);
+    const res = await window.artha.artifacts.open(filePath);
+    if (!res.ok) {
+      toast.error("Couldn't open the file", res.error || 'It may have been moved or deleted.');
+    }
   };
 
   /** Remove the artifact record from the DB (and the file from disk) and update

@@ -593,7 +593,7 @@ const api = {
     log: (entry: { sessionId?: string; name: string; filePath: string; fileType: string; sizeBytes?: number }) =>
       ipcRenderer.invoke('artifacts:log', entry) as Promise<string | null>,
     delete: (artifactId: string) => ipcRenderer.invoke('artifacts:delete', artifactId) as Promise<boolean>,
-    open: (filePath: string) => ipcRenderer.invoke('artifacts:open', filePath) as Promise<boolean>,
+    open: (filePath: string) => ipcRenderer.invoke('artifacts:open', filePath) as Promise<{ ok: boolean; error?: string }>,
   },
 
   // ── Undo ───────────────────────────────────────────────────────────────────

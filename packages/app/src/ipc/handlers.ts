@@ -2329,8 +2329,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   });
 
   ipcMain.handle('artifacts:open', async (_e, filePath: string) => {
-    await shell.openPath(filePath);
-    return true;
+    // shell.openPath RESOLVES with an error string (moved/deleted file, no
+    // handler) rather than rejecting, so 'return true' claimed success for
+    // opens that silently did nothing (audit H17). Report the real result.
+    const err = await shell.openPath(filePath);
+    return err ? { ok: false, error: err } : { ok: true };
   });
 
   // ── Memory ────────────────────────────────────────────────────────────────

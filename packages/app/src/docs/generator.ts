@@ -52,6 +52,8 @@ export interface GenerateResult {
   receiptPath: string;
   contentHash: string;
   anchors: number;
+  /** The document could not be structured from the model output. */
+  degraded?: boolean;
 }
 
 // ── Main entry point ────────────────────────────────────────────────────────
@@ -66,6 +68,7 @@ export async function generateDocument(opts: GenerateOptions): Promise<GenerateR
   const sources = normaliseSources(opts.contextChunks);
   const planned = await planDocumentContent(opts.prompt, sources);
   const content = attachAnchors(planned, sources);
+  const degraded = (planned as PlannedContent).degraded === true;
   const model = await getActiveModelName();
 
   let filePath: string;
@@ -77,7 +80,7 @@ export async function generateDocument(opts: GenerateOptions): Promise<GenerateR
     default: throw new Error(`Unsupported document type: ${opts.type}`);
   }
 
-  return registerProvenance({
+  const registered = registerProvenance({
     filePath,
     docType: opts.type,
     title: content.title,
@@ -86,6 +89,7 @@ export async function generateDocument(opts: GenerateOptions): Promise<GenerateR
     sessionId: opts.sessionId,
     content,
   });
+  return { ...registered, degraded };
 }
 
 // ── LLM Content Planner ─────────────────────────────────────────────────────
@@ -106,6 +110,10 @@ interface PlannedContent {
   title: string;
   sections: PlannedSection[];
   metadata?: Record<string, string>;
+  /** True when the model returned unstructured text and we fell back to a
+   *  single-section document — surfaced so the tool never presents a degraded
+   *  result as the structured deliverable the user asked for. */
+  degraded?: boolean;
 }
 
 /** Planned section after `attachAnchors()` has stamped it with a stable id
@@ -116,7 +124,7 @@ interface AnchoredSection extends PlannedSection {
 }
 
 /** Anchored version of `PlannedContent` — what every format generator consumes. */
-interface AnchoredContent {
+export interface AnchoredContent {
   title: string;
   titleAnchor: string;
   sections: AnchoredSection[];
@@ -181,7 +189,15 @@ Be thorough, professional, and ground factual claims in the provided sources by 
   try {
     return JSON.parse(raw.replace(/```json\n?|\n?```/g, ''));
   } catch {
-    return { title: 'Document', sections: [{ heading: 'Content', body: raw }] };
+    // The model returned unstructured text (small local models do this
+    // often). Producing a one-section document and reporting it as a normal
+    // structured result hides the degradation — flag it so the tool can tell
+    // the user their document is not the structured deliverable they asked for.
+    return {
+      title: 'Document',
+      sections: [{ heading: 'Content', body: raw }],
+      degraded: true,
+    } as PlannedContent;
   }
 }
 
@@ -429,7 +445,7 @@ async function generateXlsx(content: AnchoredContent, outPath: string): Promise<
 // metadata so the receipt can correlate sections without bookmarks.
 
 /** Build a letter-size `.pdf` and write it to `outPath`. */
-async function generatePdf(content: AnchoredContent, outPath: string): Promise<string> {
+export async function generatePdf(content: AnchoredContent, outPath: string): Promise<string> {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.setTitle(content.title);
   pdfDoc.setSubject(`artha-doc:${content.titleAnchor}`);
@@ -447,10 +463,83 @@ async function generatePdf(content: AnchoredContent, outPath: string): Promise<s
   const margin = 72;
   const lineH = 16;
 
-  const writeLine = (text: string, size: number, isBold = false, color = rgb(0, 0, 0)) => {
+  const maxWidth = 612 - margin * 2;
+
+  /** Draw ONE already-fitting line. */
+  const drawRaw = (text: string, size: number, isBold: boolean, color: ReturnType<typeof rgb>, x = margin) => {
     if (y < margin + 40) { const np = addPage(); page = np.page; y = np.y; }
-    page.drawText(text.slice(0, 90), { x: margin, y, size, font: isBold ? boldFont : font, color });
+    page.drawText(text, { x, y, size, font: isBold ? boldFont : font, color });
     y -= lineH * (size / 12);
+  };
+
+  /** Wrap to the page width using real font metrics and draw every line.
+   *  This replaces a hard `text.slice(0, 90)` that silently cut long lines —
+   *  no ellipsis, no warning — so content simply vanished from the PDF. */
+  const writeLine = (text: string, size: number, isBold = false, color = rgb(0, 0, 0), x = margin) => {
+    const f = isBold ? boldFont : font;
+    const words = String(text ?? '').split(/\s+/).filter(Boolean);
+    if (!words.length) { y -= lineH * (size / 12); return; }
+    const avail = maxWidth - (x - margin);
+    let line = '';
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (f.widthOfTextAtSize(candidate, size) <= avail) { line = candidate; continue; }
+      if (line) drawRaw(line, size, isBold, color, x);
+      // A single word longer than the line (URL, hash) — break it rather than
+      // let it overflow or disappear.
+      let chunk = word;
+      while (f.widthOfTextAtSize(chunk, size) > avail && chunk.length > 1) {
+        let cut = chunk.length;
+        while (cut > 1 && f.widthOfTextAtSize(chunk.slice(0, cut), size) > avail) cut--;
+        drawRaw(chunk.slice(0, cut), size, isBold, color, x);
+        chunk = chunk.slice(cut);
+      }
+      line = chunk;
+    }
+    if (line) drawRaw(line, size, isBold, color, x);
+  };
+
+  /** Render a table. Previously `section.table` was never drawn at all, so
+   *  every table the planner produced silently disappeared from the PDF while
+   *  the tool still reported "Created report.pdf". */
+  const writeTable = (table: { headers: string[]; rows: string[][] }) => {
+    const headers = (table.headers ?? []).map(h => String(h ?? ''));
+    const rows = (table.rows ?? []).map(r => (r ?? []).map(c => String(c ?? '')));
+    const cols = Math.max(headers.length, ...rows.map(r => r.length), 1);
+    const colW = maxWidth / cols;
+    const size = 10;
+
+    const drawRow = (cells: string[], bold: boolean) => {
+      // Height of the tallest wrapped cell decides the row height.
+      const f = bold ? boldFont : font;
+      const wrapped = Array.from({ length: cols }, (_, i) => {
+        const words = String(cells[i] ?? '').split(/\s+/).filter(Boolean);
+        const lines: string[] = [];
+        let line = '';
+        for (const w of words) {
+          const cand = line ? `${line} ${w}` : w;
+          if (f.widthOfTextAtSize(cand, size) <= colW - 8) line = cand;
+          else { if (line) lines.push(line); line = w; }
+        }
+        if (line) lines.push(line);
+        return lines.length ? lines : [''];
+      });
+      const height = Math.max(...wrapped.map(w => w.length)) * (lineH * (size / 12));
+      if (y - height < margin + 20) { const np = addPage(); page = np.page; y = np.y; }
+      const top = y;
+      wrapped.forEach((lines, i) => {
+        let ly = top;
+        for (const l of lines) {
+          page.drawText(l, { x: margin + i * colW + 4, y: ly, size, font: f, color: rgb(0, 0, 0) });
+          ly -= lineH * (size / 12);
+        }
+      });
+      y = top - height - 4;
+    };
+
+    if (headers.length) drawRow(headers, true);
+    for (const r of rows) drawRow(r, false);
+    y -= 6;
   };
 
   writeLine(content.title, 24, true, rgb(0.11, 0.31, 0.45));
@@ -461,16 +550,12 @@ async function generatePdf(content: AnchoredContent, outPath: string): Promise<s
   for (const section of content.sections) {
     writeLine(section.heading, 16, true, rgb(0.11, 0.31, 0.45));
     y -= 4;
-    if (section.body) {
-      const words = section.body.split(' ');
-      let line = '';
-      for (const word of words) {
-        if ((line + word).length > 80) { writeLine(line, 11); line = word + ' '; }
-        else line += word + ' ';
-      }
-      if (line.trim()) writeLine(line, 11);
-    }
-    if (section.bullets) for (const b of section.bullets) writeLine(`  • ${b}`, 11);
+    // writeLine wraps on real font metrics now, so the body no longer needs a
+    // hand-rolled 80-character splitter (which combined with the 90-char
+    // truncation to drop text).
+    if (section.body) writeLine(section.body, 11);
+    if (section.bullets) for (const b of section.bullets) writeLine(`• ${b}`, 11, false, rgb(0, 0, 0), margin + 12);
+    if (section.table) writeTable(section.table);
     y -= 10;
   }
 
