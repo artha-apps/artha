@@ -221,6 +221,19 @@ describe('recovery + routing guarantees', () => {
     }
   });
 
+  it('fails fast: one embedder outage does not re-request per chunk (review H2)', async () => {
+    // Multi-chunk corpus so a per-chunk retry storm would be visible.
+    fs.writeFileSync(path.join(srcDir, 'big.txt'), 'lorem ipsum dolor sit amet. '.repeat(200));
+    const calls = stubEmbedFetch('unreachable');
+    const idx = new RAGIndexer(tmp);
+    await idx.buildIndex('ff', srcDir);
+    const { chunks } = readIndex('ff');
+    expect(chunks.length).toBeGreaterThan(2);            // many chunks…
+    expect(calls.length).toBe(1);                        // …one probe only
+    expect(chunks.every(c => c.state === 'pending_embedding')).toBe(true);
+    expect(chunks.every(c => c.embedding === null)).toBe(true);
+  });
+
   it('EmbeddingUnavailableError carries a user-safe message and stable code', () => {
     const e = new EmbeddingUnavailableError('local embedding runtime unreachable');
     expect(e.code).toBe('EMBEDDING_UNAVAILABLE');

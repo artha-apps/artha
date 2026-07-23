@@ -200,7 +200,16 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
   // server is left running for onboarding's model list/pull flows.
   if (!m) return set({ phase: 'no_model', ollamaInstalled: true });
   set({ phase: 'warming', model: m.name });
-  await warm(m.name, m.numCtx);
+  // A failed load (model deleted while its row stayed active, or a squatter
+  // answering /api/tags) must NOT be reported as ready — the first message
+  // would fail with a raw provider error instead of an actionable state.
+  if (!(await warm(m.name, m.numCtx))) {
+    return set({
+      phase: 'error',
+      model: m.name,
+      detail: `${m.name} could not be loaded. It may have been removed — pick another model in Settings → Models.`,
+    });
+  }
   const ready = set({ phase: 'ready', model: m.name });
 
   // The window is usable now — provision the embedding model in the

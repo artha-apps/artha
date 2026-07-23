@@ -7,6 +7,7 @@ import OpenAI from 'openai';
 import { getDb } from '../db/schema';
 import { searchAllIndexes } from '../rag/indexer';
 import { formatRagResults, formatIndexList } from './ragFormat';
+import { getSemanticStatus } from '../llm/ollamaRuntime';
 
 export const RAG_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
   {
@@ -82,7 +83,9 @@ export async function invokeRagTool(
     const topK = Math.min(Math.max(Number(args.top_k) || 6, 1), 20);
     // When the chat is scoped to folders, confine retrieval to their indexes.
     const hits = await searchAllIndexes(query, topK, scoped ? ragIndexIds : null);
-    return formatRagResults(query, hits);
+    // Zero hits is ambiguous: no match, or no retriever? Ask only in that case.
+    const degraded = hits.length === 0 ? !(await getSemanticStatus()).available : false;
+    return formatRagResults(query, hits, degraded);
   }
 
   throw new Error(`Unknown rag tool: ${name}`);

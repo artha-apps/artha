@@ -62,13 +62,20 @@ export function resolveQaProfile(env: QaProfileEnv, defaultUserDataDir: string, 
   const normalized = path.normalize(candidate);
   if (normalized !== path.resolve(normalized)) return invalid('path is ambiguous after normalization');
 
-  // Never the live profile — not equal to it, not inside it, not a parent of it.
-  const live = path.normalize(defaultUserDataDir);
-  const rel = path.relative(live, normalized);
-  if (normalized === live || rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+  // Never the live profile — not equal to it, not inside it, not a parent of
+  // it. Compared case-INSENSITIVELY on macOS/Windows: their default volumes
+  // are case-insensitive, so "…/application support/Artha" would otherwise
+  // slip past a byte-exact comparison and point the "isolated" profile at the
+  // real one.
+  const fold = (p: string) =>
+    (process.platform === 'darwin' || process.platform === 'win32') ? p.toLowerCase() : p;
+  const live = fold(path.normalize(defaultUserDataDir));
+  const cmp = fold(normalized);
+  const rel = path.relative(live, cmp);
+  if (cmp === live || rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
     return invalid('path points at or inside the live profile directory');
   }
-  const relUp = path.relative(normalized, live);
+  const relUp = path.relative(cmp, live);
   if (!relUp.startsWith('..') && !path.isAbsolute(relUp)) {
     return invalid('path contains the live profile directory');
   }

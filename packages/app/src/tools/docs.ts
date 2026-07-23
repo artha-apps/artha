@@ -14,6 +14,7 @@ import { shell } from 'electron';
 import OpenAI from 'openai';
 import { generateDocument, type DocType, type SourceChunk } from '../docs/generator';
 import { searchAllIndexes } from '../rag/indexer';
+import { getSemanticStatus } from '../llm/ollamaRuntime';
 import { resolveDocOutPath } from './docPath';
 import { getDb } from '../db/schema';
 import { currentEntitlements, docsGeneratedThisMonth } from '../license/current';
@@ -132,7 +133,11 @@ export async function invokeDocsTool(name: string, args: Record<string, unknown>
       for (const h of hits) {
         ragChunks.push({ id: h.id.slice(0, 8), type: 'rag', ref: path.basename(h.filePath), text: h.text });
       }
-      ragNote = hits.length ? ` Grounded in ${hits.length} passage(s) from your indexed files.` : ' No indexed files matched.';
+      ragNote = hits.length
+        ? ` Grounded in ${hits.length} passage(s) from your indexed files.`
+        : (await getSemanticStatus()).available
+          ? ' No indexed files matched.'
+          : ' Your indexed files could NOT be searched (semantic search unavailable — local embeddings are not running), so this document is not grounded in them.';
     } catch {
       ragNote = ' (RAG retrieval unavailable.)';
     }

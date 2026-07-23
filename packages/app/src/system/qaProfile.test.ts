@@ -6,9 +6,15 @@
  *  - the live profile directory is unreachable through the override
  */
 import { describe, it, expect } from 'vitest';
+import * as path from 'path';
+import * as os from 'os';
 import { resolveQaProfile } from './qaProfile';
 
-const LIVE = '/Users/someone/Library/Application Support/Artha';
+/** Platform-appropriate absolute paths: POSIX literals normalize differently
+ *  on Windows (a drive letter is prepended), which is exactly what the
+ *  ambiguity guard is designed to reject. */
+const abs = (...parts: string[]) => path.join(os.tmpdir(), ...parts);
+const LIVE = abs('artha-live-profile', 'Artha');
 
 describe('resolveQaProfile', () => {
   it('no override → production path untouched (packaged and dev alike)', () => {
@@ -25,17 +31,17 @@ describe('resolveQaProfile', () => {
 
   it('packaged build WITH both flags applies the isolated profile', () => {
     const d = resolveQaProfile(
-      { ARTHA_USER_DATA_DIR: '/tmp/qa/Artha.Validation.BYOK', ARTHA_QA_MODE: '1' }, LIVE, true);
+      { ARTHA_USER_DATA_DIR: abs('qa', 'Artha.Validation.BYOK'), ARTHA_QA_MODE: '1' }, LIVE, true);
     expect(d.action).toBe('apply');
-    expect(d.resolvedPath).toBe('/tmp/qa/Artha.Validation.BYOK');
+    expect(d.resolvedPath).toBe(abs('qa', 'Artha.Validation.BYOK'));
     // Log-safe reason: basename only, never the full path.
     expect(d.reason).toContain('Artha.Validation.BYOK');
-    expect(d.reason).not.toContain('/tmp/qa/');
+    expect(d.reason).not.toContain(path.join(os.tmpdir(), 'qa'));
   });
 
   it('development honors the override without the extra flag', () => {
     const d = resolveQaProfile(
-      { ARTHA_USER_DATA_DIR: '/tmp/qa/Artha.Validation.Local', NODE_ENV: 'development' }, LIVE, false);
+      { ARTHA_USER_DATA_DIR: abs('qa', 'Artha.Validation.Local'), NODE_ENV: 'development' }, LIVE, false);
     expect(d.action).toBe('apply');
   });
 
@@ -47,15 +53,29 @@ describe('resolveQaProfile', () => {
   });
 
   it('the live profile directory is unreachable: equal, inside, or containing it', () => {
-    for (const bad of [LIVE, `${LIVE}/sub`, '/Users/someone/Library/Application Support']) {
+    for (const bad of [LIVE, path.join(LIVE, 'sub'), path.dirname(LIVE)]) {
       const d = resolveQaProfile({ ARTHA_USER_DATA_DIR: bad, ARTHA_QA_MODE: '1' }, LIVE, true);
       expect(d.action, bad).toBe('fatal');
       expect(d.reason).toMatch(/live profile/);
     }
   });
 
+  it('case-variant paths cannot sneak onto the live profile (review M3)', () => {
+    // macOS/Windows default volumes are case-insensitive, so a lowercase
+    // spelling of the live directory must be refused too.
+    const variant = LIVE.toLowerCase() === LIVE ? LIVE.toUpperCase() : LIVE.toLowerCase();
+    const d = resolveQaProfile({ ARTHA_USER_DATA_DIR: variant, ARTHA_QA_MODE: '1' }, LIVE, true);
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      expect(d.action).toBe('fatal');
+      expect(d.reason).toMatch(/live profile/);
+    } else {
+      // Linux volumes are case-sensitive: a different case IS a different dir.
+      expect(d.action).toBe('apply');
+    }
+  });
+
   it('fatal reasons never leak the supplied path', () => {
-    const d = resolveQaProfile({ ARTHA_USER_DATA_DIR: `${LIVE}/secret-place`, ARTHA_QA_MODE: '1' }, LIVE, true);
+    const d = resolveQaProfile({ ARTHA_USER_DATA_DIR: path.join(LIVE, 'secret-place'), ARTHA_QA_MODE: '1' }, LIVE, true);
     expect(d.reason).not.toContain('secret-place');
   });
 });

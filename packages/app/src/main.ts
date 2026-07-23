@@ -263,7 +263,13 @@ async function createWindow(): Promise<void> {
   const qa = resolveQaProfile(process.env, app.getPath('userData'), app.isPackaged);
   if (qa.action === 'fatal') {
     console.error(`[Artha] ${qa.reason}`);
+    // app.exit() only terminates synchronously before the main message loop
+    // owns the process; here it merely SCHEDULES a quit and execution would
+    // fall through to the instance lock and initDatabase() — opening the LIVE
+    // profile, the exact outcome this guard exists to prevent. process.exit()
+    // makes "refuse to run" actually mean it.
     app.exit(1);
+    process.exit(1);
   } else if (qa.action === 'apply' && qa.resolvedPath) {
     app.setPath('userData', qa.resolvedPath);
     console.log(`[Artha] ${qa.reason}`);

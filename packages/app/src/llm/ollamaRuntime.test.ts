@@ -177,6 +177,23 @@ describe('ensureModelReady with NO active model (commit 3: honest empty state)',
   });
 });
 
+describe('warm failure is reported honestly (review M1)', () => {
+  it('a local model that fails to load returns error, not ready', async () => {
+    state.activeRow = LOCAL_ROW;
+    // /api/tags OK (server up) but /api/generate fails — e.g. the model was
+    // removed while its row stayed active.
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.endsWith('/api/tags')) return { ok: true, json: async () => ({ models: [] }) } as unknown as Response;
+      return { ok: false, status: 404, json: async () => ({ error: 'model not found' }) } as unknown as Response;
+    }));
+    const returned = await ensureModelReady(() => {});
+    expect(returned.phase).toBe('error');
+    expect(returned.detail).toMatch(/could not be loaded/i);
+    expect(getModelStatus().phase).toBe('error');
+  });
+});
+
 describe('ensureModelReady returns its OWN terminal status (row-10 race fix)', () => {
   it('cloud active model → returns ready, not whatever a concurrent run wrote', async () => {
     state.activeRow = CLOUD_ROW;

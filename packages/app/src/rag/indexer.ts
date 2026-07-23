@@ -36,6 +36,9 @@ const CHUNK_SIZE = 512;
 const CHUNK_OVERLAP = 64;
 const OLLAMA_EMBED_URL = 'http://localhost:11434/api/embeddings';
 const EMBED_MODEL = 'nomic-embed-text';
+/** Per-chunk embedding timeout. Without it, a hung (not refused) runtime
+ *  multiplies undici's ~10s connect timeout by the chunk count. */
+const EMBED_TIMEOUT_MS = 15_000;
 
 /** File → chunk → vector pipeline rooted at a single on-disk directory.
  *  One `RAGIndexer` instance covers many indexes (each persisted as its own
@@ -74,6 +77,10 @@ export class RAGIndexer {
      *  Their text is still stored (keyword use + later re-embedding), but they
      *  are excluded from semantic scoring until re-embedded. */
     let pending = 0;
+    /** Once the embedder is known unavailable, stop issuing requests for this
+     *  build — remaining chunks are marked pending without another round-trip
+     *  (a whole-corpus rebuild would otherwise pay the timeout per chunk). */
+    let embedderDown = false;
 
     for (const file of files) {
       try {
@@ -96,11 +103,17 @@ export class RAGIndexer {
         const text = await extractText(file);
         if (!text.trim()) continue;
         for (const chunk of this.chunkText(text, file)) {
+          if (embedderDown) {
+            chunks.push({ ...chunk, embedding: null, state: 'pending_embedding' });
+            pending++;
+            continue;
+          }
           try {
             const embedding = await this.embed(chunk.text);
             chunks.push({ ...chunk, embedding });
           } catch (err) {
             if (!(err instanceof EmbeddingUnavailableError)) throw err;
+            embedderDown = true;
             // Persist the TEXT with an explicit pending state — never a
             // fabricated vector. Keyword retrieval still works; semantic
             // scoring skips it until a valid embedding replaces it.
@@ -222,17 +235,25 @@ export class RAGIndexer {
    */
   private async embed(text: string): Promise<number[]> {
     let json: { embedding?: unknown };
+    // Hard timeout: a reachable-but-hung runtime (model loading, machine
+    // resuming, packet-dropping firewall) must not stall indexing for
+    // minutes per chunk. Mirrors the abort guards in ollamaRuntime.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
     try {
       const res = await fetch(OLLAMA_EMBED_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new EmbeddingUnavailableError(`embedding endpoint returned ${res.status}`);
       json = await res.json() as { embedding?: unknown };
     } catch (err) {
       if (err instanceof EmbeddingUnavailableError) throw err;
       throw new EmbeddingUnavailableError('local embedding runtime unreachable');
+    } finally {
+      clearTimeout(timer);
     }
     // Empty, wrong-dimension, all-zero, or non-finite payloads are invalid —
     // treat exactly like unavailability rather than persisting them.
