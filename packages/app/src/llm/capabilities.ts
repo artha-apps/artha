@@ -56,7 +56,9 @@ export const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     dataRetentionNote: 'API data is not used for training by default; retention per OpenAI policy.',
   },
   anthropic: {
-    ...BASE, toolCalling: 'yes', structuredOutput: 'yes', reasoning: 'varies',
+    // structuredOutput 'varies': the OpenAI-compat layer's response_format
+    // support is partial — 'yes' would over-promise (review L6).
+    ...BASE, toolCalling: 'yes', structuredOutput: 'varies', reasoning: 'varies',
     vision: 'yes', computerUse: 'varies', promptCaching: 'yes', batchProcessing: 'yes',
     dataRetentionNote: 'API data is not used for training by default; retention per Anthropic policy.',
   },

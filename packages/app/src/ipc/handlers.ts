@@ -52,6 +52,7 @@ import { setSessionKey, getSessionKey, deleteSessionKey } from '../security/sess
 import { PROVIDER_PRESETS } from '../llm/providerPresets';
 import { discoverModels, testConnection } from '../llm/providerProbe';
 import { getEffectiveCapabilities } from '../llm/capabilities';
+import { isOllamaManaged } from '../llm/providerKind';
 import { usableApiKey } from '../llm/client';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
@@ -1374,8 +1375,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       if (!res.ok && res.status !== 404) {
         return { ok: false, error: `Ollama responded ${res.status}` };
       }
-      // Clean up the DB row (active flag included) so the model fully disappears.
+      // Clean up the DB row (active flag included) so the model fully
+      // disappears — and any in-memory session key with it (L1).
+      const row = getDb().prepare(`SELECT model_id FROM llm_models WHERE ollama_name=?`).get(name) as { model_id: string } | undefined;
       getDb().prepare(`DELETE FROM llm_models WHERE ollama_name=?`).run(name);
+      if (row) deleteSessionKey(row.model_id);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -1406,6 +1410,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       db.prepare(`INSERT INTO llm_models (model_id, name, ollama_name, base_url, api_key, is_active) VALUES (?,?,?,?,?,1)`)
         .run(id, modelName, modelName, 'http://localhost:11434/v1', 'ollama');
     }
+    // Keep runtime status honest across switches (clears no_model, warms a
+    // newly-activated local model, goes quiet for cloud) — M4/M5.
+    void ensureModelReady((s) => safeSend('model:status', s));
     return true;
   });
 
@@ -1413,21 +1420,27 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // renderer renders whatever this returns, so new providers ship data-only.
   ipcMain.handle('llm:listProviderPresets', () => PROVIDER_PRESETS);
 
-  // Resolve the API key for a probe: either the form value the user just
-  // typed (pre-save) or a SAVED model's sealed/session key by model_id —
-  // the sealed key itself never travels through the renderer.
-  const probeKey = (opts: { apiKey?: string; modelId?: string }): { key?: string; error?: string } => {
+  // Resolve key + TARGET for a probe. Two modes, deliberately asymmetric:
+  //   - apiKey (pre-save): the renderer supplies both URL and the key it
+  //     already holds — nothing stored is at stake.
+  //   - modelId (saved row): the key resolves main-side AND the base URL is
+  //     taken from the ROW, never from the renderer. Otherwise a compromised
+  //     renderer could pair a saved key with an attacker URL and exfiltrate
+  //     it through the main process (security review H1).
+  const probeTarget = (opts: { baseUrl?: string; apiKey?: string; modelId?: string }):
+    { baseUrl?: string; key?: string; error?: string } => {
     if (opts.modelId) {
-      const row = getDb().prepare(`SELECT model_id, api_key FROM llm_models WHERE model_id=?`)
-        .get(opts.modelId) as { model_id: string; api_key: string | null } | undefined;
+      const row = getDb().prepare(`SELECT model_id, base_url, api_key FROM llm_models WHERE model_id=?`)
+        .get(opts.modelId) as { model_id: string; base_url: string; api_key: string | null } | undefined;
       if (!row) return { error: 'Model not found.' };
       try {
-        return { key: usableApiKey(getDb(), row.model_id, row.api_key) };
+        return { baseUrl: row.base_url, key: usableApiKey(getDb(), row.model_id, row.api_key) };
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
       }
     }
-    return { key: opts.apiKey };
+    if (!opts.baseUrl?.trim()) return { error: 'Base URL is required.' };
+    return { baseUrl: opts.baseUrl, key: opts.apiKey };
   };
 
   // The default execution profile (v0: mode + reserved slots; is_active on
@@ -1444,17 +1457,17 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     getEffectiveCapabilities(opts.capabilityKey, opts.model));
 
   // Model discovery (GET /v1/models) with normalized, key-free errors.
-  ipcMain.handle('llm:discoverModels', async (_e, opts: { baseUrl: string; apiKey?: string; modelId?: string }) => {
-    const k = probeKey(opts);
-    if (k.error) return { ok: false, error: { kind: 'auth', retryable: false, message: k.error } };
-    return discoverModels(opts.baseUrl, k.key);
+  ipcMain.handle('llm:discoverModels', async (_e, opts: { baseUrl?: string; apiKey?: string; modelId?: string }) => {
+    const t = probeTarget(opts);
+    if (t.error || !t.baseUrl) return { ok: false, error: { kind: 'auth', retryable: false, message: t.error ?? 'Base URL is required.' } };
+    return discoverModels(t.baseUrl, t.key);
   });
 
   // One cheap completion proving base URL + key + model work together.
-  ipcMain.handle('llm:testConnection', async (_e, opts: { baseUrl: string; apiKey?: string; modelId?: string; model: string }) => {
-    const k = probeKey(opts);
-    if (k.error) return { ok: false, error: { kind: 'auth', retryable: false, message: k.error } };
-    return testConnection(opts.baseUrl, k.key, opts.model);
+  ipcMain.handle('llm:testConnection', async (_e, opts: { baseUrl?: string; apiKey?: string; modelId?: string; model: string }) => {
+    const t = probeTarget(opts);
+    if (t.error || !t.baseUrl) return { ok: false, error: { kind: 'auth', retryable: false, message: t.error ?? 'Base URL is required.' } };
+    return testConnection(t.baseUrl, t.key, opts.model);
   });
 
   // ── Cloud models (BYOK, opt-in) ──────────────────────────────────────────
@@ -1493,12 +1506,24 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     // With no trustworthy keychain, the caller must explicitly opt into
     // session-only (in-memory, gone on restart) — otherwise refuse with
     // remediation. Base64/plaintext persistence does not exist anymore.
-    const sessionOnly = m.persistence === 'session';
-    if (!secure && !sessionOnly) {
+    // A BLANK key (keyless providers: remote Ollama, custom endpoints) has
+    // nothing to protect — no gate, no sealing, no session mode (H3).
+    const hasKey = !!m.apiKey?.trim();
+    const sessionOnly = hasKey && m.persistence === 'session';
+    if (hasKey && !secure && !sessionOnly) {
       return { error: 'secure_storage_unavailable' as const, message: new SecureStorageUnavailableError().message };
     }
-    const storedKey = sessionOnly ? SESSION_SENTINEL : sealSecretString(m.apiKey);
-    const existing = db.prepare(`SELECT model_id FROM llm_models WHERE ollama_name=?`).get(m.model) as { model_id: string } | undefined;
+    const storedKey = !hasKey ? '' : sessionOnly ? SESSION_SENTINEL : sealSecretString(m.apiKey);
+    const existing = db.prepare(`SELECT model_id, provider, base_url FROM llm_models WHERE ollama_name=?`)
+      .get(m.model) as { model_id: string; provider?: string; base_url?: string } | undefined;
+    // Never silently convert an installed LOCAL model's row into a remote one
+    // just because the names collide (L2) — refuse with a clear message.
+    if (existing && isOllamaManaged(existing.provider, existing.base_url)) {
+      return {
+        error: 'name_conflict' as const,
+        message: `"${m.model}" is already an installed local model. Use a different name/tag for the remote entry.`,
+      };
+    }
     const id = existing?.model_id ?? crypto.randomUUID();
     if (existing) {
       db.prepare(`UPDATE llm_models SET name=?, base_url=?, api_key=?, provider=? WHERE model_id=?`)
@@ -1512,6 +1537,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (m.activate) {
       db.prepare(`UPDATE llm_models SET is_active=0`).run();
       db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(id);
+      // Refresh the runtime status so a lingering no_model banner clears and
+      // lifecycle state matches the new active model (M4/M5).
+      void ensureModelReady((s) => safeSend('model:status', s));
     }
     return { model_id: id, persistence: sessionOnly ? ('session' as const) : ('persistent' as const) };
   });
@@ -1528,6 +1556,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const db = getDb();
     db.prepare(`UPDATE llm_models SET is_active=0`).run();
     db.prepare(`UPDATE llm_models SET is_active=1 WHERE model_id=?`).run(modelId);
+    void ensureModelReady((s) => safeSend('model:status', s)); // M4/M5
     return true;
   });
 

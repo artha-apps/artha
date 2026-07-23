@@ -67,4 +67,19 @@ describe('scrubEvent', () => {
   it('is a no-op-safe pass-through for an empty event', () => {
     expect(scrubEvent({})).toEqual({});
   });
+
+  it('redacts credential-shaped substrings in exception values (review L5)', () => {
+    const out = scrubEvent({
+      exception: { values: [{
+        value: 'Provider said: Incorrect API key sk-live-Abc123XYZ789 with Bearer eyJhbGciOi.abc123 and blob v1:enc:Zm9vYmFy',
+      }] },
+    } as Parameters<typeof scrubEvent>[0]);
+    const v = out?.exception?.values?.[0].value ?? '';
+    expect(v).not.toContain('sk-live-Abc123XYZ789');
+    expect(v).not.toContain('eyJhbGciOi.abc123');
+    expect(v).not.toContain('Zm9vYmFy');
+    expect(v).toContain('<redacted-key>');
+    expect(v).toContain('Bearer <redacted>');
+    expect(v).toContain('<redacted-envelope>');
+  });
 });

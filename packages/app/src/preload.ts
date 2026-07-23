@@ -19,6 +19,8 @@ export interface ModelStatus {
   phase: 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'no_model' | 'error';
   model?: string;
   detail?: string;
+  /** On 'no_model': whether Ollama exists (onboarding's install card, B1). */
+  ollamaInstalled?: boolean;
 }
 
 /** A parsed Bring-Your-Own-Memory entry, exchanged with the BYOM importer.
@@ -400,7 +402,7 @@ const api = {
     addCloudModel: (m: { provider: string; label: string; model: string; baseUrl: string; apiKey: string; activate?: boolean; persistence?: 'session' }) =>
       ipcRenderer.invoke('llm:addCloudModel', m) as Promise<
         { model_id: string; persistence: 'persistent' | 'session' } |
-        { error: 'secure_storage_unavailable'; message: string }
+        { error: 'secure_storage_unavailable' | 'name_conflict'; message: string }
       >,
     setActiveModelById: (modelId: string) =>
       ipcRenderer.invoke('llm:setActiveModelById', modelId),

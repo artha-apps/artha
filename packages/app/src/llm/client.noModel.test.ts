@@ -11,15 +11,17 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const { state } = vi.hoisted(() => ({
   state: {
     activeRow: undefined as Record<string, unknown> | undefined,
+    savedRows: [] as Record<string, unknown>[], // lookup by ollama_name
   },
 }));
 
 vi.mock('../db/schema', () => ({
   getDb: () => ({
     prepare: (sql: string) => ({
-      get: () => {
-        if (sql.includes('WHERE is_active = 1')) return state.activeRow;
-        return undefined; // router_overrides / model_profiles / routed row: none
+      get: (...args: unknown[]) => {
+        if (sql.includes('WHERE is_active = 1') || sql.includes('WHERE is_active=1')) return state.activeRow;
+        if (sql.includes('WHERE ollama_name')) return state.savedRows.find(r => r.ollama_name === args[0]);
+        return undefined; // router_overrides / model_profiles: none
       },
       all: () => [],
       run: () => ({ changes: 0 }),
@@ -38,7 +40,7 @@ vi.mock('electron', () => ({
 
 import { getActiveLLMClient, NoModelConfiguredError } from './client';
 
-beforeEach(() => { state.activeRow = undefined; });
+beforeEach(() => { state.activeRow = undefined; state.savedRows = []; });
 
 describe('getActiveLLMClient with nothing configured', () => {
   it('throws NoModelConfiguredError instead of inventing a localhost default', () => {
@@ -55,8 +57,16 @@ describe('getActiveLLMClient with nothing configured', () => {
     }
   });
 
-  it('an explicit modelOverride still works without an active row (fork/escalation path)', () => {
-    expect(() => getActiveLLMClient('llama3.2:3b')).not.toThrow();
+  it('a modelOverride with its OWN saved row works without an active row (escalation path)', () => {
+    state.savedRows = [{
+      model_id: 's1', ollama_name: 'gpt-4o-mini', base_url: 'https://api.openai.com/v1',
+      api_key: 'v1:enc:' + Buffer.from('FAKE!sk-x').toString('base64'), context_window: 128000,
+    }];
+    expect(() => getActiveLLMClient('gpt-4o-mini')).not.toThrow();
+  });
+
+  it('a bare-tag override with NO saved row and NO active row throws — no invented localhost transport (M1)', () => {
+    expect(() => getActiveLLMClient('llama3.2:3b')).toThrow(NoModelConfiguredError);
   });
 });
 

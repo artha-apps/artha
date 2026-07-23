@@ -72,9 +72,11 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       let online = await window.artha.llm.checkOllama();
       if (!online) {
         // Artha starts Ollama itself — the user is never told to run a command.
-        // `not_installed` is the only case we can't fix automatically.
+        // A missing install is the one case we can't fix automatically. During
+        // onboarding no model is active yet, so the status arrives as
+        // 'no_model' with an ollamaInstalled flag — honor both shapes (B1).
         const st = await window.artha.llm.ensureModel();
-        setNotInstalled(st.phase === 'not_installed');
+        setNotInstalled(st.phase === 'not_installed' || st.ollamaInstalled === false);
         online = await window.artha.llm.checkOllama();
       } else {
         setNotInstalled(false);
@@ -496,6 +498,8 @@ function ByokSetup({ onDone, onBack }: { onDone: () => void | Promise<void>; onB
       } else {
         setError(res.error.message);
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reach the endpoint.');
     } finally { setBusy(null); }
   };
 
@@ -521,8 +525,16 @@ function ByokSetup({ onDone, onBack }: { onDone: () => void | Promise<void>; onB
         activate: true,
         persistence,
       });
-      if ('error' in res) { setStoragePrompt(res.message); return; }
+      if ('error' in res) {
+        if (res.error === 'secure_storage_unavailable') setStoragePrompt(res.message);
+        else setError(res.message);
+        return;
+      }
       await onDone();
+    } catch (err) {
+      // A rejected IPC (DB error, seal failure) must never strand the user
+      // on a green "Connected" with nothing advancing (review M4).
+      setError(err instanceof Error ? err.message : 'Saving the model failed — try again.');
     } finally { setBusy(null); }
   };
 

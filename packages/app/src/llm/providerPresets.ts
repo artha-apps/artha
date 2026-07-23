@@ -49,6 +49,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://api.anthropic.com/v1', keyRequired: true, keyHint: 'sk-ant-…',
     modelHint: 'claude-sonnet-4-6', docsUrl: 'https://console.anthropic.com/settings/keys',
     capabilityKey: 'anthropic',
+    note: '"Find models" may not work here (Anthropic’s model list uses a different auth style) — type the model name if the list stays empty.',
   },
   {
     id: 'gemini', label: 'Google Gemini', kind: 'cloud',

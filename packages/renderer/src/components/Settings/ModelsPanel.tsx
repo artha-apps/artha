@@ -536,8 +536,12 @@ export default function ModelsPanel() {
         persistence,
       });
       if ('error' in res) {
-        // Keychain unavailable: keep the form open and offer session-only use.
-        setStoragePrompt(res.message);
+        if (res.error === 'secure_storage_unavailable') {
+          // Keychain unavailable: keep the form open, offer session-only use.
+          setStoragePrompt(res.message);
+        } else {
+          setCloudError(res.message); // e.g. name_conflict with a local model
+        }
         return;
       }
       setStoragePrompt(null);

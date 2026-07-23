@@ -18,6 +18,7 @@ import {
   CredentialLockedError,
 } from '../security/secretString';
 import { getSessionKey } from '../security/sessionKeys';
+import { isOllamaManaged } from './providerKind';
 import { isUnsupported, markUnsupported } from './capabilities';
 import { applyToolCallDeltas, toToolCalls, type PartialToolCall } from './streamMerge';
 
@@ -450,7 +451,16 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
     // don't need a 70B, and running them on one is the main cause of slow
     // turns. 'synthesis' is quality-sensitive (doc generation, final combine)
     // so it deliberately falls through to the active model.
+    //
+    // ONLY when the active model is itself Ollama-managed: a cloud-active
+    // user with leftover local rows must not have plan/tool_args steered to
+    // a localhost server that provider-aware startup no longer auto-starts
+    // (review findings M2/H2 — every task message failed at the plan phase).
     if (taskType === 'plan' || taskType === 'tool_args') {
+      const active = db
+        .prepare(`SELECT provider, base_url FROM llm_models WHERE is_active=1 LIMIT 1`)
+        .get() as { provider?: string; base_url?: string } | undefined;
+      if (active && !isOllamaManaged(active.provider, active.base_url)) return undefined;
       const rows = db
         .prepare(`SELECT ollama_name FROM llm_models WHERE provider='ollama'`)
         .all() as { ollama_name: string }[];
@@ -521,61 +531,71 @@ export class NoModelConfiguredError extends Error {
   }
 }
 
-/** Returns an LLMClient configured from the active model in the DB.
- *  `taskType` lets the router pick a different model per phase of a run;
- *  `modelOverride` short-circuits everything (used by time-travel fork).
- *  Throws `NoModelConfiguredError` when there is no active row and nothing
- *  routed/overridden — never invents a localhost default. */
-export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType): LLMClient {
-  const db = getDb();
+/** The transport decision for one request — exported for direct testing. */
+export interface ResolvedTransport {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  contextWindow: number;
+}
+
+/**
+ * Resolve which model + transport a request uses. Rules (review-hardened):
+ *   1. The requested MODEL is `modelOverride` > router pick > active row.
+ *      Nothing resolvable → NoModelConfiguredError (never a localhost
+ *      default — stale router/profile rows can't resurrect one either).
+ *   2. The TRANSPORT is the routed model's own saved row when one exists,
+ *      else the active row. A routed row uses ITS OWN key — a keyless row
+ *      resolves to the harmless placeholder, never the active row's cloud
+ *      key (H2: no cross-provider credential bleed).
+ *   3. A bare-tag override with no saved row and no active row throws —
+ *      there is no honest transport to invent (M1/M6).
+ *   4. The key is resolved once, lazily, for the transport row actually
+ *      used (M3/M5: an expired active-row key can't break a routed run).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function resolveTransport(db: any, modelOverride?: string, taskType?: TaskType): ResolvedTransport {
   const row = db
     .prepare(`SELECT * FROM llm_models WHERE is_active = 1 LIMIT 1`)
     .get() as Record<string, unknown> | undefined;
 
   const routed = resolveModelName(modelOverride, taskType);
-  if (!row && !routed) throw new NoModelConfiguredError();
+  const model = routed ?? (row?.ollama_name as string | undefined);
+  if (!model) throw new NoModelConfiguredError();
 
-  const baseUrl       = (row?.base_url as string)        ?? 'http://localhost:11434/v1';
-  // Resolve the stored key under the credential policy (seal-on-read for
-  // legacy plaintext; typed errors for locked/expired keys) at the last
-  // main-process point before the outbound request.
-  const apiKey        = usableApiKey(db, row?.model_id as string | undefined, row?.api_key as string | undefined);
-  // `routed` is non-null whenever `row` is (guard above), so this fallback tag
-  // is only ever used with an ACTIVE row that carries its own name.
-  const fallbackModel = (row?.ollama_name as string)      ?? 'llama3.2:3b-instruct-q4_K_M';
-  // num_ctx for the local Ollama native path. Default 8192 (up from Ollama's
-  // 2048) so big tool-using prompts aren't truncated + re-evaluated each turn.
-  const contextWindow = (row?.context_window as number)   ?? 8192;
-
-  // Use the ROUTED model's OWN row when it's a different saved model. Two
-  // things depend on this:
-  //   - context_window: routing (e.g. Delegate's fast model) can select a
-  //     different model; forcing it into the active model's (possibly tiny)
-  //     num_ctx truncates the tool-using prompt + schemas, silently breaking
-  //     tool use. Floor at 8192 so a tool-heavy loop never truncates.
-  //   - base_url/api_key: a cloud escalation override ("retry this task on
-  //     gpt-4o") targets a BYOK row with its own endpoint + key. Without this,
-  //     the cloud model name would be sent to the ACTIVE model's (local
-  //     Ollama) endpoint and fail. Routed models with no saved row (bare
-  //     Ollama tags) keep the active row's transport, as before.
-  let effectiveContextWindow = contextWindow;
-  let effectiveBaseUrl = baseUrl;
-  let effectiveApiKey = apiKey;
+  // Transport row: the routed model's own saved row wins; bare tags (no
+  // saved row) ride the active row's transport, as before.
+  let transport = row;
   if (routed && routed !== (row?.ollama_name as string)) {
     const routedRow = db
       .prepare(`SELECT model_id, base_url, api_key, context_window FROM llm_models WHERE ollama_name = ?`)
-      .get(routed) as { model_id?: string; base_url?: string; api_key?: string; context_window?: number } | undefined;
-    if (routedRow?.context_window) effectiveContextWindow = routedRow.context_window;
-    if (routedRow?.base_url) effectiveBaseUrl = routedRow.base_url;
-    if (routedRow?.api_key) effectiveApiKey = usableApiKey(db, routedRow.model_id, routedRow.api_key);
+      .get(routed) as Record<string, unknown> | undefined;
+    if (routedRow) transport = routedRow;
   }
-  effectiveContextWindow = Math.max(effectiveContextWindow, 8192);
+  if (!transport) throw new NoModelConfiguredError();
 
+  return {
+    baseUrl: (transport.base_url as string) ?? 'http://localhost:11434/v1',
+    apiKey: usableApiKey(db, transport.model_id as string | undefined, transport.api_key as string | undefined),
+    model,
+    // num_ctx floor 8192 (up from Ollama's 2048) so big tool-using prompts
+    // aren't truncated + re-evaluated each turn; /v1 cloud path ignores it.
+    contextWindow: Math.max((transport.context_window as number) ?? 8192, 8192),
+  };
+}
+
+/** Returns an LLMClient configured from the active model in the DB.
+ *  `taskType` lets the router pick a different model per phase of a run;
+ *  `modelOverride` short-circuits everything (used by time-travel fork).
+ *  Throws `NoModelConfiguredError` when nothing resolvable is configured —
+ *  never invents a localhost default. */
+export function getActiveLLMClient(modelOverride?: string, taskType?: TaskType): LLMClient {
+  const t = resolveTransport(getDb(), modelOverride, taskType);
   return new LLMClient({
-    baseUrl: effectiveBaseUrl,
-    apiKey: effectiveApiKey,
-    model: routed ?? fallbackModel,
-    contextWindow: effectiveContextWindow,
+    baseUrl: t.baseUrl,
+    apiKey: t.apiKey,
+    model: t.model,
+    contextWindow: t.contextWindow,
     keepAlive: '30m',
   });
 }
