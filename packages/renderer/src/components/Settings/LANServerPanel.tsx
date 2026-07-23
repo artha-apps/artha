@@ -8,7 +8,14 @@ import { Wifi, Copy, Check, AlertTriangle } from 'lucide-react';
 import { qrToSvg } from '../../lib/qrcode';
 
 /** Server status snapshot returned by `lan:getStatus`. */
-interface LanStatus { running: boolean; url: string | null; localIp: string | null }
+interface LanStatus {
+  running: boolean;
+  url: string | null;
+  localIp: string | null;
+  /** Why a start attempt failed (licence gate, port conflict, missing key).
+   *  The backend has always returned this; the panel used to discard it. */
+  error?: string;
+}
 
 /**
  * LAN Server panel — start/stop the local HTTP server (port 7842) that exposes
@@ -16,6 +23,8 @@ interface LanStatus { running: boolean; url: string | null; localIp: string | nu
  * mobile devices or teammates can discover the endpoint without typing the URL.
  */
 export default function LANServerPanel() {
+  /** Why the last start attempt failed — rendered, not swallowed. */
+  const [startError, setStartError] = useState<string | null>(null);
   // ── State ──────────────────────────────────────────────────────────────────
   const [status, setStatus] = useState<LanStatus>({ running: false, url: null, localIp: null });
   const [autostart, setAutostart] = useState(false);
@@ -34,6 +43,11 @@ export default function LANServerPanel() {
     try {
       const next = status.running ? await window.artha.lan.stop() : await window.artha.lan.start();
       setStatus(next);
+      // The start error was returned and thrown away, so a Free-tier user (or
+      // a port conflict) clicked the toggle and NOTHING happened, with no
+      // explanation — including the licence upsell the backend deliberately
+      // returns (audit H25).
+      setStartError(!next.running && 'error' in next ? String((next as { error?: string }).error ?? '') : null);
     } finally {
       setBusy(false);
     }
@@ -103,6 +117,16 @@ const reader = res.body.getReader();`;
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${status.running ? 'translate-x-5' : ''}`} />
           </button>
         </div>
+
+        {/* Why the last start attempt failed — licence gate, port conflict, or
+            a missing API key. Previously returned by the backend and silently
+            discarded, so the toggle appeared to do nothing. */}
+        {startError && !status.running && (
+          <div className="mb-5 px-3 py-2.5 rounded-lg bg-artha-warn/10 border border-artha-warn/30 text-xs leading-relaxed">
+            <span className="font-medium text-artha-text">The LAN server didn’t start. </span>
+            <span className="text-artha-muted">{startError}</span>
+          </div>
+        )}
 
         {/* Running details */}
         {status.running && url && (

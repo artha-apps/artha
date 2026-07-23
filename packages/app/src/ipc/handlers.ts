@@ -297,7 +297,7 @@ function lanStatus(): { running: boolean; url: string | null; localIp: string | 
  *   GET  /skills — full list of enabled skill objects
  *   POST /chat   — forward a message to the orchestrator; streams NDJSON reply
  */
-function startLanServer(): { running: boolean; url: string | null; localIp: string | null; error?: string } {
+async function startLanServer(): Promise<{ running: boolean; url: string | null; localIp: string | null; error?: string }> {
   if (lanServer) return lanStatus();
   // Gate: solo tiers may NOT bind the LAN port. This is the central
   // solo→Team monetisation wall; the persona-onboarding flow paints a clear
@@ -486,12 +486,44 @@ function startLanServer(): { running: boolean; url: string | null; localIp: stri
     json(404, { error: 'Not found' });
   });
 
-  server.on('error', (err) => {
-    console.error('[Artha] LAN server error:', err);
-    lanServer = null;
+  // AWAIT the bind before claiming the server is running. Previously listen()
+  // was fire-and-forget and `lanServer` was assigned immediately, so on
+  // EADDRINUSE the panel had already painted "Server running", the URL and a
+  // QR code the user shares with teammates — and the async error handler
+  // nulled the server a tick later with nothing re-rendering (audit H24).
+  const bindResult = await new Promise<{ ok: true } | { ok: false; error: string }>(resolve => {
+    let settled = false;
+    const done = (r: { ok: true } | { ok: false; error: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      console.error('[Artha] LAN server error:', err);
+      lanServer = null;
+      done({
+        ok: false,
+        error: err.code === 'EADDRINUSE'
+          ? `Port ${LAN_PORT} is already in use — another Artha instance may be running.`
+          : (err.message || 'The LAN server could not start.'),
+      });
+    });
+    server.listen(LAN_PORT, '0.0.0.0', () => {
+      console.log(`[Artha] LAN server listening on http://${lanLocalIp ?? '0.0.0.0'}:${LAN_PORT}`);
+      done({ ok: true });
+    });
   });
-  server.listen(LAN_PORT, '0.0.0.0', () => {
-    console.log(`[Artha] LAN server listening on http://${lanLocalIp ?? '0.0.0.0'}:${LAN_PORT}`);
+
+  if (!bindResult.ok) {
+    lanServer = null;
+    return { ...lanStatus(), error: bindResult.error };
+  }
+
+  // Only now is it true. Keep listening for later failures so a server that
+  // dies mid-session stops reporting as running.
+  server.on('error', (err) => {
+    console.error('[Artha] LAN server error (post-bind):', err);
+    lanServer = null;
   });
   lanServer = server;
   return lanStatus();
@@ -542,7 +574,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   try {
     if (currentEntitlements().lanServer) {
       const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
-      if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) startLanServer();
+      if (JSON.parse(row?.settings_json ?? '{}').lan_autostart) void startLanServer();
     }
   } catch (err) {
     console.warn('[Artha] LAN autostart check failed:', err);
