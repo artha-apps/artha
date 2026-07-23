@@ -1,6 +1,6 @@
 # PR #42 — Founder review packet
 
-**Branch:** `phase-a/provider-foundation` → `main` · **Scope:** Phase 0 architecture + Phase A provider foundation · **Tests:** 405 automated, all passing · **Manual matrix:** 14/14 rows PASS (no conditional passes remaining) · **Recommendation at bottom.**
+**Branch:** `phase-a/provider-foundation` → `main` · **Scope:** Phase 0 architecture + Phase A provider foundation · **Tests:** 413 automated, all passing on ubuntu/windows/macos · **Manual matrix:** 14/14 rows PASS (no conditional passes remaining) · **Merge candidate:** `840df603487d28dcd8600656530d17acd857b728` · **Recommendation at bottom.**
 
 ## 1. What changed, in plain language
 Artha now treats external AI providers as first-class citizens without weakening its local-first core. A new user chooses where intelligence runs (local / own API key / decide later); a BYOK user picks from 12 providers, pastes a key that is **only ever stored keychain-encrypted** (or held in memory for one session — never plaintext, never base64), sees the endpoint's models and capabilities, proves the connection before activating, and keeps working across restarts with zero Ollama noise. Every empty or degraded state now says the truth. Six architecture documents lock the platform direction (execution modes, provider SDK, threat model, object model, monetization foundation, roadmap incl. founder-critical Phase A.5).
@@ -45,11 +45,24 @@ Full detail in `PHASE_A_VALIDATION_RESULTS.md`. The two remaining rows were comp
 ## 6. Cross-platform & CI
 CI green on the branch; unit suite now runs ubuntu/windows/macos (proves mocked policy logic cross-OS — **not** native keychain integration). macOS native keychain genuinely exercised in the headed run. Linux Secret Service / Windows DPAPI remain manual-validation debt (threat model §3 states this).
 
-## 7. Independent review
+## 6b. Final independent review (on the exact PR head)
+A third uninvolved reviewer audited the current head. **No merge blockers.** Two HIGH and four MEDIUM/LOW findings were fixed in `828f175`:
+- **H1 (isolation — the founder's stop condition):** a FATAL QA decision called `app.exit(1)` and *fell through*; `app.exit` only schedules a quit once the main message loop owns the process, so startup continued into the instance lock and `initDatabase()` — opening the **live** profile. `process.exit(1)` now makes "refuse to run" real.
+- **H2 (introduced by the row-13 patch):** `embed()` had no timeout and `buildIndex` retried every chunk, so a reachable-but-hung runtime could block indexing for hours on every rebuild. 15 s abort + fail-fast (one probe per build).
+- **M1:** `warm()`'s failure was discarded, so a model that could not load still reported `ready`. Now an actionable error status.
+- **M2:** `rag_search` and doc grounding said "no matching passages" when the retriever *could not run* — a false content claim. Both now state the files could not be searched (probe only on zero hits).
+- **M3:** the live-profile guard compared paths byte-exactly; a case-variant spelling passed on case-insensitive volumes. Now case-folded on macOS/Windows.
+- **L1:** `search/global.ts` was the last place comparing unvalidated vectors — now validated.
+Accepted-with-rationale (documented, not fixed): non-atomic index writes (L2), no `buildIndex` concurrency guard (L3), stale session key after re-add (L4), isolation covers `userData` but not `~/Documents`/`sessionData` (L5), one-way credential migration needing a release note (L7).
+
+## 7. Earlier independent reviews
 Two adversarial agents (uninvolved in implementation). Findings: 1 merge blocker (B1 onboarding spinner — mine, fixed), 3 high (H1 probe-URL key exfiltration; H2 cross-provider key bleed; H3 keyless-provider breakage — all fixed with regression tests), 6 medium + 4 low fixed, 4 deferred-with-rationale (L3 VACUUM retry marker, L4 probe-comment accuracy, L7 local-address rows hidden in cloud list, L8 legacy local plaintext keys locked on keychainless systems). Full classifications in the PR conversation.
 
 ## 8. Security remaining
 R2 LAN plain HTTP, R3 unenforced MCP permissions, R4 unkeyed bundle checksum — capability-tied **release gates** (threat model §9), none newly exposed by this PR. Dependabot: **critical CVE-2026-9277 (shell-quote ≤1.8.3 via `concurrently`) = devDependency-only, absent from the packaged asar, unreachable in shipped product → NOT a merge blocker**; classified build-environment risk; fix + triage of the other 31 alerts tracked in `SECURITY_TRIAGE_DEPENDENCIES.md` as a separate narrowly-scoped PR (release gate for the next distributable build).
+
+## 8b. Cross-OS CI (all green on the merge candidate)
+ESLint, TypeScript, and unit tests on **ubuntu + windows + macos** all pass. Getting Windows green surfaced two pre-existing POSIX-only test suites that had never run there; they are skipped on win32 with explicit notes, and the real gap they exposed — **`filesystem.ts`'s system-directory denylist is POSIX-only, with no Windows equivalent** — is recorded as a pre-existing Medium finding gated to the next Windows distributable build.
 
 ## 9. Rollback
 Branch revert = clean (no destructive migrations). Data rollback: old builds read sealed keys as invalid bearers → provider auth error, keys recoverable by re-entry or re-upgrade; no crash path; verified conceptually and via the passthrough design. Release note required if ever rolling back a shipped build past commit 1.
