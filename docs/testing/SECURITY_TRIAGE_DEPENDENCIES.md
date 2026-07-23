@@ -21,3 +21,16 @@
 For each: package · installed/fixed versions · severity · direct/transitive · prod/dev · in-asar? (`npx asar list | grep`) · reachability through Artha surfaces (credential handling, IPC, updater, browser, network stack get priority) · exploit conditions · breaking? · remediation · release-gate status. Method: `gh api /repos/artha-apps/artha/dependabot/alerts?state=open` per-alert + asar-presence check; `npm audit` cross-reference. Priority order: the 9 highs first, anything with `dependency.scope == "runtime"` AND asar-present is presumed release-blocking until shown otherwise.
 
 **Owner:** next session after PR #42 merges (or before next release, whichever first). **Output:** one narrowly-scoped PR: overrides/bumps + this register completed.
+
+
+## Pre-existing finding surfaced by the cross-OS CI matrix (not introduced by PR #42)
+
+**Windows system-path sandboxing is POSIX-only.** `packages/app/src/tools/filesystem.ts:61` blocks writes using a POSIX list (`/System`, `/Library/System`, `/usr`, `/etc`, `/bin`, `/sbin`, `/private/etc`). There is no Windows equivalent (`C:\Windows`, `C:\Program Files`, `%SystemRoot%`), so on Windows the agent's filesystem sandbox relies only on the per-chat scope check, not on an absolute system-directory denylist. The two tests covering this were POSIX-only and had never run on Windows before the OS matrix was added in this PR; they are now skipped on win32 rather than asserting behaviour the code does not implement.
+
+| Field | Value |
+|---|---|
+| Severity | Medium (defence-in-depth gap, Windows only) |
+| Introduced by | Pre-existing — predates PR #42 |
+| Enforcement boundary | Agent filesystem tool dispatch |
+| Owner phase | Release gate for the next **Windows** distributable build |
+| Acceptance | Platform-aware system-path denylist + tests that run on all three OSes |
