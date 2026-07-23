@@ -93,6 +93,8 @@ export interface ExecuteHooks {
   onStage: (status: DelegateStatus) => void;
   /** Update a single plan step's status as it runs. */
   onStep: (index: number, status: DelegatePlanStep['status']) => void;
+  /** Task identity, as soon as the backend assigns it. */
+  onIds?: (ids: { runId: string; sessionId: string }) => void;
 }
 
 /** The pluggable engine. MVP = mock; later = real orchestrator/workflow/model. */
@@ -309,6 +311,10 @@ export const ipcDelegateEngine: DelegateEngine = {
   async execute(plan, hooks) {
     hooks.onStage('executing');
     const { runId, sessionId, capability } = await window.artha.delegate.start(plan.goal);
+    // Surface the task identity to the store. These were previously local
+    // variables that died with the function, which is why the UI could not
+    // stop a run, continue a task, or link to its evidence.
+    hooks.onIds?.({ runId, sessionId });
     // eslint-disable-next-line no-console
     console.info(`[Delegate] started run ${runId} (capability: ${capability}) — polling…`);
 

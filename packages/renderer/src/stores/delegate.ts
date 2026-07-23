@@ -28,6 +28,15 @@ interface DelegateState {
   result: DelegateResult | null;
   /** Set when the lifecycle ends in `failed`. */
   error: string | null;
+  /** Task identity — previously discarded, which is why the UI could not stop
+   *  a run, continue the task, or link to its evidence. */
+  runId: string | null;
+  sessionId: string | null;
+  /** The task's conversation (user + agent), so the task view is a thread
+   *  rather than a one-shot result panel. */
+  thread: { sender_type: string; content: string; created_at: number }[];
+  /** True while a stop request is in flight. */
+  stopping: boolean;
 
   // ── Actions ────────────────────────────────────────────────────────────────
   /** Hand a goal to Artha: understand → retrieve context → plan. Auto-executes
@@ -37,6 +46,14 @@ interface DelegateState {
   confirm: () => Promise<void>;
   /** Reject a paused plan and return to the input. */
   cancel: () => void;
+  /** Stop the RUNNING backend task (not just the local view). */
+  stop: () => Promise<void>;
+  /** Send a follow-up into the SAME task, keeping its context and history. */
+  continueTask: (message: string) => Promise<void>;
+  /** Reload the task's conversation thread. */
+  loadThread: () => Promise<void>;
+  /** Open an existing task by session id (multi-task support). */
+  openTask: (sessionId: string, runId: string | null) => Promise<void>;
   /** Clear everything and start a fresh delegation. */
   reset: () => void;
 }
@@ -49,11 +66,18 @@ interface PersistedTask {
   goal: string;
   plan: DelegatePlan | null;
   result: DelegateResult | null;
+  /** Identity so a task can be reopened, continued or stopped after a
+   *  restart — previously dropped, stranding any in-flight backend run. */
+  runId?: string | null;
+  sessionId?: string | null;
 }
 
 /** Stages that can be safely restored verbatim. Anything else (a task that was
  *  mid-flight when the window closed) resets to `idle` so it never hangs. */
-const RESTORABLE: DelegateStatus[] = ['completed', 'awaiting_confirmation', 'failed'];
+// 'executing' is restorable now that identity survives: a task interrupted by
+// a restart can be reopened and stopped instead of vanishing into an idle
+// screen while its backend run keeps going with full tool access.
+const RESTORABLE: DelegateStatus[] = ['completed', 'awaiting_confirmation', 'failed', 'executing'];
 
 function loadPersisted(): PersistedTask | null {
   if (typeof window === 'undefined') return null;
@@ -88,6 +112,10 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
   plan: restored?.plan ?? null,
   result: restored?.result ?? null,
   error: null,
+  runId: restored?.runId ?? null,
+  sessionId: restored?.sessionId ?? null,
+  thread: [],
+  stopping: false,
 
   submit: async (goal) => {
     const trimmed = goal.trim();
@@ -105,7 +133,7 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
     if (plan.requiresApproval) {
       // Pause for the confirmation step before any external/irreversible action.
       set({ plan, status: 'awaiting_confirmation' });
-      persist({ status: 'awaiting_confirmation', goal: trimmed, plan, result: null });
+      persist({ status: 'awaiting_confirmation', goal: trimmed, plan, result: null, runId: get().runId, sessionId: get().sessionId });
       return;
     }
 
@@ -122,12 +150,65 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
 
   cancel: () => {
     set({ status: 'idle', plan: null, result: null, error: null });
-    persist({ status: 'idle', goal: '', plan: null, result: null });
+    persist({ status: 'idle', goal: '', plan: null, result: null, runId: null, sessionId: null });
   },
 
   reset: () => {
-    set({ status: 'idle', goal: '', plan: null, result: null, error: null });
-    persist({ status: 'idle', goal: '', plan: null, result: null });
+    set({
+      status: 'idle', goal: '', plan: null, result: null, error: null,
+      runId: null, sessionId: null, thread: [], stopping: false,
+    });
+    persist({ status: 'idle', goal: '', plan: null, result: null, runId: null, sessionId: null });
+  },
+
+  stop: async () => {
+    const { runId } = get();
+    if (!runId) return;
+    set({ stopping: true });
+    try {
+      const res = await window.artha.delegate.cancel(runId);
+      if (!res.ok) set({ error: res.error ?? 'Could not stop the task.' });
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      set({ stopping: false });
+    }
+  },
+
+  continueTask: async (message) => {
+    const trimmed = message.trim();
+    const { sessionId } = get();
+    if (!trimmed || !sessionId) return;
+    set({ error: null, status: 'executing' });
+    try {
+      const res = await window.artha.delegate.continue(sessionId, trimmed);
+      if (!res.ok) { set({ status: 'failed', error: res.error ?? 'Could not continue the task.' }); return; }
+      if (res.runId) set({ runId: res.runId });
+      await get().loadThread();
+      // Poll the new run to completion, reusing the existing engine path.
+      await runExecution(
+        get().plan ?? {
+          goal: trimmed, summary: trimmed, steps: [],
+          requiresApproval: false, expectedOutput: '',
+        },
+        set, get,
+      );
+    } catch (err) {
+      set({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  loadThread: async () => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    try {
+      set({ thread: await window.artha.delegate.thread(sessionId) });
+    } catch { /* non-fatal */ }
+  },
+
+  openTask: async (sessionId, runId) => {
+    set({ sessionId, runId, status: 'completed', error: null, plan: null, result: null });
+    await get().loadThread();
   },
 }));
 
@@ -151,11 +232,19 @@ async function runExecution(
     const result = await delegateEngine.execute(plan, {
       onStage: (s) => set({ status: s }),
       onStep: setStep,
+      onIds: ({ runId, sessionId }) => set({ runId, sessionId }),
     });
     set({ result, status: 'completed' });
-    persist({ status: 'completed', goal: get().goal, plan: get().plan, result });
+    void get().loadThread();
+    persist({
+      status: 'completed', goal: get().goal, plan: get().plan, result,
+      runId: get().runId, sessionId: get().sessionId,
+    });
   } catch (err) {
     set({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
-    persist({ status: 'failed', goal: get().goal, plan: get().plan, result: null });
+    persist({
+      status: 'failed', goal: get().goal, plan: get().plan, result: null,
+      runId: get().runId, sessionId: get().sessionId,
+    });
   }
 }

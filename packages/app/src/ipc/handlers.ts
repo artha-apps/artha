@@ -829,6 +829,67 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     return { runId, sessionId, capability: capability?.id ?? 'delegate-operator' };
   });
 
+  // Stop a running Delegate task. Delegate had NO way to cancel: the renderer
+  // discarded the runId, so a long or hung run could not be stopped from the
+  // UI at all and kept executing with full tool access. The workflow id lives
+  // on the run row, so we can cancel without changing startCapability.
+  ipcMain.handle('delegate:cancel', (_e, runId: string) => {
+    const row = getDb()
+      .prepare(`SELECT workflow_id, status FROM agent_runs WHERE run_id=?`)
+      .get(runId) as { workflow_id: string; status: string } | undefined;
+    if (!row) return { ok: false, error: 'That task no longer exists.' };
+    if (row.status !== 'running') return { ok: true, alreadyFinished: true };
+    orchestrator.cancelWorkflow(row.workflow_id);
+    return { ok: true, alreadyFinished: false };
+  });
+
+  // Continue an existing Delegate task IN ITS OWN session, so follow-ups keep
+  // the task's context, plan and history instead of silently starting an
+  // unrelated run.
+  ipcMain.handle('delegate:continue', async (_e, sessionId: string, message: string) => {
+    const db = getDb();
+    const exists = db.prepare(`SELECT session_id FROM chat_sessions WHERE session_id=?`).get(sessionId);
+    if (!exists) return { ok: false, error: 'That task no longer exists.' };
+    db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`)
+      .run(sessionId, message);
+    const registry = new CapabilityRegistry(SkillRegistry.getInstance());
+    const capability = await registry.select(message);
+    let taskPlaybook: { name: string; instructions: string } | null = null;
+    if (capability?.skillSlug) {
+      const resolved = (await SkillRegistry.getInstance().resolve(`/${capability.skillSlug}`)).skill;
+      if (resolved) taskPlaybook = { name: resolved.name, instructions: resolved.instructions };
+    }
+    const runId = orchestrator.startCapability({
+      sessionId, goal: message, skill: buildOperatorSkill(taskPlaybook),
+    });
+    return { ok: true, runId, sessionId };
+  });
+
+  // The task's conversation so far — user messages and agent replies in one
+  // thread, so the task view can be a real conversation rather than a
+  // one-shot result panel.
+  ipcMain.handle('delegate:thread', (_e, sessionId: string) => {
+    return getDb().prepare(
+      `SELECT sender_type, content, created_at FROM messages
+        WHERE session_id=? ORDER BY rowid ASC`
+    ).all(sessionId) as { sender_type: string; content: string; created_at: number }[];
+  });
+
+  // Every Delegate task, newest first — replaces the single-task localStorage
+  // slot so more than one task can exist.
+  ipcMain.handle('delegate:list', () => {
+    return getDb().prepare(
+      `SELECT s.session_id, s.title, s.created_at,
+              (SELECT r.run_id FROM agent_runs r WHERE r.session_id = s.session_id
+                ORDER BY r.created_at DESC LIMIT 1) AS last_run_id,
+              (SELECT r.status FROM agent_runs r WHERE r.session_id = s.session_id
+                ORDER BY r.created_at DESC LIMIT 1) AS last_status
+         FROM chat_sessions s
+        WHERE s.origin='delegate'
+        ORDER BY s.created_at DESC LIMIT 50`
+    ).all() as { session_id: string; title: string; created_at: number; last_run_id: string | null; last_status: string | null }[];
+  });
+
   // Poll a running Task: maps the Task status to a Delegate-facing state, and
   // once terminal returns the final agent message + any artifacts produced.
   ipcMain.handle('delegate:status', (_e, runId: string, sessionId: string) => {
