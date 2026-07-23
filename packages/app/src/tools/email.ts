@@ -29,16 +29,14 @@ export const EMAIL_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'email_compose',
       description:
-        'Compose an email and open it pre-filled for the user to review and send. ' +
-        'USE THIS TOOL for ANY request to send, write, draft or compose an email — ' +
-        "including phrasings like \"open my Gmail and send…\" or \"email X\". Prefer it " +
-        'over browser automation: do NOT navigate to gmail.com and click around, that ' +
-        'hits the login wall. If the user names their provider (Gmail, Outlook, Yahoo), ' +
-        "pass `open_in` so it opens THAT provider's web compose; otherwise it opens the " +
-        "user's default mail client. " +
-        'IMPORTANT: this does NOT send the email — it opens it ready to send and the user ' +
-        'presses send. Artha cannot send email in the background. Never tell the user their ' +
-        'email has been sent; say the message is open, pre-filled, for them to review and send.',
+        'Prepare a DRAFT email and open it pre-filled for the user to review and send ' +
+        'THEMSELVES. Use this only when the user explicitly wants a draft (not an actual ' +
+        'send) — for "send an email" / "email X and send it", use email_send instead, ' +
+        'which sends it for them. If the user names their provider (Gmail, Outlook, ' +
+        "Yahoo), pass `open_in` so it opens THAT provider's web compose; otherwise it " +
+        "opens the user's default mail client. " +
+        'IMPORTANT: this does NOT send the email — it only opens a pre-filled draft. Never ' +
+        'tell the user their email has been sent; say the draft is open for them to send.',
       parameters: {
         type: 'object',
         properties: {

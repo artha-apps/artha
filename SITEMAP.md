@@ -93,7 +93,8 @@
 | `src/tools/browser.ts` | `BROWSER_TOOL_SCHEMAS` + `invokeBrowserTool` — exposes the embedded browser controller as agent tools |
 | `src/tools/desktop.ts` | `DESKTOP_TOOL_SCHEMAS` + `invokeDesktopTool` — mouse/keyboard/screenshot via nut-js + desktopCapturer (opt-in) |
 | `src/tools/email.ts` | `email_compose` — prepares an email and opens it pre-filled (default mail client or Gmail/Outlook/Yahoo web compose); never sends, reports drafted-not-sent |
-| `src/tools/gmailSend.ts` | `email_send` — actually sends via the Gmail API; always-confirm approval floor + `external_actions` write-ahead log (no double-send) + honest sent/outcome_unknown reporting |
+| `src/tools/gmailSend.ts` | `email_send` — actually sends: browser-first (rides existing Gmail login in the embedded browser, zero setup) with Gmail-API fallback; always-confirm approval floor + `external_actions` write-ahead log (no double-send) + honest sent/outcome_unknown reporting |
+| `src/tools/gmailBrowserSend.ts` | `sendViaBrowser` — zero-setup "Cowork" send: opens pre-filled Gmail compose in the embedded (logged-in) browser, clicks Send, confirms Gmail's "Message sent"; injectable webContents for testability |
 | **browser/** | |
 | `src/browser/controller.ts` | `BrowserController` singleton — owns the embedded WebContentsView; attach/detach/bounds + agent⇄user driving handoff |
 | `src/browser/actions.ts` | Low-level browser action primitives (navigate/click/type/readDom/screenshot/back/forward/reload/getUrl/waitForSelector) |
