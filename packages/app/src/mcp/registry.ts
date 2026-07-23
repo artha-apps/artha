@@ -15,7 +15,7 @@ import { DOCS_TOOL_SCHEMAS, invokeDocsTool, isDocsTool } from '../tools/docs';
 import { RAG_TOOL_SCHEMAS, invokeRagTool, isRagTool } from '../tools/rag';
 import { KG_TOOL_SCHEMAS, invokeKgTool, isKgTool } from '../tools/kg';
 import { CRM_TOOL_SCHEMAS, invokeCrmTool, isCrmTool } from '../tools/crm';
-import { EMAIL_TOOL_SCHEMAS, invokeEmailTool, isEmailTool } from '../tools/email';
+import { invokeEmailTool, isEmailTool } from '../tools/email';
 import { EMAIL_SEND_TOOL_SCHEMAS, invokeGmailSendTool, isGmailSendTool } from '../tools/gmailSend';
 import type { ScopeRoot } from '../db/scopes';
 import { openCredentials, sealCredentials, type StoredCredentials } from '../security/secrets';
@@ -214,7 +214,13 @@ export class MCPRegistry {
   /** Get all tool schemas — built-in tools first, then any connected MCP servers. */
   getToolSchemas(): OpenAI.ChatCompletionTool[] {
     const mcpTools = Array.from(this.connections.values()).flatMap(c => c.tools);
-    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...EMAIL_TOOL_SCHEMAS, ...EMAIL_SEND_TOOL_SCHEMAS, ...mcpTools];
+    // NOTE: EMAIL_TOOL_SCHEMAS (email_compose, draft-only) is deliberately NOT
+    // advertised to the agent. Small local models reliably confused it with
+    // sending — calling email_compose (which only drafts) and then narrating a
+    // successful "send". email_send is the single email action the agent sees;
+    // it actually delivers (via the logged-in browser) and reports honestly.
+    // The email_compose dispatch path below stays for any direct/back-compat use.
+    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...EMAIL_SEND_TOOL_SCHEMAS, ...mcpTools];
   }
 
   /** Invoke a named tool — built-in tools first, then MCP servers.
