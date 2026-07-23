@@ -251,6 +251,25 @@ async function createWindow(): Promise<void> {
   }
 }
 
+// ── QA profile isolation (validation infrastructure, founder-approved) ─────
+// MUST run before ANYTHING userData-scoped — including the single-instance
+// lock below (the lock is keyed on userData, so an isolated QA profile gets
+// its own lock and never collides with, or focuses, the user's real running
+// app) and initTelemetryBeforeReady (which opens the DB). Guarded —
+// production launches without the explicit flags are untouched; in QA mode
+// an invalid path refuses to start rather than risk the live profile.
+// See system/qaProfile.ts for the full policy.
+{
+  const qa = resolveQaProfile(process.env, app.getPath('userData'), app.isPackaged);
+  if (qa.action === 'fatal') {
+    console.error(`[Artha] ${qa.reason}`);
+    app.exit(1);
+  } else if (qa.action === 'apply' && qa.resolvedPath) {
+    app.setPath('userData', qa.resolvedPath);
+    console.log(`[Artha] ${qa.reason}`);
+  }
+}
+
 // ── Single-instance lock ───────────────────────────────────────────────────
 // Prevents a second Artha window from opening if the app is already running.
 // If a second launch is attempted, focus the existing window instead.
@@ -267,22 +286,6 @@ if (!gotSingleInstanceLock) {
       mainWindow.focus();
     }
   });
-
-  // QA profile isolation (validation infrastructure, founder-approved):
-  // MUST run before anything touches userData (initTelemetryBeforeReady opens
-  // the DB). Guarded — production launches without the explicit flags are
-  // untouched; in QA mode an invalid path refuses to start rather than risk
-  // the live profile. See system/qaProfile.ts for the full policy.
-  {
-    const qa = resolveQaProfile(process.env, app.getPath('userData'), app.isPackaged);
-    if (qa.action === 'fatal') {
-      console.error(`[Artha] ${qa.reason}`);
-      app.exit(1);
-    } else if (qa.action === 'apply' && qa.resolvedPath) {
-      app.setPath('userData', qa.resolvedPath);
-      console.log(`[Artha] ${qa.reason}`);
-    }
-  }
 
   // Init Sentry BEFORE 'ready' fires (@sentry/electron requirement); createWindow
   // runs after whenReady and is too late. See initTelemetryBeforeReady.
