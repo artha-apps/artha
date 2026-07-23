@@ -242,10 +242,18 @@ export async function invokeDesktopTool(name: string, args: Record<string, unkno
           try { fs.unlinkSync(tmp); } catch { /* ignore */ }
           const cx = region.left + region.width / 2;
           const cy = region.top + region.height / 2;
-          return JSON.stringify({ x: Math.round(cx), y: Math.round(cy) });
-        } catch {
-          // No match, or the image-matching provider isn't installed.
-          return JSON.stringify(null);
+          return JSON.stringify({ found: true, x: Math.round(cx), y: Math.round(cy) });
+        } catch (err) {
+          // "Not found on screen" and "image matching isn't available on this
+          // machine" are DIFFERENT facts — collapsing both to null let the
+          // model confidently report the element was absent when the feature
+          // was simply missing (audit H30). Distinguish them.
+          const msg = err instanceof Error ? err.message : String(err);
+          const providerMissing = /provider|not implemented|opencv|no such|module|dylib|\.node/i.test(msg);
+          if (providerMissing) {
+            return 'Error: on-screen image matching is not available on this machine, so the target could not be searched for. Do NOT conclude it is absent.';
+          }
+          return JSON.stringify({ found: false });
         }
       }
 
