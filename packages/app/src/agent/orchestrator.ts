@@ -26,6 +26,7 @@ import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
 import { getRunContext } from './runContext';
+import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
 import OpenAI from 'openai';
 import {
   startCitationCollection,
@@ -1262,6 +1263,10 @@ RULES — follow exactly, no exceptions:
     // annotated deterministically — the model cannot talk its way past it.
     let toolCallsTotal = 0;
     let toolCallErrors = 0;
+    // Blocked calls are NOT failures of the tool — they are policy refusals
+    // (unattended runs auto-block confirm-tier tools). Counted separately so a
+    // scheduled run that was blocked can say so instead of reporting success.
+    let toolCallsBlocked = 0;
     const reasoningSteps: ReasoningStep[] = [];
     // Resolved once for the whole loop: showReasoningEnabled() hits SQLite, so it
     // must not be called per token inside the throttled onReasoning callback.
@@ -1375,6 +1380,12 @@ RULES — follow exactly, no exceptions:
         emit('agent:token', '_Task stopped by user._');
         recordStep(stepIdx++, 'final', { reason: 'cancelled' });
         db.prepare(`UPDATE agent_runs SET status='cancelled' WHERE run_id=?`).run(args.runId);
+        persistRunFacts(db, args.runId, {
+          outcome: 'cancelled', toolCallsTotal, toolCallsFailed: toolCallErrors,
+          toolCallsBlocked, mutationsTotal: mutations.length,
+          mutationsFailed: mutations.filter(m => !m.success).length,
+          errorDetail: 'cancelled_by_user',
+        });
         break;
       }
 
@@ -1421,6 +1432,12 @@ RULES — follow exactly, no exceptions:
         emit('agent:token', `\n\n⚠️ Error: ${m}`);
         recordStep(stepIdx++, 'final', { error: m });
         db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+        persistRunFacts(db, args.runId, {
+          outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
+          toolCallsBlocked, mutationsTotal: mutations.length,
+          mutationsFailed: mutations.filter(m => !m.success).length,
+          errorDetail: m.slice(0, 200),
+        });
         break;
       }
 
@@ -1561,6 +1578,7 @@ RULES — follow exactly, no exceptions:
 
           toolCallsTotal++;
           if (toolStatus !== 'ok' || toolResult.startsWith('Error:')) toolCallErrors++;
+          if (receiptStatus === 'blocked') toolCallsBlocked++;
 
           // Anti-hallucination: only count a mutation as having happened when it
           // actually executed AND succeeded — a blocked or dry-run call must
@@ -1719,8 +1737,25 @@ RULES — follow exactly, no exceptions:
         }
 
         recordStep(stepIdx++, 'final', { content: finalText });
+        // `status='completed'` means ONLY that the executor finished. Whether
+        // the user's objective was achieved is decided later, from the facts
+        // persisted below (bodhi/taskModel.deriveTaskStatus) — never here.
         db.prepare(`UPDATE agent_runs SET status='completed' WHERE run_id=?`).run(args.runId);
         db.prepare(`UPDATE agent_states SET status='completed' WHERE workflow_id=?`).run(args.workflowId);
+        persistRunFacts(db, args.runId, {
+            outcome: 'succeeded', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: null,
+          });
+        // Evidence: one sanitized record per mutation actually attempted.
+        for (const m of mutations) {
+          recordEvidence(db, {
+            runId: args.runId, kind: 'tool_result', ref: m.tool,
+            status: m.success ? 'succeeded' : 'failed',
+            summary: `${m.tool} ${m.success ? 'succeeded' : 'failed'}`,
+          });
+        }
         finalEmitted = true;
         break;
 
@@ -1729,6 +1764,12 @@ RULES — follow exactly, no exceptions:
         if (emptyCount >= 3) {
           recordStep(stepIdx++, 'final', { reason: 'stall' });
           db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+          persistRunFacts(db, args.runId, {
+            outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: 'stall',
+          });
           break;
         }
       }
@@ -1737,6 +1778,14 @@ RULES — follow exactly, no exceptions:
     if (!finalEmitted && iterations >= 60) {
       recordStep(stepIdx++, 'final', { reason: 'max_iterations' });
       db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+      // Hitting the iteration cap is PARTIAL work, not a clean failure — the
+      // outcome distinction is what lets the projection say so honestly.
+      persistRunFacts(db, args.runId, {
+            outcome: 'timed_out', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: 'max_iterations',
+          });
     }
 
     // Restore the parent loop's citation token (null at the top level). A bare
