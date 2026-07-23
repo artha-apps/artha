@@ -37,10 +37,18 @@ export default function UndoAfterRun() {
           action: {
             label: 'Undo',
             onClick: async () => {
-              let ok = 0;
+              let ok = 0, failed = 0, lastError = '';
               // Newest first so nested changes unwind cleanly.
-              for (const f of fresh) { if ((await window.artha.undo.revert(f.id)).ok) ok++; }
-              toast.success('Undone', `${ok} change${ok === 1 ? '' : 's'} reverted`);
+              for (const f of fresh) {
+                const res = await window.artha.undo.revert(f.id);
+                if (res.ok) ok++;
+                else { failed++; lastError = res.error ?? ''; }
+              }
+              // A green "Undone" fired even when every revert failed
+              // (audit H21) — report what actually happened.
+              if (failed === 0) toast.success('Undone', `${ok} change${ok === 1 ? '' : 's'} reverted`);
+              else if (ok === 0) toast.error("Couldn't undo", lastError || 'Nothing could be reverted.');
+              else toast.warning('Partly undone', `${ok} reverted, ${failed} could not be${lastError ? ` (${lastError})` : ''}`);
             },
           },
         });

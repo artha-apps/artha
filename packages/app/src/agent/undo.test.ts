@@ -129,3 +129,53 @@ describe('undo: bookkeeping', () => {
     expect((await revert(id)).ok).toBe(false);
   });
 });
+
+describe('undo: no-clobber safety (audit H20/H21)', () => {
+  it('refuses a move-undo when the origin is now occupied, preserving BOTH files', async () => {
+    const a = path.join(dir, 'note.txt');
+    const b = path.join(dir, 'sub', 'note.txt');
+    await fsp.mkdir(path.dirname(b), { recursive: true });
+    await fsp.writeFile(b, 'the moved content'); // move already happened
+    recordFilesystemEffect('fs_move_file', JSON.stringify({ moved: a, to: b, success: true }));
+
+    // The user then created a NEW file at the original path.
+    await fsp.writeFile(a, 'important new file');
+
+    const r = await undoLast();
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/occupied|could not be undone/i);
+    // fs.rename would have destroyed the new file; it must survive.
+    expect(fs.readFileSync(a, 'utf8')).toBe('important new file');
+    expect(fs.readFileSync(b, 'utf8')).toBe('the moved content');
+  });
+
+  it('reports a partial batch undo rather than a false clean one', async () => {
+    const okFrom = path.join(dir, 'a.txt'), okTo = path.join(dir, 'sub', 'a.txt');
+    const blkFrom = path.join(dir, 'b.txt'), blkTo = path.join(dir, 'sub', 'b.txt');
+    await fsp.mkdir(path.join(dir, 'sub'), { recursive: true });
+    await fsp.writeFile(okTo, 'A');
+    await fsp.writeFile(blkTo, 'B');
+    await fsp.writeFile(blkFrom, 'new b'); // b's origin now occupied
+
+    recordFilesystemEffect('fs_move_batch', JSON.stringify({
+      results: [
+        { source: okFrom, to: okTo, ok: true },
+        { source: blkFrom, to: blkTo, ok: true },
+      ],
+      success: true,
+    }));
+    const r = await undoLast();
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/1 of 2|could not be undone/i);
+    expect(fs.readFileSync(okFrom, 'utf8')).toBe('A');   // safe one reverted
+    expect(fs.readFileSync(blkFrom, 'utf8')).toBe('new b'); // new file preserved
+  });
+
+  it('reports honestly when the moved file is already gone', async () => {
+    const a = path.join(dir, 'x.txt'), b = path.join(dir, 'y.txt');
+    recordFilesystemEffect('fs_move_file', JSON.stringify({ moved: a, to: b, success: true }));
+    const r = await undoLast(); // neither file exists
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/missing|could not be undone|nothing was reverted/i);
+  });
+});

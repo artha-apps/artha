@@ -110,15 +110,43 @@ export async function revert(id: string): Promise<{ ok: boolean; error?: string;
     switch (entry.kind) {
       case 'move':
       case 'move_batch': {
-        // Reverse in reverse order so nested moves unwind cleanly.
-        for (const p of [...(entry.pairs ?? [])].reverse()) {
+        // Reverse in reverse order so nested moves unwind cleanly. NEVER
+        // clobber: fs.rename overwrites the destination silently, so undoing a
+        // move after the user created a new file at the original path would
+        // destroy that new file and still report success (audit H20). Refuse
+        // any pair whose origin is now occupied, and report a partial undo
+        // instead of a false clean one.
+        const pairs = [...(entry.pairs ?? [])].reverse();
+        const skipped: string[] = [];
+        let reverted = 0;
+        for (const p of pairs) {
+          const originTaken = await fsp.access(p.from).then(() => true).catch(() => false);
+          const sourceGone = await fsp.access(p.to).then(() => false).catch(() => true);
+          if (originTaken || sourceGone) { skipped.push(p.from); continue; }
           await fsp.mkdir(path.dirname(p.from), { recursive: true });
           await fsp.rename(p.to, p.from);
+          reverted++;
+        }
+        if (skipped.length) {
+          // A partial revert is not a success. Leave the entry NOT undone so
+          // the user can see it still needs attention.
+          return {
+            ok: false,
+            error: reverted > 0
+              ? `Reverted ${reverted} of ${pairs.length} change(s); ${skipped.length} could not be undone because their original location is now occupied or the moved file is missing.`
+              : `Nothing was reverted: the original location(s) are occupied or the moved file(s) are missing.`,
+          };
         }
         break;
       }
       case 'copy':
-        if (entry.copied) await fsp.unlink(entry.copied);
+        if (entry.copied) {
+          if (await fsp.access(entry.copied).then(() => true).catch(() => false)) {
+            await fsp.unlink(entry.copied);
+          } else {
+            return { ok: false, error: 'The copied file is already gone; nothing to undo.' };
+          }
+        }
         break;
       case 'create_dir':
         // Only remove if still empty — never clobber files the user added since.
