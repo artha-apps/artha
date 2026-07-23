@@ -29,18 +29,22 @@ import { filterToolsByAllowlist } from '../skills/util';
 describe('email is reachable through the Delegate operator path', () => {
   const reg = MCPRegistry.getInstance();
 
-  it('email_compose is in the schema list the agent sees', () => {
+  it('email_SEND is the email tool the agent sees — and email_compose is NOT advertised', () => {
+    // A small local model kept mistaking email_compose (draft) for sending, so
+    // Delegate is shown ONLY email_send (which actually delivers + reports
+    // honestly). email_compose stays dispatchable but is not offered to the model.
     const names = reg.getToolSchemas().map(t => t.function.name);
-    expect(names).toContain('email_compose');
+    expect(names).toContain('email_send');
+    expect(names).not.toContain('email_compose');
   });
 
-  it("the operator's empty allowlist does not filter it out (empty = all tools)", () => {
+  it("the operator's empty allowlist keeps email_send available (empty = all tools)", () => {
     const all = reg.getToolSchemas();
     const asOperatorSees = filterToolsByAllowlist(all, []); // operator.ts: allowedTools: []
-    expect(asOperatorSees.map(t => t.function.name)).toContain('email_compose');
+    expect(asOperatorSees.map(t => t.function.name)).toContain('email_send');
   });
 
-  it('invokeTool routes email_compose to the email tool and produces a DRAFT (not a send)', async () => {
+  it('invokeTool still routes email_compose when called directly (back-compat), producing a DRAFT', async () => {
     const result = await reg.invokeTool('email_compose', {
       to: 'jane@example.com', subject: 'Q3 numbers', body: 'Here are the Q3 figures.',
     });

@@ -1754,12 +1754,12 @@ RULES — follow exactly, no exceptions:
           messages.push({
             role: 'system',
             content:
-              `You have NOT sent the email yet — preparing a draft is not sending. ` +
-              `The user asked you to SEND it ("${args.goal.slice(0, 160)}"). ` +
-              `Call the email_send tool NOW to actually deliver it (it sends through the user's own ` +
-              `Gmail in Artha's browser, after their approval). Do NOT use email_compose — that only ` +
-              `drafts. If email_send returns login_required, tell the user to sign in to Gmail in ` +
-              `Artha's browser once, then it will work.`,
+              `You have NOT sent the email yet. The user asked you to SEND it ` +
+              `("${args.goal.slice(0, 160)}"). Call the email_send tool NOW with the recipient, ` +
+              `subject and body — it actually delivers the message through the user's own Gmail in ` +
+              `Artha's browser (they approve once, then it sends). Do not just describe it; call ` +
+              `email_send. If it returns login_required, tell the user to sign in to Gmail in Artha's ` +
+              `browser once, then it will work.`,
           });
           recordStep(stepIdx++, 'system', { note: 'send-nudge', nudge: sendNudges });
           emptyCount = 0;
@@ -1798,15 +1798,21 @@ RULES — follow exactly, no exceptions:
         }
 
         // Send-completion honesty: if the goal was to SEND but no send was ever
-        // confirmed (external_actions), the objective was NOT met — say so
-        // plainly, whatever the model's prose claims. This is what stops a
-        // "drafted but not sent" run from being reported as done.
+        // confirmed (external_actions), the objective was NOT met. The model's
+        // own prose here often FALSELY claims it sent — so we DISCARD it entirely
+        // and state, deterministically, exactly what did and didn't happen. No
+        // "successfully sent", no "may have been prepared".
         const sendUnfulfilled = detectsSendIntent(args.goal) && !sendWasConfirmed();
         if (sendUnfulfilled) {
+          const sendAttempted = mutations.some(m => m.tool === 'email_send');
           finalText =
-            `${finalText}\n\n⚠️ The email was NOT sent. A draft may have been prepared, but nothing was ` +
-            `delivered. To actually send it, make sure you're signed in to Gmail in Artha's browser, then ` +
-            `ask me to send it — I use email_send, which delivers through your Gmail after your approval.`;
+            `❌ The email was not sent — nothing was delivered.\n\n` +
+            (sendAttempted
+              ? `I tried to send it but couldn't confirm delivery. This usually means you're not signed in ` +
+                `to Gmail in Artha's browser. `
+              : `I did not complete the send. `) +
+            `To send it: open Artha's browser, sign in to Gmail once, then ask me again — I'll deliver it ` +
+            `through your Gmail (you'll approve once, then I send it).`;
         }
 
         // The raw content was already streamed live. Only re-emit if the final
