@@ -11,6 +11,9 @@ import { getDb } from '../db/schema';
 import { extractText } from './extract';
 import { parseIndexFile, type Chunk, type IndexFile } from './indexFormat';
 import { chunkOnBoundaries } from './chunk';
+import {
+  EmbeddingUnavailableError, partitionByVectorValidity, isValidVector, EMBED_DIM,
+} from './vectorIntegrity';
 
 /** A retrieved chunk with its originating file — used to cite real sources in
  *  generated documents (not just anonymous context). */
@@ -67,6 +70,10 @@ export class RAGIndexer {
     const files = this.collectFiles(dirPath);
     const chunks: Chunk[] = [];
     const fileHashes: Record<string, string> = {};
+    /** Chunks written WITHOUT a vector because the embedder was unavailable.
+     *  Their text is still stored (keyword use + later re-embedding), but they
+     *  are excluded from semantic scoring until re-embedded. */
+    let pending = 0;
 
     for (const file of files) {
       try {
@@ -74,9 +81,13 @@ export class RAGIndexer {
         const hash = crypto.createHash('md5').update(buf).digest('hex');
         fileHashes[file] = hash;
 
-        // Unchanged + already embedded → carry the existing chunks forward.
+        // Unchanged + already VALIDLY embedded → carry the chunks forward.
+        // Cached chunks that are pending (or hold a legacy invalid vector) fall
+        // through to the re-embed path below, so a later run with a working
+        // embedder upgrades them instead of stranding them forever.
         const cached = prevByFile.get(file);
-        if (prev.fileHashes[file] === hash && cached?.length) {
+        if (prev.fileHashes[file] === hash && cached?.length &&
+            cached.every(c => isValidVector(c.embedding, EMBED_DIM))) {
           chunks.push(...cached);
           continue;
         }
@@ -85,8 +96,17 @@ export class RAGIndexer {
         const text = await extractText(file);
         if (!text.trim()) continue;
         for (const chunk of this.chunkText(text, file)) {
-          const embedding = await this.embed(chunk.text);
-          chunks.push({ ...chunk, embedding });
+          try {
+            const embedding = await this.embed(chunk.text);
+            chunks.push({ ...chunk, embedding });
+          } catch (err) {
+            if (!(err instanceof EmbeddingUnavailableError)) throw err;
+            // Persist the TEXT with an explicit pending state — never a
+            // fabricated vector. Keyword retrieval still works; semantic
+            // scoring skips it until a valid embedding replaces it.
+            chunks.push({ ...chunk, embedding: null, state: 'pending_embedding' });
+            pending++;
+          }
         }
       } catch {
         // Skip unreadable files silently
@@ -98,29 +118,27 @@ export class RAGIndexer {
     fs.writeFileSync(indexPath, JSON.stringify(payload));
 
     const db = getDb();
+    // doc_count reflects EMBEDDED chunks only, so a degraded index never
+    // reports a healthy count. Sanitized diagnostics: counts, never content.
+    const embedded = chunks.length - pending;
+    if (pending > 0) {
+      console.warn(
+        `[Artha] RAG index ${indexId}: ${pending} chunk(s) stored without embeddings ` +
+        `(embedder unavailable); ${embedded} embedded. Semantic search excludes the pending chunks.`
+      );
+    }
     db.prepare(`UPDATE rag_indexes SET doc_count=?, last_indexed=unixepoch() WHERE index_id=?`)
-      .run(chunks.length, indexId);
+      .run(embedded, indexId);
 
-    return chunks.length;
+    return embedded;
   }
 
   /** Embed `query` and return the top-k chunk *texts* (not records) ranked by
    *  cosine similarity. Returns `[]` if the index file doesn't exist yet so
    *  callers can fall back gracefully on first-use. */
   async query(indexId: string, query: string, topK = 5): Promise<string[]> {
-    const indexPath = path.join(this.indexDir, `${indexId}.json`);
-    if (!fs.existsSync(indexPath)) return [];
-
-    const { chunks } = parseIndexFile(fs.readFileSync(indexPath, 'utf-8'));
-    const queryEmbedding = await this.embed(query);
-
-    const scored = chunks.map(chunk => ({
-      text: chunk.text,
-      score: cosineSimilarity(queryEmbedding, chunk.embedding),
-    }));
-
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK).map(s => s.text);
+    const hits = await this.queryWithSources(indexId, query, topK);
+    return hits.map(h => h.text);
   }
 
   /** Like `query()` but returns the originating file + score for each hit, so
@@ -130,14 +148,33 @@ export class RAGIndexer {
     if (!fs.existsSync(indexPath)) return [];
 
     const { chunks } = parseIndexFile(fs.readFileSync(indexPath, 'utf-8'));
-    const queryEmbedding = await this.embed(query);
 
-    return chunks
+    // No embedder → NO semantic results (callers degrade to keyword). We
+    // never compare against a fabricated query vector, and never crash chat.
+    let queryEmbedding: number[];
+    try {
+      queryEmbedding = await this.embed(query);
+    } catch (err) {
+      if (!(err instanceof EmbeddingUnavailableError)) throw err;
+      return [];
+    }
+
+    // Exclude pending chunks AND legacy invalid vectors (all-zero from the
+    // pre-patch fallback, non-finite, wrong dimension) from scoring.
+    const { valid, excludedCount } = partitionByVectorValidity(chunks, EMBED_DIM);
+    if (excludedCount > 0) {
+      console.warn(
+        `[Artha] RAG index ${indexId}: ${excludedCount} chunk(s) excluded from semantic search ` +
+        `(missing or invalid embedding). Re-index with the embedder available to restore them.`
+      );
+    }
+
+    return valid
       .map(chunk => ({
         id: chunk.id,
         filePath: chunk.filePath,
         text: chunk.text,
-        score: cosineSimilarity(queryEmbedding, chunk.embedding),
+        score: cosineSimilarity(queryEmbedding, chunk.embedding as number[]),
       }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
@@ -174,21 +211,35 @@ export class RAGIndexer {
     }));
   }
 
-  /** Call Ollama's /api/embeddings. On failure (Ollama down, model not
-   *  pulled, etc.) we return a 768-zero vector so indexing still completes;
-   *  query() will simply rank such chunks as having zero similarity. */
+  /**
+   * Call Ollama's /api/embeddings (LOCAL only — Phase A has no cloud
+   * embedder, so indexing can never route user content off-device).
+   *
+   * THROWS `EmbeddingUnavailableError` on any failure or malformed/invalid
+   * response. It never returns a fabricated vector: the old zero-vector
+   * fallback made unusable indexes look functional (Phase A integrity
+   * invariant, founder directive 2026-07-23).
+   */
   private async embed(text: string): Promise<number[]> {
+    let json: { embedding?: unknown };
     try {
       const res = await fetch(OLLAMA_EMBED_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
       });
-      const json = await res.json() as { embedding: number[] };
-      return json.embedding;
-    } catch {
-      return new Array(768).fill(0);
+      if (!res.ok) throw new EmbeddingUnavailableError(`embedding endpoint returned ${res.status}`);
+      json = await res.json() as { embedding?: unknown };
+    } catch (err) {
+      if (err instanceof EmbeddingUnavailableError) throw err;
+      throw new EmbeddingUnavailableError('local embedding runtime unreachable');
     }
+    // Empty, wrong-dimension, all-zero, or non-finite payloads are invalid —
+    // treat exactly like unavailability rather than persisting them.
+    if (!isValidVector(json.embedding, EMBED_DIM)) {
+      throw new EmbeddingUnavailableError('embedding response was empty or invalid');
+    }
+    return json.embedding;
   }
 }
 
@@ -227,8 +278,9 @@ export async function searchAllIndexes(query: string, topK = 6, indexIds?: strin
   return all.sort((a, b) => b.score - a.score).slice(0, topK);
 }
 
-/** Standard cosine similarity. Returns 0 when either vector is empty/zero so
- *  zero-vector fallbacks from `embed()` rank last instead of NaN-poisoning. */
+/** Standard cosine similarity. Callers pass only vectors that already passed
+ *  `isValidVector`; the length guard and `|| 1` denominator remain as belt-and
+ *  -braces against a malformed legacy row slipping through. */
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
   let dot = 0, normA = 0, normB = 0;
