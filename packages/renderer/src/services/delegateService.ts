@@ -361,7 +361,10 @@ export const ipcDelegateEngine: DelegateEngine = {
 
       if (st.status === 'failed') {
         if (steps[cursor]) hooks.onStep(steps[cursor].index, 'failed');
-        throw new Error('Task failed during execution.');
+        // Surface the agent's own honest explanation (e.g. "the email was NOT
+        // sent…") rather than a generic string — the backend already writes the
+        // truthful message; hiding it would re-introduce the dishonesty.
+        throw new Error(st.output?.trim() || 'Task failed during execution.');
       }
 
       // NOTE: we deliberately do NOT advance steps on a timer any more.
