@@ -22,6 +22,11 @@ export interface SendableWebContents {
   loadURL(url: string): Promise<void>;
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
   getURL(): string;
+  /** A trusted mouse click at page coordinates (x, y). Implemented over the
+   *  webContents debugger's Input.dispatchMouseEvent — Gmail's Send button
+   *  ignores synthetic clicks AND webContents.sendInputEvent, but honours a real
+   *  CDP mouse event. */
+  clickAt(x: number, y: number): Promise<void>;
 }
 
 export interface BrowserDraft { to: string; subject: string; body: string; cc?: string; bcc?: string }
@@ -47,39 +52,71 @@ function looksLikeLogin(url: string): boolean {
 }
 
 // Injected page scripts kept as strings (they run in the page, not here).
+/** Gmail signed-in app is ready when the Compose button exists. */
+const GMAIL_READY = `!!document.querySelector('[gh="cm"], div[role=button][aria-label^="Compose" i]')`;
 const SEND_BUTTON_PRESENT = `!!document.querySelector('div[role=button][aria-label^="Send"]')`;
-const CLICK_SEND = `(() => {
+/** Centre coordinates of the Send button — we click it with a trusted mouse
+ *  event, because Gmail ignores synthetic element.click() (isTrusted:false). */
+const SEND_BUTTON_RECT = `(() => {
   const b = document.querySelector('div[role=button][aria-label^="Send"]');
-  if (!b) return 'NO_SEND_BUTTON';
-  b.click();
-  return 'CLICKED';
+  if (!b) return null;
+  const r = b.getBoundingClientRect();
+  return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
 })()`;
 const SENT_CONFIRMED = `/Message sent/i.test(document.body ? document.body.innerText : '')`;
+/** Authoritative check: does the Sent folder contain a row with this subject? */
+function sentFolderHas(subject: string): string {
+  const needle = subject.slice(0, 60).replace(/[\\'"]/g, ' ').trim();
+  return `(() => {
+    const rows = document.querySelectorAll('tr, div[role=row], span[data-thread-id]');
+    const n = ${JSON.stringify(needle)};
+    if (!n) return false;
+    return [...rows].some(r => (r.innerText || '').includes(n));
+  })()`;
+}
 
 /**
  * Send `draft` through the embedded, already-logged-in Gmail. Pure with respect
  * to `wc` — all side effects go through the injected webContents.
+ *
+ * Robustness (learned from a cold hidden BrowserView): warm up the mailbox
+ * first (direct-to-compose on a cold load is flaky), use generous timeouts, and
+ * confirm the send AUTHORITATIVELY by checking the Sent folder for the subject —
+ * not just the transient "Message sent" toast, which a hidden view often misses.
  */
 export async function sendViaBrowser(
   wc: SendableWebContents,
   draft: BrowserDraft,
-  opts: { composeTimeoutMs?: number; confirmTimeoutMs?: number; pollMs?: number } = {},
+  opts: { warmupTimeoutMs?: number; composeTimeoutMs?: number; confirmTimeoutMs?: number; pollMs?: number; settleMs?: number } = {},
 ): Promise<BrowserSendResult> {
-  const composeTimeout = opts.composeTimeoutMs ?? 12_000;
-  const confirmTimeout = opts.confirmTimeoutMs ?? 8_000;
-  const poll = opts.pollMs ?? 400;
-
-  await wc.loadURL(buildGmailComposeUrl(draft));
-
-  // Wait for either the compose (Send button) or a login page.
-  const composeDeadline = Date.now() + composeTimeout;
+  const warmupTimeout = opts.warmupTimeoutMs ?? 25_000;
+  const composeTimeout = opts.composeTimeoutMs ?? 25_000;
+  const confirmTimeout = opts.confirmTimeoutMs ?? 15_000;
+  const poll = opts.pollMs ?? 500;
+  const settleMs = opts.settleMs ?? 1_200;
   // Date.now() is fine here — this is runtime tool code, not a replayed workflow.
+
+  // 1. Warm up: load the mailbox and wait until it's the signed-in app (or a
+  //    login page). A cold view often needs several seconds to boot Gmail.
+  await wc.loadURL('https://mail.google.com/mail/u/0/#inbox');
+  const warmDeadline = Date.now() + warmupTimeout;
   for (;;) {
     if (looksLikeLogin(wc.getURL())) return { status: 'login_required' };
-    const present = await wc.executeJavaScript(SEND_BUTTON_PRESENT).catch(() => false);
-    if (present === true) break;
+    if (await wc.executeJavaScript(GMAIL_READY).catch(() => false) === true) break;
+    if (Date.now() > warmDeadline) {
+      if (looksLikeLogin(wc.getURL())) return { status: 'login_required' };
+      break; // proceed anyway — compose may still work
+    }
+    await sleep(poll);
+  }
+
+  // 2. Open the pre-filled compose and wait for its Send button.
+  await wc.loadURL(buildGmailComposeUrl(draft));
+  const composeDeadline = Date.now() + composeTimeout;
+  for (;;) {
+    if (looksLikeLogin(wc.getURL())) return { status: 'login_required' };
+    if (await wc.executeJavaScript(SEND_BUTTON_PRESENT).catch(() => false) === true) break;
     if (Date.now() > composeDeadline) {
-      // One last login check before giving up.
       return looksLikeLogin(wc.getURL())
         ? { status: 'login_required' }
         : { status: 'no_compose', detail: 'The Gmail compose window did not appear in time.' };
@@ -87,19 +124,40 @@ export async function sendViaBrowser(
     await sleep(poll);
   }
 
-  const clicked = await wc.executeJavaScript(CLICK_SEND, true).catch(() => 'ERROR');
-  if (clicked !== 'CLICKED') {
-    return { status: 'no_compose', detail: 'Could not find Gmail’s Send button to click.' };
+  // 3. Click Send with a TRUSTED mouse event at its real coordinates. Gmail
+  //    ignores synthetic element.click(); only a real CDP mouse event dispatches
+  //    the send. Let the compose settle briefly first so the handler is bound.
+  await sleep(settleMs);
+  const rect = await wc.executeJavaScript(SEND_BUTTON_RECT).catch(() => null) as { x: number; y: number } | null;
+  if (!rect || typeof rect.x !== 'number') {
+    return { status: 'no_compose', detail: 'Could not locate Gmail’s Send button.' };
+  }
+  try {
+    await wc.clickAt(rect.x, rect.y);
+  } catch {
+    return { status: 'no_compose', detail: 'Could not click Gmail’s Send button.' };
   }
 
-  // Confirm Gmail actually sent it (its own "Message sent" toast).
-  const confirmDeadline = Date.now() + confirmTimeout;
+  // 4. Fast path: Gmail's own "Message sent" toast.
+  const toastDeadline = Date.now() + confirmTimeout;
   for (;;) {
-    const confirmed = await wc.executeJavaScript(SENT_CONFIRMED).catch(() => false);
-    if (confirmed === true) return { status: 'sent' };
-    if (Date.now() > confirmDeadline) {
-      return { status: 'unconfirmed', detail: 'Clicked Send, but Gmail’s “Message sent” confirmation was not observed. Check your Sent folder.' };
-    }
+    if (await wc.executeJavaScript(SENT_CONFIRMED).catch(() => false) === true) return { status: 'sent' };
+    if (Date.now() > toastDeadline) break;
     await sleep(poll);
   }
+
+  // 5. Authoritative fallback: the message now sits in the Sent folder. This
+  //    survives a missed toast in a cold/hidden view.
+  try {
+    await wc.loadURL('https://mail.google.com/mail/u/0/#sent');
+    const sentDeadline = Date.now() + confirmTimeout;
+    const check = sentFolderHas(draft.subject);
+    for (;;) {
+      if (await wc.executeJavaScript(check).catch(() => false) === true) return { status: 'sent' };
+      if (Date.now() > sentDeadline) break;
+      await sleep(poll);
+    }
+  } catch { /* fall through to unconfirmed */ }
+
+  return { status: 'unconfirmed', detail: 'Clicked Send, but could not confirm delivery. Check your Gmail Sent folder.' };
 }

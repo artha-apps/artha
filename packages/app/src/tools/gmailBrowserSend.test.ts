@@ -10,28 +10,38 @@ import { describe, it, expect } from 'vitest';
 import { sendViaBrowser, buildGmailComposeUrl, type SendableWebContents } from './gmailBrowserSend';
 
 const DRAFT = { to: 'jk@example.com', subject: 'Hey this is Artha', body: 'Hello! yes or No?' };
-const FAST = { composeTimeoutMs: 300, confirmTimeoutMs: 300, pollMs: 10 };
+const FAST = { warmupTimeoutMs: 300, composeTimeoutMs: 300, confirmTimeoutMs: 300, pollMs: 10, settleMs: 0 };
 
 /** Build a fake webContents whose page behaviour is scripted by flags. */
 function fakeWc(opts: {
   url?: string;
+  ready?: boolean;               // is Gmail (Compose button) ready after warm-up?
   sendButton?: boolean;          // is the Send button present?
-  clickReturns?: string;         // what CLICK_SEND returns
+  rectNull?: boolean;            // button present at check but gone at click time
   confirmedAfter?: number;       // number of SENT_CONFIRMED polls before it turns true
-}): SendableWebContents & { loaded: string[] } {
+  inSentFolder?: boolean;        // does the Sent folder show the subject?
+}): SendableWebContents & { loaded: string[]; clicks: Array<{ x: number; y: number }> } {
   let confirmPolls = 0;
   return {
     loaded: [] as string[],
+    clicks: [] as Array<{ x: number; y: number }>,
     async loadURL(u: string) { this.loaded.push(u); },
     getURL() { return opts.url ?? 'https://mail.google.com/mail/u/0/'; },
+    async clickAt(x: number, y: number) { this.clicks.push({ x, y }); },
     async executeJavaScript(code: string) {
-      if (code.includes('aria-label^="Send"') && code.includes('querySelector') && !code.includes('click')) {
+      if (code.includes('Compose')) return opts.ready ?? true;               // GMAIL_READY
+      if (code.includes('getBoundingClientRect')) {                          // SEND_BUTTON_RECT
+        return opts.sendButton && !opts.rectNull ? { x: 50, y: 600 } : null;
+      }
+      if (code.includes('aria-label^="Send"') && code.includes('querySelector')) {
         return !!opts.sendButton; // SEND_BUTTON_PRESENT
       }
-      if (code.includes('b.click()')) return opts.clickReturns ?? 'CLICKED'; // CLICK_SEND
       if (code.includes('Message sent')) {                                   // SENT_CONFIRMED
         confirmPolls++;
         return opts.confirmedAfter === undefined ? true : confirmPolls >= opts.confirmedAfter;
+      }
+      if (code.includes('data-thread-id') || code.includes('role=row')) {    // sentFolderHas
+        return !!opts.inSentFolder;
       }
       return null;
     },
@@ -50,11 +60,23 @@ describe('buildGmailComposeUrl', () => {
 });
 
 describe('sendViaBrowser', () => {
-  it('reports sent when Gmail shows "Message sent"', async () => {
-    const wc = fakeWc({ sendButton: true, confirmedAfter: 1 });
+  it('reports sent when Gmail shows "Message sent" — via a TRUSTED mouse click', async () => {
+    const wc = fakeWc({ ready: true, sendButton: true, confirmedAfter: 1 });
     const r = await sendViaBrowser(wc, DRAFT, FAST);
     expect(r.status).toBe('sent');
-    expect(wc.loaded[0]).toContain('view=cm');   // it navigated to the pre-filled compose
+    expect(wc.loaded[0]).toContain('#inbox');                 // warm-up first
+    expect(wc.loaded.some(u => u.includes('view=cm'))).toBe(true); // then pre-filled compose
+    // It must issue a trusted click at the Send button's coordinates.
+    expect(wc.clicks).toHaveLength(1);
+    expect(wc.clicks[0]).toEqual({ x: 50, y: 600 });
+  });
+
+  it('confirms via the SENT FOLDER when the toast is missed (cold hidden view)', async () => {
+    // Toast never shows (confirmedAfter huge), but the message is in Sent.
+    const wc = fakeWc({ ready: true, sendButton: true, confirmedAfter: 9999, inSentFolder: true });
+    const r = await sendViaBrowser(wc, DRAFT, FAST);
+    expect(r.status).toBe('sent');
+    expect(wc.loaded.some(u => u.includes('#sent'))).toBe(true); // it checked the Sent folder
   });
 
   it('reports login_required when the page is a Google sign-in', async () => {
@@ -69,16 +91,17 @@ describe('sendViaBrowser', () => {
     expect(r.status).toBe('no_compose');
   });
 
-  it('reports unconfirmed (NOT sent) when the click lands but no confirmation shows', async () => {
-    const wc = fakeWc({ sendButton: true, clickReturns: 'CLICKED', confirmedAfter: 9999 });
+  it('reports unconfirmed (NOT sent) when neither the toast nor the Sent folder confirms', async () => {
+    const wc = fakeWc({ ready: true, sendButton: true, clickReturns: 'CLICKED', confirmedAfter: 9999, inSentFolder: false });
     const r = await sendViaBrowser(wc, DRAFT, FAST);
     expect(r.status).toBe('unconfirmed');
     expect(r.detail).toMatch(/Sent folder/i);
   });
 
   it('reports no_compose when the Send button vanishes before the click', async () => {
-    const wc = fakeWc({ sendButton: true, clickReturns: 'NO_SEND_BUTTON' });
+    const wc = fakeWc({ ready: true, sendButton: true, rectNull: true });
     const r = await sendViaBrowser(wc, DRAFT, FAST);
     expect(r.status).toBe('no_compose');
+    expect(wc.clicks).toHaveLength(0);  // never clicked a phantom button
   });
 });
