@@ -157,15 +157,36 @@ interface TrackedMutation {
   success: boolean;
 }
 
-/** Tools that change filesystem state — only these are tracked for verification. */
+/**
+ * Tools whose calls change state and must therefore be VERIFIED before the
+ * run may describe them as done.
+ *
+ * This set previously covered filesystem tools only — and two of its entries
+ * (`fs_write_file`, `fs_rename_file`) do not exist. That left the features
+ * users actually run outside verification entirely: "I created your Q3
+ * report", "I submitted the form" and "I clicked through and booked it" were
+ * unverified model prose, while desktop control — the highest-blast-radius
+ * capability in the product — produced no mutation evidence at all
+ * (shipped-surface audit C5/H29).
+ */
 const MUTATION_TOOLS = new Set([
+  // Filesystem (only these exist — see tools/filesystem.ts)
   'fs_move_file',
   'fs_move_batch',
   'fs_copy_file',
   'fs_delete_file',
   'fs_create_directory',
-  'fs_write_file',
-  'fs_rename_file',
+  // Deliverables — the flagship "Artha made me a document" claim
+  'docs_generate',
+  // Browser state changes (reads like browser_read_dom stay out)
+  'browser_click',
+  'browser_type',
+  'browser_navigate',
+  // Desktop control — drives the real cursor and keyboard
+  'desktop_click',
+  'desktop_type',
+  'desktop_key',
+  'desktop_move_mouse',
 ]);
 
 // ── Orchestrator ─────────────────────────────────────────────────────────────
