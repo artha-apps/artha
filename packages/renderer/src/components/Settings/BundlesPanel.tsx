@@ -58,7 +58,7 @@ function relativeTime(unixSec: number): string {
  * accidental corruption/modification but does NOT prove who authored the
  * bundle; keyed/public-key signing is a planned upgrade), inspect the
  * manifest, and check for
- * missing MCP servers needed to replay it deterministically.
+ * MCP servers the run used, so the recipient can set up the same tools.
  */
 export default function BundlesPanel() {
   // ── State ──────────────────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ export default function BundlesPanel() {
           </div>
           <div>
             <h1 className="text-base font-semibold text-artha-text">Workflow Bundles</h1>
-            <p className="text-xs text-artha-muted">Share or replay full agent runs without the cloud.</p>
+            <p className="text-xs text-artha-muted">Share a full agent run — its steps, receipts and artifacts — without the cloud.</p>
           </div>
         </div>
         <button onClick={load} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-artha-border text-artha-muted hover:text-artha-text hover:bg-artha-text/5 text-xs">
@@ -183,7 +183,7 @@ export default function BundlesPanel() {
               ))}
             </select>
             <p className="text-[11px] text-artha-muted mt-1">
-              Including a doc lets recipients verify their replay byte-matches yours.
+              Including a doc lets recipients compare it against the one in the bundle.
             </p>
           </section>
 
@@ -252,7 +252,7 @@ export default function BundlesPanel() {
                     <AlertTriangle size={14} /> Missing MCP servers
                   </p>
                   <p className="text-xs text-artha-muted mb-2">
-                    Install these in the MCP Tools panel to deterministically replay:
+                    This run used these MCP servers; install them to reproduce the same setup:
                   </p>
                   <ul className="space-y-1">
                     {imported.missingMcpServers.map(s => (

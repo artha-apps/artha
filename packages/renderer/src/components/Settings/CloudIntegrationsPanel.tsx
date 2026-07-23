@@ -29,6 +29,9 @@ export default function CloudIntegrationsPanel() {
   const [savedClientId, setSavedClientId] = useState('');
   // Single connected flag: all three services share one Google OAuth token.
   const [connected, setConnected] = useState(false);
+  /** True when a token row exists but has passed its expiry — the badge must
+   *  not show a confident green "Connected" for a token that will fail. */
+  const [expired, setExpired] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +41,13 @@ export default function CloudIntegrationsPanel() {
   /** Check the OAuth token store for an existing 'google' provider row. */
   const refreshStatus = async () => {
     const rows = await window.artha.oauth.getStatus();
-    setConnected(rows.some(r => r.provider === 'google'));
+    const row = rows.find(r => r.provider === 'google');
+    setConnected(!!row);
+    // getStatus already returns expires_at (seconds); a row alone was being
+    // shown as a solid green "Connected" even for an expired/revoked token
+    // (audit H28). Distinguish the two.
+    setExpired(!!row && typeof row.expires_at === 'number' && row.expires_at > 0
+      && row.expires_at * 1000 < Date.now());
   };
 
   useEffect(() => {
@@ -162,8 +171,8 @@ export default function CloudIntegrationsPanel() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-artha-text">{label}</span>
-                  <span className={`w-2 h-2 rounded-full ${connected ? 'bg-artha-success shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-artha-muted'}`} />
-                  <span className="text-xs text-artha-muted">{connected ? 'Connected' : 'Disconnected'}</span>
+                  <span className={`w-2 h-2 rounded-full ${connected && !expired ? 'bg-artha-success shadow-[0_0_6px_rgba(74,222,128,0.7)]' : expired ? 'bg-artha-warn' : 'bg-artha-muted'}`} />
+                  <span className="text-xs text-artha-muted">{expired ? 'Session expired — reconnect' : connected ? 'Connected' : 'Disconnected'}</span>
                 </div>
                 <p className="text-xs text-artha-muted mt-0.5">{desc}</p>
               </div>

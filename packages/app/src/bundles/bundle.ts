@@ -1,6 +1,8 @@
 /**
  * Artha Workflow Bundles — portable, signed packages that capture a complete
- * agent run so another Artha install can replay it deterministically.
+ * agent run so another Artha install can inspect its steps, receipts and
+ * artifacts. (There is no automated replay engine — this is a shareable,
+ * inspectable record, not a re-execution.)
  *
  * Format: `.artha-bundle` = gzip-compressed JSON with this shape:
  *   {
@@ -142,7 +144,7 @@ export async function exportBundle(args: ExportArgs): Promise<{ bundleId: string
 
 /** Returned to the renderer after a bundle is imported. `signatureValid=false`
  *  means the manifest was tampered with; `missingMcpServers` lists tools the
- *  recipient would need to install before they could replay the run. */
+ *  recipient would install to reproduce the same tool setup. */
 export interface ImportResult {
   bundleId: string;
   manifest: BundleManifest;

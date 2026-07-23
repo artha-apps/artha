@@ -5,6 +5,7 @@
  * machine. Rebuild re-embeds after the folder's contents change.
  */
 import { useEffect, useState } from 'react';
+import { toast } from '../../stores/toast';
 import {
   FolderSearch, Plus, Trash2, RefreshCw, FolderOpen, Database, AlertTriangle, Loader2, X,
 } from 'lucide-react';
@@ -99,8 +100,14 @@ export default function RAGPanel() {
   const rebuild = async (idx: RagIndex) => {
     setRebuilding(idx.index_id);
     try {
-      await window.artha.rag.rebuildIndex(idx.index_id);
+      // A rebuild failure used to be completely silent — the spinner ended and
+      // nothing indicated success vs failure (audit H23).
+      const res = await window.artha.rag.rebuildIndex(idx.index_id);
       await load();
+      if (!res.ok) toast.error('Index rebuild failed', res.error);
+      else if (res.embedded === 0) toast.warning('Index rebuilt, but empty', 'No chunks were embedded — semantic search needs local embeddings running.');
+    } catch (err) {
+      toast.error('Index rebuild failed', err instanceof Error ? err.message : undefined);
     } finally {
       setRebuilding(null);
     }

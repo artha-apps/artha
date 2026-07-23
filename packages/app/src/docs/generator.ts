@@ -201,9 +201,12 @@ Be thorough, professional, and ground factual claims in the provided sources by 
   }
 }
 
-/** Stamp every section with a random anchor id and resolve its first cited
- *  source into a concrete `provenance` record. When no source was cited we
- *  fall back to `type='llm'` so the receipt still describes the section. */
+/** Stamp every section with a random anchor id and resolve the source the
+ *  MODEL cited (via sourceIds) into a provenance record. This is the model's
+ *  ATTRIBUTION, not a verified derivation: nothing checks that the section's
+ *  wording actually came from the cited chunk. Consumers must present it as
+ *  "attributed to", never as proof. When no source was cited we fall back to
+ *  type='llm'. */
 function attachAnchors(content: PlannedContent, sources: SourceChunk[]): AnchoredContent {
   const srcMap = new Map(sources.map(s => [s.id, s]));
   return {
