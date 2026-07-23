@@ -47,7 +47,7 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
-import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, compactStaleDomDumps } from './actGuard';
+import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
 import { evaluatePolicy } from '../bodhi/policy';
@@ -2172,7 +2172,10 @@ Rules:
     recordStep: (idx: number, kind: string, payload: unknown) => void,
     stepIdx: number,
   ): Promise<{ sent: boolean; to: string | null; reason?: string }> {
-    const fields = await this.extractEmailFields(args.goal);
+    // Deterministic first (no model): parse the fields straight from the goal.
+    // Only fall back to an LLM for genuinely free-form phrasing — so a structured
+    // "email X, subject "Y", body "Z"" works identically on ANY model, or none.
+    const fields = parseEmailFieldsFromGoal(args.goal) ?? await this.extractEmailFields(args.goal);
     if (!fields) return { sent: false, to: null, reason: 'no recipient could be extracted' };
     recordStep(stepIdx, 'system', { note: 'deterministic-send', to: fields.to });
     const approved = await this.requestToolApproval({

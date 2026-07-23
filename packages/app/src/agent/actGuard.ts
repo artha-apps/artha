@@ -77,6 +77,34 @@ export function detectsSendIntent(goal: string): boolean {
   );
 }
 
+/**
+ * Extract {to, subject, body} from a send request WITHOUT a model — pure string
+ * parsing. This is what makes the send model-independent: for the common
+ * "email X, subject "Y", body "Z"" shape, no LLM is involved at all, so
+ * switching models can't break it. Returns null when the structured fields
+ * aren't present (free-form phrasing), leaving an LLM fallback to try.
+ */
+export function parseEmailFieldsFromGoal(goal: string): { to: string; subject: string; body: string } | null {
+  const g = goal || '';
+  const email = g.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+  if (!email) return null;
+  const to = email[0];
+
+  // Grab quoted text that follows a labelled prefix (subject/body). Handles
+  // straight and curly double quotes.
+  const grab = (prefix: string): string => {
+    const m = g.match(new RegExp(prefix + '\\s*["“]([^"”]+)["”]', 'i'));
+    return m ? m[1].trim() : '';
+  };
+  const subject = grab('subject(?:\\s*line)?\\s*(?:say|saying|says|:|is|=|of|reads?|that)?');
+  let body = grab('body\\s*(?:say|saying|says|:|is|=|of|text|reads?|that)?');
+  if (!body) body = grab('(?:saying|message(?:\\s*body)?|content)');
+
+  // Need a recipient AND at least one of subject/body to send deterministically.
+  if (!subject && !body) return null;
+  return { to, subject, body };
+}
+
 /** Inputs for the send-nudge decision, taken when the model returns a
  *  plain-text reply on a send-intent goal. */
 export interface SendGuardState {

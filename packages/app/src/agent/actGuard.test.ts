@@ -4,6 +4,7 @@ import {
   shouldNudgeToAct,
   detectsSendIntent,
   shouldNudgeToSend,
+  parseEmailFieldsFromGoal,
   compactStaleDomDumps,
   type ActGuardState,
   type CompactableMessage,
@@ -152,6 +153,40 @@ describe('detectsSendIntent', () => {
       'draft a note for later', // draft ≠ send
       'find the invoice in my inbox',
     ]) expect(detectsSendIntent(g), g).toBe(false);
+  });
+});
+
+describe('parseEmailFieldsFromGoal (model-independent extraction)', () => {
+  it("parses the founder's exact phrasing with zero model involvement", () => {
+    const f = parseEmailFieldsFromGoal(
+      'Now send an email to jkscanada@gmail.com and in subject line say ' +
+      '"Hi This is Artha!, I got my eyes on you" and in the body "Enjoy your food"',
+    );
+    expect(f).toEqual({
+      to: 'jkscanada@gmail.com',
+      subject: 'Hi This is Artha!, I got my eyes on you',
+      body: 'Enjoy your food',
+    });
+  });
+
+  it('handles subject: / body: colon style and curly quotes', () => {
+    const f = parseEmailFieldsFromGoal('email jane@x.com subject: “Q3” body: “Numbers are up”');
+    expect(f).toEqual({ to: 'jane@x.com', subject: 'Q3', body: 'Numbers are up' });
+  });
+
+  it('handles "saying" for the body when there is a subject', () => {
+    const f = parseEmailFieldsFromGoal('send an email to bob@y.com with subject "Hello" saying "See you at 5"');
+    expect(f?.to).toBe('bob@y.com');
+    expect(f?.subject).toBe('Hello');
+    expect(f?.body).toBe('See you at 5');
+  });
+
+  it('returns null when there is no recipient', () => {
+    expect(parseEmailFieldsFromGoal('draft a note that says "hi"')).toBeNull();
+  });
+
+  it('returns null for free-form (no quoted subject/body) so an LLM fallback can try', () => {
+    expect(parseEmailFieldsFromGoal('email john@x.com about the meeting tomorrow')).toBeNull();
   });
 });
 
