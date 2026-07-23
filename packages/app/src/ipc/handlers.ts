@@ -96,7 +96,12 @@ import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 let orchestrator: AgentOrchestrator;
 // Singleton RAG indexer shared by the standalone RAG panel and the scope
 // auto-indexer so they write to the same chunk store.
-const ragIndexer = getDefaultRagIndexer();
+// Resolved LAZILY (not at module load): handlers.ts is imported before
+// main.ts applies the QA profile override, so capturing the indexer here
+// would bind it to the DEFAULT userData path and write index files
+// outside an isolated profile. getDefaultRagIndexer() memoizes on first
+// real use, by which time app.setPath('userData') has run.
+const ragIndexer = { buildIndex: (id: string, dir: string) => getDefaultRagIndexer().buildIndex(id, dir) };
 
 // ── IDE MCP HTTP server ─────────────────────────────────────────────────────
 // The IDE Integration panel writes editor configs pointing at
