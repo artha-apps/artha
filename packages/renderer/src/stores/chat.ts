@@ -56,6 +56,9 @@ export interface ToolCallEvent {
   name?: string;
   args?: string;
   result?: string;
+  /** Real outcome of the call, emitted by the orchestrator. Absent on older
+   *  events; ExecutionLog must NOT assume success when it is missing. */
+  status?: 'ok' | 'error' | string;
   step?: unknown;
 }
 

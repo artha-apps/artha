@@ -1267,6 +1267,9 @@ RULES — follow exactly, no exceptions:
     // (unattended runs auto-block confirm-tier tools). Counted separately so a
     // scheduled run that was blocked can say so instead of reporting success.
     let toolCallsBlocked = 0;
+    /** Which terminal path the loop actually took — drives the end-of-run
+     *  notification so it can never claim completion for a stopped run. */
+    let terminalOutcome: 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'interrupted' = 'interrupted';
     const reasoningSteps: ReasoningStep[] = [];
     // Resolved once for the whole loop: showReasoningEnabled() hits SQLite, so it
     // must not be called per token inside the throttled onReasoning callback.
@@ -1380,6 +1383,7 @@ RULES — follow exactly, no exceptions:
         emit('agent:token', '_Task stopped by user._');
         recordStep(stepIdx++, 'final', { reason: 'cancelled' });
         db.prepare(`UPDATE agent_runs SET status='cancelled' WHERE run_id=?`).run(args.runId);
+        terminalOutcome = 'cancelled';
         persistRunFacts(db, args.runId, {
           outcome: 'cancelled', toolCallsTotal, toolCallsFailed: toolCallErrors,
           toolCallsBlocked, mutationsTotal: mutations.length,
@@ -1432,6 +1436,7 @@ RULES — follow exactly, no exceptions:
         emit('agent:token', `\n\n⚠️ Error: ${m}`);
         recordStep(stepIdx++, 'final', { error: m });
         db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+        terminalOutcome = 'failed';
         persistRunFacts(db, args.runId, {
           outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
           toolCallsBlocked, mutationsTotal: mutations.length,
@@ -1640,6 +1645,11 @@ RULES — follow exactly, no exceptions:
             type: 'tool_result',
             name: toolCall.function.name,
             result: toolResult,
+            // The status was computed three lines above and persisted to
+            // agent_steps, but dropped here — so the live ExecutionLog
+            // rendered EVERY result, including errors, with a green check
+            // (audit C6). It travels now.
+            status: toolStatus,
           });
         }
         emptyCount = 0;
@@ -1742,6 +1752,7 @@ RULES — follow exactly, no exceptions:
         // persisted below (bodhi/taskModel.deriveTaskStatus) — never here.
         db.prepare(`UPDATE agent_runs SET status='completed' WHERE run_id=?`).run(args.runId);
         db.prepare(`UPDATE agent_states SET status='completed' WHERE workflow_id=?`).run(args.workflowId);
+        terminalOutcome = 'succeeded';
         persistRunFacts(db, args.runId, {
             outcome: 'succeeded', toolCallsTotal, toolCallsFailed: toolCallErrors,
             toolCallsBlocked, mutationsTotal: mutations.length,
@@ -1764,6 +1775,7 @@ RULES — follow exactly, no exceptions:
         if (emptyCount >= 3) {
           recordStep(stepIdx++, 'final', { reason: 'stall' });
           db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+          terminalOutcome = 'failed';
           persistRunFacts(db, args.runId, {
             outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
             toolCallsBlocked, mutationsTotal: mutations.length,
@@ -1780,6 +1792,7 @@ RULES — follow exactly, no exceptions:
       db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
       // Hitting the iteration cap is PARTIAL work, not a clean failure — the
       // outcome distinction is what lets the projection say so honestly.
+      terminalOutcome = 'timed_out';
       persistRunFacts(db, args.runId, {
             outcome: 'timed_out', toolCallsTotal, toolCallsFailed: toolCallErrors,
             toolCallsBlocked, mutationsTotal: mutations.length,
@@ -1793,12 +1806,20 @@ RULES — follow exactly, no exceptions:
     // citation collection after it delegated to a sub-capability.
     setActiveCitationToken(prevCitationToken);
 
-    // Fire a native notification when a long-running task finishes (> 10 s)
-    // so the user knows the agent is done even if they switched apps.
+    // Notify when a long run ends (> 10 s) — but say what ACTUALLY happened.
+    // This sat outside every status branch, so a user who pressed Stop, or
+    // whose run stalled or errored, still got "task complete" (audit C3).
     if (args.startMs && Date.now() - args.startMs > 10_000) {
       const g = args.goal;
       const goalSnippet = g.length > 60 ? g.slice(0, 57) + '…' : g;
-      sendNotification('Artha — task complete', goalSnippet);
+      const title =
+        terminalOutcome === 'succeeded'   ? 'Artha — run finished'
+        : terminalOutcome === 'cancelled' ? 'Artha — task stopped'
+        : terminalOutcome === 'timed_out' ? 'Artha — task hit its limit'
+        : terminalOutcome === 'failed'    ? 'Artha — task failed'
+        :                                   'Artha — run ended';
+      // "finished" ≠ "your objective is done": verification happens elsewhere.
+      sendNotification(title, goalSnippet);
     }
 
     emit('agent:streamEnd');

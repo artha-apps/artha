@@ -222,6 +222,14 @@ export class MCPRegistry {
       const hasTool = conn.tools.some(t => t.function.name === toolName);
       if (hasTool) {
         const result = await conn.client.callTool({ name: toolName, arguments: args });
+        // MCP signals failure with `isError: true` and NO exception and no
+        // "Error:" prefix — so every MCP tool failure was being recorded as a
+        // success, corrupting receipts, tallies and every evidence surface
+        // downstream (audit C4). Surface it in the one shape the orchestrator
+        // recognises as a failure.
+        if ((result as { isError?: boolean }).isError) {
+          return `Error: ${toolName} failed — ${JSON.stringify(result.content)}`;
+        }
         return JSON.stringify(result.content);
       }
     }

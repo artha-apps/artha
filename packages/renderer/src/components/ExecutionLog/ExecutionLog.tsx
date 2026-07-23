@@ -7,7 +7,7 @@
  * idle sessions get a wider chat area.
  */
 import { useState } from 'react';
-import { ChevronRight, ChevronDown, Zap, CheckCircle, Loader } from 'lucide-react';
+import { ChevronRight, ChevronDown, Zap, CheckCircle, XCircle, Loader } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
 export default function ExecutionLog() {
@@ -37,7 +37,12 @@ export default function ExecutionLog() {
             <div key={i} className="text-xs rounded-lg border border-artha-border bg-artha-surface p-2 space-y-1 shadow-soft">
               <div className="flex items-center gap-1.5 font-medium">
                 {ev.type === 'tool_result'
-                  ? <CheckCircle size={11} className="text-artha-success" />
+                  // A failed tool used to render with a green check in green
+                  // text — the live panel literally could not show failure
+                  // (audit C6). The status now travels with the event.
+                  ? (ev.status === 'error'
+                      ? <XCircle size={11} className="text-artha-danger" />
+                      : <CheckCircle size={11} className="text-artha-success" />)
                   : ev.type === 'step_start'
                   ? <Loader size={11} className="animate-spin text-artha-accent" />
                   : <Zap size={11} className="text-artha-warn" />}
@@ -50,8 +55,9 @@ export default function ExecutionLog() {
                 </pre>
               )}
               {ev.result && (
-                <pre className="text-artha-success/90 font-mono overflow-x-auto whitespace-pre-wrap break-all">
+                <pre className={`${ev.status === 'error' ? 'text-artha-danger/90' : 'text-artha-success/90'} font-mono overflow-x-auto whitespace-pre-wrap break-all`}>
                   {String(ev.result).slice(0, 300)}
+                  {String(ev.result).length > 300 ? ' …(truncated)' : ''}
                 </pre>
               )}
             </div>

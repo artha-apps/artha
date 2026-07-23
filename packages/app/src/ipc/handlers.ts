@@ -1344,6 +1344,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       const reader = (res.body as ReadableStream<Uint8Array>).getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      /** Set when any streamed line carries an error — Ollama does not use a
+       *  non-200 status for pull failures. */
+      let streamError: string | null = null;
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1355,9 +1358,34 @@ export function registerIpcHandlers(window: BrowserWindow): void {
           try {
             const obj = JSON.parse(line) as { status?: string; completed?: number; total?: number; error?: string };
             const percent = obj.total && obj.completed ? Math.round((obj.completed / obj.total) * 100) : undefined;
+            if (obj.error) streamError = obj.error;
             emit({ name, status: obj.status ?? 'pulling', completed: obj.completed, total: obj.total, percent, error: obj.error });
           } catch { /* skip partial line */ }
         }
+      }
+
+      // Ollama returns HTTP 200 and reports failures as an {"error": …} LINE,
+      // then ends the stream normally. This used to fall through to an
+      // unconditional success — so a bad tag / 404 manifest / full disk
+      // finished onboarding with a broken active model (audit C1).
+      if (streamError) {
+        emit({ name, status: 'error', error: streamError });
+        return false;
+      }
+      // Don't take the stream's word for it: confirm the tag actually exists.
+      try {
+        const tags = await fetch('http://localhost:11434/api/tags');
+        const json = await tags.json() as { models?: { name: string }[] };
+        const present = (json.models ?? []).some(
+          m => m.name === name || m.name.startsWith(`${name}:`) || name.startsWith(`${m.name}:`)
+        );
+        if (!present) {
+          emit({ name, status: 'error', error: 'The download finished but the model is not installed. Try again.' });
+          return false;
+        }
+      } catch {
+        emit({ name, status: 'error', error: 'Could not confirm the model was installed.' });
+        return false;
       }
       emit({ name, status: 'success', percent: 100 });
       return true;
