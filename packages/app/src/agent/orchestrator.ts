@@ -47,7 +47,7 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
-import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, compactStaleDomDumps } from './actGuard';
+import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
 import { evaluatePolicy } from '../bodhi/policy';
@@ -1379,6 +1379,21 @@ RULES — follow exactly, no exceptions:
 
     let finalEmitted = false;
 
+    // For a SEND-email goal, steer the model to the one reliable tool up front.
+    // Small local models otherwise try to hand-drive Gmail's DOM (browser_click
+    // on Compose), which times out. If they ignore this, the deterministic
+    // rescue at the terminal still finishes the job.
+    if (detectsSendIntent(args.goal)) {
+      messages.push({
+        role: 'system',
+        content:
+          'This task is to SEND an email. Do it in ONE step: call the email_send tool with ' +
+          '"to", "subject" and "body". It delivers the message directly through the user\'s Gmail. ' +
+          'Do NOT use browser_navigate or browser_click to open Gmail or click Compose — Gmail\'s ' +
+          'interface will not respond to automated clicks and you will fail. Just call email_send.',
+      });
+    }
+
     // Backstop for the "narrates instead of acting" failure mode on browser
     // tasks: count browser_* tool calls and how many times we've nudged the
     // model to actually act. When the model tries to finalise with plain prose
@@ -1797,22 +1812,36 @@ RULES — follow exactly, no exceptions:
           finalText = `${finalText}\n\n⚠️ Heads up: every tool call in this run failed (${toolCallErrors}/${toolCallsTotal}), so the answer above isn't grounded in real results. Treat it as unverified.`;
         }
 
-        // Send-completion honesty: if the goal was to SEND but no send was ever
-        // confirmed (external_actions), the objective was NOT met. The model's
-        // own prose here often FALSELY claims it sent — so we DISCARD it entirely
-        // and state, deterministically, exactly what did and didn't happen. No
-        // "successfully sent", no "may have been prepared".
+        // Send task: if no send was CONFIRMED (the model drafted, flailed on
+        // Gmail's DOM, or narrated a fake "sent"), Artha finishes the job
+        // deterministically — extract the fields and call email_send itself.
+        let det: { sent: boolean; to: string | null; reason?: string } = { sent: false, to: null };
+        if (detectsSendIntent(args.goal) && !sendWasConfirmed()) {
+          det = await this.deterministicEmailSend(
+            { goal: args.goal, workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId },
+            recordStep, stepIdx++,
+          );
+        }
+        // Recompute AFTER the deterministic attempt — email_send logs its own
+        // confirmed external_action, so this reflects whether it actually sent.
         const sendUnfulfilled = detectsSendIntent(args.goal) && !sendWasConfirmed();
-        if (sendUnfulfilled) {
-          const sendAttempted = mutations.some(m => m.tool === 'email_send');
+        if (!sendUnfulfilled && det.sent) {
+          // Deterministic send succeeded — the model's prose is irrelevant now.
+          finalText = `✅ Email sent${det.to ? ` to ${det.to}` : ''} through your Gmail (confirmed by Gmail's “Message sent”).`;
+        } else if (sendUnfulfilled) {
+          // Discard the model's prose (it often falsely claims "sent") and state
+          // deterministically what happened.
+          const triedToSend = det.to !== null || mutations.some(m => m.tool === 'email_send');
           finalText =
             `❌ The email was not sent — nothing was delivered.\n\n` +
-            (sendAttempted
-              ? `I tried to send it but couldn't confirm delivery. This usually means you're not signed in ` +
-                `to Gmail in Artha's browser. `
-              : `I did not complete the send. `) +
+            (det.reason === 'declined'
+              ? `You declined the send, so nothing went out. `
+              : triedToSend
+                ? `I tried to send it but couldn't confirm delivery — this usually means you're not signed ` +
+                  `in to Gmail in Artha's browser. `
+                : `I couldn't determine the recipient to send to. `) +
             `To send it: open Artha's browser, sign in to Gmail once, then ask me again — I'll deliver it ` +
-            `through your Gmail (you'll approve once, then I send it).`;
+            `through your Gmail (you approve once, then I send it).`;
         }
 
         // The raw content was already streamed live. Only re-emit if the final
@@ -2108,6 +2137,61 @@ Rules:
       return `Done — completed ${successful.length} operation${successful.length === 1 ? '' : 's'}.`;
     }
     return `Completed ${successful.length} of ${successful.length + failed.length} operations; ${failed.length} failed.`;
+  }
+
+  /** Extract {to, subject, body} from a natural-language send request. Small
+   *  models are good at THIS (extraction) even when they're bad at choosing the
+   *  right tool — so we let the model do only the part it's reliable at, then
+   *  send deterministically. Returns null if no valid recipient is present. */
+  private async extractEmailFields(goal: string): Promise<{ to: string; subject: string; body: string } | null> {
+    try {
+      const llm = getActiveLLMClient(undefined, 'plan');
+      const resp = await llm.complete([
+        { role: 'system', content:
+          'Extract the email the user wants to send. Respond with ONLY a JSON object and nothing else: ' +
+          '{"to":"<recipient email address, or empty string>","subject":"<subject line>","body":"<message body>"}.' },
+        { role: 'user', content: goal },
+      ]);
+      let text = (resp.choices[0]?.message?.content ?? '').trim();
+      text = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) return null;
+      const j = JSON.parse(m[0]) as { to?: string; subject?: string; body?: string };
+      const to = (j.to ?? '').trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return null;
+      return { to, subject: String(j.subject ?? ''), body: String(j.body ?? '') };
+    } catch { return null; }
+  }
+
+  /** Deterministic email send: Artha finishes a send task itself instead of
+   *  hoping a small model calls email_send. Extract → user approval → deliver.
+   *  email_send writes its own external_actions row, so sendWasConfirmed()
+   *  reflects the result. Never throws. */
+  private async deterministicEmailSend(
+    args: { goal: string; workflowId: string; sessionId: string; runId: string },
+    recordStep: (idx: number, kind: string, payload: unknown) => void,
+    stepIdx: number,
+  ): Promise<{ sent: boolean; to: string | null; reason?: string }> {
+    // Deterministic first (no model): parse the fields straight from the goal.
+    // Only fall back to an LLM for genuinely free-form phrasing — so a structured
+    // "email X, subject "Y", body "Z"" works identically on ANY model, or none.
+    const fields = parseEmailFieldsFromGoal(args.goal) ?? await this.extractEmailFields(args.goal);
+    if (!fields) return { sent: false, to: null, reason: 'no recipient could be extracted' };
+    recordStep(stepIdx, 'system', { note: 'deterministic-send', to: fields.to });
+    const approved = await this.requestToolApproval({
+      workflowId: args.workflowId, sessionId: args.sessionId,
+      toolName: 'email_send', args: fields,
+      note: `Send this email to ${fields.to} through your Gmail.`,
+    });
+    if (!approved) return { sent: false, to: fields.to, reason: 'declined' };
+    try {
+      const result = await this.registry.invokeTool('email_send', fields, { runId: args.runId });
+      let sent = false;
+      try { sent = (JSON.parse(result) as { sent?: boolean }).sent === true; } catch { /* non-JSON = error string */ }
+      return { sent, to: fields.to, reason: sent ? undefined : result.slice(0, 160) };
+    } catch (e) {
+      return { sent: false, to: fields.to, reason: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   /** Bind a runId to a step recorder that writes to agent_steps.
