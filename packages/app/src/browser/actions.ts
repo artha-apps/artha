@@ -153,7 +153,7 @@ export async function click(wc: WebContents, selector: string, waitMs = DEFAULT_
  *  `form.requestSubmit()` when available) to trigger SPA form handlers. Uses
  *  the native value setter to bypass framework property descriptors that
  *  ignore direct `.value =` assignments. */
-export async function typeInto(wc: WebContents, selector: string, text: string, opts: { submit?: boolean; waitMs?: number } = {}): Promise<void> {
+export async function typeInto(wc: WebContents, selector: string, text: string, opts: { submit?: boolean; waitMs?: number } = {}): Promise<SubmitReport | null> {
   await waitForSelector(wc, selector, opts.waitMs ?? DEFAULT_WAIT_MS);
   const ok = await wc.executeJavaScript(
     `(function(){
@@ -183,15 +183,35 @@ export async function typeInto(wc: WebContents, selector: string, text: string, 
 
   if (opts.submit) {
     // Press Enter via CDP — synthesises a real keydown so SPA listeners fire.
-    await wc.executeJavaScript(
-      `(function(){var el=document.activeElement;if(!el)return;` +
+    // The submit failure used to be swallowed by an empty catch, so a
+    // validation-blocked / disabled / intercepted submit still reported
+    // `submitted: true` and the agent told the user it had submitted their
+    // form. Report what actually happened instead.
+    const submitReport = await wc.executeJavaScript(
+      `(function(){var el=document.activeElement;if(!el)return JSON.stringify({dispatched:false,reason:'no focused element'});` +
       `['keydown','keypress','keyup'].forEach(function(t){` +
       `el.dispatchEvent(new KeyboardEvent(t,{key:'Enter',code:'Enter',which:13,keyCode:13,bubbles:true}));});` +
-      `if(el.form&&typeof el.form.submit==='function'){try{el.form.requestSubmit?el.form.requestSubmit():el.form.submit()}catch(e){}}` +
+      `var f=el.form;if(!f||typeof f.submit!=='function')return JSON.stringify({dispatched:true,formSubmitted:false,reason:'no form'});` +
+      `if(typeof f.checkValidity==='function'&&!f.checkValidity())return JSON.stringify({dispatched:true,formSubmitted:false,reason:'form invalid'});` +
+      `try{f.requestSubmit?f.requestSubmit():f.submit();return JSON.stringify({dispatched:true,formSubmitted:true});}` +
+      `catch(e){return JSON.stringify({dispatched:true,formSubmitted:false,reason:String(e&&e.message||e)});}` +
       `})()`,
       true,
     );
+    try {
+      return JSON.parse(String(submitReport)) as SubmitReport;
+    } catch {
+      return { dispatched: true, formSubmitted: false, reason: 'submit result unreadable' };
+    }
   }
+  return null;
+}
+
+/** What a submit attempt actually did — never merely what was requested. */
+export interface SubmitReport {
+  dispatched: boolean;
+  formSubmitted?: boolean;
+  reason?: string;
 }
 
 /** Cleaned-text payload returned by `readDom`. `truncated` lets the model
@@ -247,23 +267,48 @@ export async function screenshot(wc: WebContents, fullPage = false): Promise<str
 
 /** Navigate back in the page history. Returns `false` (no-op) if there is no
  *  previous entry, so callers can surface a "can't go back" message. */
-export function back(wc: WebContents): boolean {
+export async function back(wc: WebContents): Promise<boolean> {
   if (!wc.canGoBack()) return false;
   wc.goBack();
+  // These used to return before the navigation happened, so a following
+  // browser_read_dom read the STALE page and the model reported on the wrong
+  // content. Await the load (bounded) so the result reflects reality.
+  await awaitNavigation(wc);
   return true;
+}
+
+/** Resolve when the page finishes loading, or after `timeoutMs` — never hang
+ *  a tool call on a page that keeps streaming. */
+function awaitNavigation(wc: WebContents, timeoutMs = 8_000): Promise<void> {
+  return new Promise<void>(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      wc.removeListener('did-finish-load', finish);
+      wc.removeListener('did-stop-loading', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    wc.once('did-finish-load', finish);
+    wc.once('did-stop-loading', finish);
+  });
 }
 
 /** Navigate forward in the page history. Returns `false` if there is no
  *  forward entry. */
-export function forward(wc: WebContents): boolean {
+export async function forward(wc: WebContents): Promise<boolean> {
   if (!wc.canGoForward()) return false;
   wc.goForward();
+  await awaitNavigation(wc);
   return true;
 }
 
 /** Hard-reload the current page (equivalent to Ctrl+R). */
-export function reload(wc: WebContents): void {
+export async function reload(wc: WebContents): Promise<void> {
   wc.reload();
+  await awaitNavigation(wc);
 }
 
 /** Return the current URL and page title without any I/O or side effects. */
