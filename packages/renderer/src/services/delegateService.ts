@@ -319,7 +319,7 @@ export const ipcDelegateEngine: DelegateEngine = {
     console.info(`[Delegate] started run ${runId} (capability: ${capability}) — polling…`);
 
     const steps = plan.steps;
-    let cursor = 0;
+    const cursor = 0;
     if (steps[cursor]) hooks.onStep(steps[cursor].index, 'running');
 
     const startedAt = Date.now();

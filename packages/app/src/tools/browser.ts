@@ -235,12 +235,13 @@ export async function invokeBrowserTool(name: string, args: Record<string, unkno
       // was validation-blocked, disabled, or intercepted. Report the observed
       // outcome, and make an unconfirmed submit an explicit failure so the
       // model cannot treat it as done.
-      if (Boolean(args.submit) && report && !report.formSubmitted) {
+      const wantedSubmit = Boolean(args.submit);
+      if (wantedSubmit && report && !report.formSubmitted) {
         return `Error: typed into ${String(args.selector ?? '')} but the form was NOT submitted (${report.reason ?? 'unconfirmed'}). Verify the page state before claiming the submission happened.`;
       }
       return JSON.stringify({
         typed_into: args.selector,
-        submitted: Boolean(args.submit) ? Boolean(report?.formSubmitted) : false,
+        submitted: wantedSubmit ? Boolean(report?.formSubmitted) : false,
         submit_detail: report?.reason,
       });
     }
