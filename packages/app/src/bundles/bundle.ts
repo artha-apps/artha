@@ -149,6 +149,9 @@ export interface ImportResult {
   signatureValid: boolean;
   stepCount: number;
   artifactNames: string[];
+  /** Entries rejected by the zip-slip guard (traversal / unsafe names).
+   *  Surfaced so a tampered bundle is visible, never silently partial. */
+  skippedArtifacts: string[];
   /** MCP servers required but not currently installed locally. */
   missingMcpServers: { name: string; uri: string }[];
   /** Extracted-to directory (artifacts + bundle.json). */
@@ -158,6 +161,22 @@ export interface ImportResult {
 /** Decompress + verify a `.artha-bundle`, extract the artifacts to
  *  `importsDir/<bundleId>/`, and return a manifest/signature report. Does
  *  *not* execute or install anything — that's left to the user via the UI. */
+/**
+ * Reduce an untrusted archive entry name to a safe basename.
+ * Returns '' when nothing safe remains (pure traversal, empty, dotfile-only,
+ * or a Windows drive/UNC prefix), which the caller treats as "reject".
+ */
+export function sanitizeEntryName(name: string): string {
+  if (typeof name !== 'string') return '';
+  // Take the last segment under BOTH separators so Windows-style names can't
+  // slip through a POSIX-only basename() on macOS/Linux.
+  const last = name.split(/[/\\]/).pop() ?? '';
+  const cleaned = last.replace(/^\.+/, '').replace(/[\u0000-\u001f]/g, '').trim();
+  if (!cleaned || cleaned === '.' || cleaned === '..') return '';
+  if (/^[a-zA-Z]:/.test(cleaned)) return '';
+  return cleaned;
+}
+
 export async function importBundle(bundlePath: string, importsDir: string): Promise<ImportResult> {
   const raw = fs.readFileSync(bundlePath);
   const json = zlib.gunzipSync(raw).toString('utf-8');
@@ -168,11 +187,30 @@ export async function importBundle(bundlePath: string, importsDir: string): Prom
   const expected = signManifest(core);
   const signatureValid = signature === expected;
 
-  const extractedDir = path.join(importsDir, bundle.manifest.bundleId);
+  // The bundleId comes from the bundle itself, so it is untrusted too.
+  const safeBundleId = sanitizeEntryName(bundle.manifest.bundleId) || 'bundle';
+  const extractedDir = path.join(importsDir, safeBundleId);
   fs.mkdirSync(extractedDir, { recursive: true });
   fs.writeFileSync(path.join(extractedDir, 'bundle.json'), JSON.stringify(bundle, null, 2));
+
+  // ZIP-SLIP GUARD. Artifact names are attacker-controlled: a bundle entry
+  // named `../../../../.zshrc` previously wrote OUTSIDE extractedDir, and it
+  // did so *before* the integrity check ran. Every name is now flattened to a
+  // basename, path separators and traversal segments are stripped, and the
+  // resolved destination is re-checked against the extraction root before any
+  // write. Rejected entries are reported, never silently dropped.
+  const skippedArtifacts: string[] = [];
+  const resolvedRoot = path.resolve(extractedDir) + path.sep;
   for (const [name, b64] of Object.entries(bundle.artifacts)) {
-    fs.writeFileSync(path.join(extractedDir, name), Buffer.from(b64, 'base64'));
+    const safeName = sanitizeEntryName(name);
+    if (!safeName) { skippedArtifacts.push(name); continue; }
+    const dest = path.resolve(extractedDir, safeName);
+    if (!dest.startsWith(resolvedRoot)) { skippedArtifacts.push(name); continue; }
+    try {
+      fs.writeFileSync(dest, Buffer.from(b64, 'base64'));
+    } catch {
+      skippedArtifacts.push(name);
+    }
   }
 
   const db = getDb();
@@ -191,7 +229,8 @@ export async function importBundle(bundlePath: string, importsDir: string): Prom
     manifest: bundle.manifest,
     signatureValid,
     stepCount: bundle.run.steps.length,
-    artifactNames: Object.keys(bundle.artifacts),
+    artifactNames: Object.keys(bundle.artifacts).filter(n => !skippedArtifacts.includes(n)),
+    skippedArtifacts,
     missingMcpServers: missing,
     extractedDir,
   };
