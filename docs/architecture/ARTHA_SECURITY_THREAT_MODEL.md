@@ -379,6 +379,53 @@ damaging actions behind human confirmation.
 
 ---
 
+## 8b. Bootstrap safety architecture (NORMATIVE INVARIANT, founder-approved 2026-07-23)
+
+**No database, index, cache, artifact, browser-session or profile-dependent
+service may initialize until the application has successfully resolved,
+canonicalized and approved its profile root.**
+
+Origin: two real incidents. (1) A module-load capture of the RAG indexer bound
+it to the default profile before the override applied, writing an index file
+into the live profile. (2) A FATAL isolation decision called `app.exit(1)` and
+*fell through* — `app.exit` only schedules a quit once the main message loop
+owns the process — continuing into the instance lock and `initDatabase()` on
+the live profile.
+
+### Stage 1 — Safe bootstrap (no profile-dependent writes)
+1. Determine production / development / QA mode.
+2. Resolve the requested profile root.
+3. Canonicalize the path (realpath; resolve symlinks and aliases).
+4. Reject unsafe aliases, case variants, symlinks and live-profile collisions.
+5. Establish an **immutable** profile/storage context.
+6. Acquire the instance lock **for that resolved root** (the lock is keyed on
+   userData, so it must come after resolution).
+7. **Terminate synchronously** on a fatal isolation decision — never fall back
+   to the production profile after an invalid override.
+
+### Stage 2 — Application initialization (only after bootstrap succeeds)
+Database · RAG and memory · artifacts and caches · browser/session storage ·
+background services · application windows.
+
+### Prohibited in any module
+- Reading `ARTHA_USER_DATA_DIR` (or any QA env var) independently.
+- Calling `app.getPath('userData')` to derive a **write** root.
+- Constructing the active profile path.
+- Falling back to the production profile after an invalid override.
+
+All profile-dependent services consume **one validated storage context**.
+
+### Current conformance (as of the Phase A baseline)
+Stages are correctly ordered in `main.ts` (resolve → terminate-or-apply →
+instance lock → telemetry/DB), all four userData-derived roots resolve lazily
+at call time, no module reads the QA env vars, and the invariant is guarded by
+a static CI check plus a runtime test that performs real writes and asserts
+every created file stays under the disposable root. **Not yet migrated:** the
+storage context is still an implicit consequence of `app.setPath` ordering
+rather than an explicit injected object, and isolation covers `userData` only
+(not `~/Documents` outputs or Chromium `sessionData`). Tracked as a future
+architecture task; it does not reopen the Phase A baseline.
+
 ## 9. Security remediation register (founder-approved, 2026-07-22)
 
 Pre-existing findings tracked to closure. Phase A is not a security rewrite —

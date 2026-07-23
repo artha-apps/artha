@@ -91,6 +91,18 @@ Legend — **Status:** ✅ shipped · 🟡 partial · ❌ absent. **Work:** → 
 | 45 | Enterprise BYOC | 🟡 (org hub interim) | `Dockerfile.hub`, org-hub runbook, license tiers | → core-service container replaces xvfb hack; VPC/private endpoints; SSO/residency | server-side | RBAC (exists as flag), audit export | integration | H |
 | 46 | Team/Business admin | 🟡 (shipped basics) | LAN hub, seats, shared memory/packs, `TeamPanel`, RBAC flag | → central policy controls, approved-provider lists | policy tables | admin-set provider allowlists | unit | E/H |
 
+## 4b. Future architecture task — explicit storage context
+
+Migrate the remaining implicit profile-path resolution to a single injected,
+validated storage context (see the bootstrap safety invariant in
+`ARTHA_SECURITY_THREAT_MODEL.md` §8b). Today conformance rests on ordering
+plus lazy resolution, which is correct but re-breakable by an ordinary
+refactor; the target is a `StorageContext` object created once in bootstrap
+and consumed by the DB, RAG, memory, artifacts, caches and browser session.
+Also extends isolation beyond `userData` to Chromium `sessionData` and
+document-output roots. Sequenced with the headless-core extraction (D-P7),
+which needs the same abstraction. Does not reopen the Phase A baseline.
+
 ## 5. Residual assumptions register (to burn down; verified 2026-07-22)
 
 Every place the code still assumes the old world. Each entry names its retirement phase.
