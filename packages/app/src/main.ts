@@ -23,6 +23,7 @@ import { SchedulerService } from './scheduler/scheduler';
 import { initSentry, withTransaction, captureException, setOllamaConnectedTag } from './sentry';
 import { startHealthCheckpointing, stopHealthCheckpointing } from './db/health';
 import { ensureModelReady, unloadActiveModel, stopOllamaIfStarted } from './llm/ollamaRuntime';
+import { resolveQaProfile } from './system/qaProfile';
 
 /** Probe whether the local Ollama runtime is reachable. Best-effort with a
  *  short timeout so a missing Ollama can't stall startup. Drives the
@@ -266,6 +267,22 @@ if (!gotSingleInstanceLock) {
       mainWindow.focus();
     }
   });
+
+  // QA profile isolation (validation infrastructure, founder-approved):
+  // MUST run before anything touches userData (initTelemetryBeforeReady opens
+  // the DB). Guarded — production launches without the explicit flags are
+  // untouched; in QA mode an invalid path refuses to start rather than risk
+  // the live profile. See system/qaProfile.ts for the full policy.
+  {
+    const qa = resolveQaProfile(process.env, app.getPath('userData'), app.isPackaged);
+    if (qa.action === 'fatal') {
+      console.error(`[Artha] ${qa.reason}`);
+      app.exit(1);
+    } else if (qa.action === 'apply' && qa.resolvedPath) {
+      app.setPath('userData', qa.resolvedPath);
+      console.log(`[Artha] ${qa.reason}`);
+    }
+  }
 
   // Init Sentry BEFORE 'ready' fires (@sentry/electron requirement); createWindow
   // runs after whenReady and is too late. See initTelemetryBeforeReady.
