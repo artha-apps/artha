@@ -77,7 +77,7 @@ interface PersistedTask {
 // 'executing' is restorable now that identity survives: a task interrupted by
 // a restart can be reopened and stopped instead of vanishing into an idle
 // screen while its backend run keeps going with full tool access.
-const RESTORABLE: DelegateStatus[] = ['completed', 'awaiting_confirmation', 'failed', 'executing'];
+const RESTORABLE: DelegateStatus[] = ['completed', 'needs_review', 'awaiting_confirmation', 'failed', 'executing'];
 
 /** On a FRESH app launch, only reopen a task that is still IN-FLIGHT (so it can
  *  be resumed or stopped). A terminal task (completed/failed) must NOT auto-open
@@ -242,10 +242,13 @@ async function runExecution(
       onStep: setStep,
       onIds: ({ runId, sessionId }) => set({ runId, sessionId }),
     });
-    set({ result, status: 'completed' });
+    // Honest terminal state: 'completed' ONLY when system-verified, else
+    // 'needs_review'. Never force a green completed over an unverified run.
+    const terminal: DelegateStatus = result.verified ? 'completed' : 'needs_review';
+    set({ result, status: terminal });
     void get().loadThread();
     persist({
-      status: 'completed', goal: get().goal, plan: get().plan, result,
+      status: terminal, goal: get().goal, plan: get().plan, result,
       runId: get().runId, sessionId: get().sessionId,
     });
   } catch (err) {

@@ -58,6 +58,7 @@ import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
 import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
+import { deriveDelegateOutcome } from '../bodhi/delegateOutcome';
 import { parseSkillImport } from '../skills/util';
 import { getSkillMetrics, getSkillModelStats, getSkillToolUsage, getSkillFailures } from '../skills/metrics';
 import { getDefaultRagIndexer } from '../rag/indexer';
@@ -893,15 +894,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Poll a running Task: maps the Task status to a Delegate-facing state, and
   // once terminal returns the final agent message + any artifacts produced.
   ipcMain.handle('delegate:status', (_e, runId: string, sessionId: string) => {
-    const task = getTask(runId);
-    const raw = task?.status ?? 'running';
-    const status: 'running' | 'completed' | 'failed' =
-      raw === 'completed' ? 'completed' : (raw === 'failed' || raw === 'cancelled') ? 'failed' : 'running';
+    // Honest outcome derived from evidence (bodhi/delegateOutcome), NOT the raw
+    // agent_runs.status — which only says the executor stopped, not that the
+    // objective was met. This is the Phase A.5 projection reaching the UI so no
+    // task type can show a green "completed" without evidence.
+    const outcome = deriveDelegateOutcome(getDb(), runId);
     const stepCount = getTaskSteps(runId).length;
 
     let output = '';
     let files: { name: string; kind: string }[] = [];
-    if (status !== 'running') {
+    if (outcome.uiStatus !== 'running') {
       const row = getDb()
         .prepare(`SELECT content FROM messages WHERE session_id = ? AND sender_type = 'agent' ORDER BY rowid DESC LIMIT 1`)
         .get(sessionId) as { content: string } | undefined;
@@ -911,7 +913,17 @@ export function registerIpcHandlers(window: BrowserWindow): void {
         .all(sessionId) as { name: string; file_type: string }[])
         .map((f) => ({ name: f.name, kind: f.file_type }));
     }
-    return { status, output, files, stepCount };
+    return {
+      status: outcome.uiStatus,
+      label: outcome.label,
+      message: outcome.message,
+      requiredAction: outcome.requiredUserAction,
+      isComplete: outcome.isComplete,
+      remainingWork: outcome.remainingWork,
+      output,
+      files,
+      stepCount,
+    };
   });
 
   // ── Projects ───────────────────────────────────────────────────────────

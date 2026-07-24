@@ -28,7 +28,7 @@ export default function DelegateTab() {
   } = useDelegateStore();
   const theme = tabTheme('delegate');
   const [followUp, setFollowUp] = useState('');
-  const isRunning = !['idle', 'completed', 'failed', 'awaiting_confirmation'].includes(status);
+  const isRunning = !['idle', 'completed', 'needs_review', 'failed', 'awaiting_confirmation'].includes(status);
 
   const sendFollowUp = async () => {
     const text = followUp.trim();
@@ -85,13 +85,14 @@ export default function DelegateTab() {
           </div>
         </div>
 
-        {/* Failure state */}
+        {/* Failure state — lead with the agent's own honest explanation (the
+            backend already wrote the truthful reason, e.g. "the email was NOT
+            sent…") rather than a generic "something went wrong". */}
         {status === 'failed' && (
           <div className="flex items-start gap-2 p-3 rounded-xl border border-artha-danger/30 bg-artha-danger/5">
             <AlertTriangle size={15} className="text-artha-danger mt-0.5 shrink-0" />
             <div className="text-sm text-artha-text">
-              Something went wrong while running this task.
-              {error && <span className="block text-xs text-artha-muted mt-0.5">{error}</span>}
+              {error?.trim() || 'The task did not complete.'}
             </div>
           </div>
         )}
@@ -104,8 +105,12 @@ export default function DelegateTab() {
           <DelegatePlanView plan={plan} status={status} onConfirm={confirm} onCancel={cancel} />
         )}
 
-        {/* Result */}
-        {status === 'completed' && result && <DelegateResultView result={result} />}
+        {/* Result — shown for a verified completion AND for a finished-but-
+            unverified run (needs_review); the view itself renders the honest
+            label/message. */}
+        {(status === 'completed' || status === 'needs_review') && result && (
+          <DelegateResultView result={result} />
+        )}
 
         {/* Conversation — the task stays OPEN. Previously the final response
             closed the loop: no message box, and "New task" destroyed the task

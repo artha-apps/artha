@@ -6,7 +6,7 @@
  * write to disk). When Delegate is wired to the real engine, each file maps to
  * an `artifacts` row and these become openable.
  */
-import { CheckCircle2, FileText, FileSpreadsheet, Presentation, StickyNote, ArrowRight } from 'lucide-react';
+import { CheckCircle2, ClipboardCheck, FileText, FileSpreadsheet, Presentation, StickyNote, ArrowRight } from 'lucide-react';
 import type { DelegateResult, DelegateResultFile } from '../../services/delegateService';
 import { tabTheme } from '../../lib/tabTheme';
 
@@ -23,26 +23,47 @@ function fileIcon(kind: DelegateResultFile['kind']) {
 export default function DelegateResultView({ result }: { result: DelegateResult }) {
   const theme = tabTheme('delegate');
 
+  // The honest state comes from the backend projection (bodhi/delegateOutcome).
+  // verified === true → system-evidenced completion (green). Otherwise the run
+  // finished but was NOT machine-verified → "ready for your review" (amber). The
+  // mock engine omits these; fall back to the not-verified framing.
+  const verified = result.verified === true;
+  const label = result.outcomeLabel ?? 'Ready for your review';
+
   return (
     <div className="rounded-xl border border-artha-border bg-artha-surface p-4">
       <div className="flex items-center gap-2 mb-3">
-        <CheckCircle2 size={16} style={{ color: theme.accent }} />
-        <h2 className="text-sm font-semibold text-artha-text">Result</h2>
+        {verified
+          ? <CheckCircle2 size={16} style={{ color: theme.accent }} />
+          : <ClipboardCheck size={16} className="text-artha-warn" />}
+        <h2 className="text-sm font-semibold text-artha-text">{label}</h2>
         <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-artha-warn/15 text-artha-warn">
           Beta
         </span>
       </div>
 
-      {/* Honest verification limitation. Delegate reports that a run ENDED; it
-          cannot yet verify that the objective was achieved (Phase A.5 in
-          progress). Stating this is better than a green check that implies
-          proof we do not have. */}
-      <div className="mb-3 px-3 py-2 rounded-lg bg-artha-warn/10 border border-artha-warn/25 text-xs leading-relaxed text-artha-text">
-        <span className="font-medium">The run finished — completion is not verified.</span>{' '}
-        <span className="text-artha-muted">
-          Delegate reports what the agent did, not proof that your objective was met. Check the
-          output below, and open Workflows → Runs to inspect the actual tool calls and results.
-        </span>
+      {/* Honest outcome line, straight from the evidence-based projection —
+          never a green check implying proof we don't have. */}
+      <div
+        className={`mb-3 px-3 py-2 rounded-lg text-xs leading-relaxed text-artha-text border ${
+          verified
+            ? 'bg-artha-accent/10 border-artha-accent/25'
+            : 'bg-artha-warn/10 border-artha-warn/25'
+        }`}
+      >
+        <span className="font-medium">
+          {result.outcomeMessage
+            ?? 'The run finished — completion is not verified.'}
+        </span>{' '}
+        {result.requiredAction && (
+          <span className="text-artha-muted">{result.requiredAction}</span>
+        )}
+        {!result.outcomeMessage && (
+          <span className="text-artha-muted">
+            Delegate reports what the agent did, not proof that your objective was met. Open
+            Workflows → Runs to inspect the actual tool calls and results.
+          </span>
+        )}
       </div>
 
       {/* Summary — the model's own words. Labelled as such so it is never

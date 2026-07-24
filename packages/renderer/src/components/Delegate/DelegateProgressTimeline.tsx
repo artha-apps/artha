@@ -30,7 +30,7 @@ const STAGES: Stage[] = [
   { key: 'completed',          label: 'Completed',                   icon: Flag },
 ];
 
-type StageState = 'done' | 'active' | 'paused' | 'pending';
+type StageState = 'done' | 'active' | 'paused' | 'pending' | 'review';
 
 /** The stage a status maps onto. `awaiting_confirmation` rests on `planning`
  *  (planning is finished; we're paused before running). */
@@ -40,6 +40,8 @@ function activeStageIndex(status: DelegateStatus): number {
   return i;
 }
 
+const LAST = STAGES.length - 1;
+
 export default function DelegateProgressTimeline({ status }: { status: DelegateStatus }) {
   const theme = tabTheme('delegate');
   const activeIdx = activeStageIndex(status);
@@ -47,6 +49,10 @@ export default function DelegateProgressTimeline({ status }: { status: DelegateS
 
   const stateFor = (i: number): StageState => {
     if (status === 'completed') return 'done';
+    // needs_review: the run finished but was NOT machine-verified — every stage
+    // up to the last is done, and the final stage is 'review' (amber), never a
+    // green "Completed".
+    if (status === 'needs_review') return i < LAST ? 'done' : 'review';
     if (i < activeIdx) return 'done';
     if (i === activeIdx) return paused ? 'paused' : 'active';
     return 'pending';
@@ -82,6 +88,8 @@ export default function DelegateProgressTimeline({ status }: { status: DelegateS
                     <Loader2 size={13} className="animate-spin" style={{ color: theme.accent }} />
                   ) : state === 'paused' ? (
                     <Pause size={12} style={{ color: theme.accent }} />
+                  ) : state === 'review' ? (
+                    <Icon size={13} className="text-artha-warn" />
                   ) : (
                     <Icon size={13} className="text-artha-subtle" />
                   )}
@@ -94,14 +102,17 @@ export default function DelegateProgressTimeline({ status }: { status: DelegateS
                 )}
               </div>
 
-              {/* Label */}
+              {/* Label — the final stage reads "Ready for review" (not
+                  "Completed") when the run finished without verification. */}
               <div className={`pb-3 ${isLast ? '' : 'pt-0.5'}`}>
                 <span
                   className={`text-sm ${
-                    state === 'pending' ? 'text-artha-subtle' : 'text-artha-text'
+                    state === 'pending' ? 'text-artha-subtle'
+                      : state === 'review' ? 'text-artha-warn font-medium'
+                      : 'text-artha-text'
                   } ${state === 'active' ? 'font-medium' : ''}`}
                 >
-                  {stage.label}
+                  {state === 'review' && isLast ? 'Ready for your review' : stage.label}
                 </span>
                 {state === 'paused' && (
                   <span className="ml-2 text-[11px] text-artha-muted">awaiting your approval</span>

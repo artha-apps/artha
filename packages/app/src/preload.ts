@@ -233,7 +233,15 @@ const api = {
     /** Poll a running Task; terminal responses carry the output + artifacts. */
     status: (runId: string, sessionId: string) =>
       ipcRenderer.invoke('delegate:status', runId, sessionId) as Promise<{
-        status: 'running' | 'completed' | 'failed';
+        // Evidence-derived (bodhi/delegateOutcome), NOT the raw executor status.
+        // 'needs_review' is terminal-but-not-verified (ready to accept / stopped).
+        status: 'running' | 'completed' | 'needs_review' | 'failed';
+        /** Honest short label + one-sentence message from userFacingOutcome. */
+        label: string;
+        message: string;
+        requiredAction: string | null;
+        isComplete: boolean;
+        remainingWork: string[];
         output: string;
         files: { name: string; kind: string }[];
         stepCount: number;
