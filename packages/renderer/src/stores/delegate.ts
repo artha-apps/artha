@@ -79,13 +79,21 @@ interface PersistedTask {
 // screen while its backend run keeps going with full tool access.
 const RESTORABLE: DelegateStatus[] = ['completed', 'awaiting_confirmation', 'failed', 'executing'];
 
+/** On a FRESH app launch, only reopen a task that is still IN-FLIGHT (so it can
+ *  be resumed or stopped). A terminal task (completed/failed) must NOT auto-open
+ *  — otherwise every launch dumps the user back into the last run's result, or a
+ *  scary "Something went wrong" error, instead of a clean New task screen. */
+const RESTORABLE_ON_LOAD: DelegateStatus[] = ['awaiting_confirmation', 'executing'];
+
 function loadPersisted(): PersistedTask | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedTask;
-    if (!RESTORABLE.includes(parsed.status)) return null;
+    // Terminal tasks are still SAVED (persist() keeps them) but never auto-opened
+    // on launch — the user starts fresh and can revisit history deliberately.
+    if (!RESTORABLE_ON_LOAD.includes(parsed.status)) return null;
     return parsed;
   } catch {
     return null;
