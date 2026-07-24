@@ -879,16 +879,26 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Every Delegate task, newest first — replaces the single-task localStorage
   // slot so more than one task can exist.
   ipcMain.handle('delegate:list', () => {
-    return getDb().prepare(
-      `SELECT s.session_id, s.title, s.created_at,
+    // NOTE: chat_sessions has start_time/last_activity — NOT created_at. The
+    // original query selected s.created_at and therefore ALWAYS threw
+    // ("no such column"), which is why the task history was never reachable.
+    const rows = getDb().prepare(
+      `SELECT s.session_id, s.title, s.last_activity AS created_at,
               (SELECT r.run_id FROM agent_runs r WHERE r.session_id = s.session_id
-                ORDER BY r.created_at DESC LIMIT 1) AS last_run_id,
-              (SELECT r.status FROM agent_runs r WHERE r.session_id = s.session_id
-                ORDER BY r.created_at DESC LIMIT 1) AS last_status
+                ORDER BY r.created_at DESC LIMIT 1) AS last_run_id
          FROM chat_sessions s
         WHERE s.origin='delegate'
-        ORDER BY s.created_at DESC LIMIT 50`
-    ).all() as { session_id: string; title: string; created_at: number; last_run_id: string | null; last_status: string | null }[];
+        ORDER BY s.last_activity DESC LIMIT 50`
+    ).all() as { session_id: string; title: string; created_at: number; last_run_id: string | null }[];
+
+    // Each row carries the EVIDENCE-DERIVED outcome, never the raw
+    // agent_runs.status — a history list that said "completed" for unverified
+    // runs would reintroduce exactly the false-completion this phase removed.
+    return rows.map(r => {
+      if (!r.last_run_id) return { ...r, status: 'running' as const, label: 'Queued', isComplete: false };
+      const o = deriveDelegateOutcome(getDb(), r.last_run_id);
+      return { ...r, status: o.uiStatus, label: o.label, isComplete: o.isComplete };
+    });
   });
 
   // Poll a running Task: maps the Task status to a Delegate-facing state, and
