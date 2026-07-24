@@ -1375,6 +1375,9 @@ RULES — follow exactly, no exceptions:
       ragIndexIds: getSessionRagIndexIds(args.sessionId),
       // Scope CRM/KG writes to the session's project, like memory.
       projectId: this.getSessionProjectId(args.sessionId),
+      // Run identity for consequential-action logging (email_send writes its
+      // external_actions row against this run so sendWasConfirmed() can see it).
+      runId: args.runId,
     };
 
     let finalEmitted = false;
@@ -1409,12 +1412,21 @@ RULES — follow exactly, no exceptions:
     let sendNudges = 0;
     const MAX_SEND_NUDGES = 2;
     const sendWasConfirmed = (): boolean => {
+      // Evidence 1: a confirmed external_action row for this run.
       try {
         const row = db.prepare(
           `SELECT COUNT(*) AS n FROM external_actions WHERE run_id=? AND category='send' AND state='confirmed'`
         ).get(args.runId) as { n: number } | undefined;
-        return (row?.n ?? 0) > 0;
-      } catch { return false; }
+        if ((row?.n ?? 0) > 0) return true;
+      } catch { /* fall through to tool-result evidence */ }
+      // Evidence 2: the email_send tool itself returned sent:true this run. This
+      // is the authoritative signal and does NOT depend on external_actions
+      // run-id scoping — so a successful send is never re-sent or mis-reported
+      // as failed just because its audit row wasn't run-scoped.
+      return mutations.some(m => {
+        if (m.tool !== 'email_send') return false;
+        try { return (JSON.parse(m.result) as { sent?: boolean }).sent === true; } catch { return false; }
+      });
     };
 
     // tool_call ids of every browser_read_dom call, so we can keep only the
