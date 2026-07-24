@@ -12,7 +12,7 @@
  * All lifecycle state + the engine live in stores/delegate.ts; this component
  * is presentational wiring only.
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Send, RotateCcw, AlertTriangle, Square, CornerDownLeft, Loader2 } from 'lucide-react';
 import { useDelegateStore } from '../../stores/delegate';
 import { tabTheme } from '../../lib/tabTheme';
@@ -23,9 +23,12 @@ import DelegateResultView from './DelegateResultView';
 
 export default function DelegateTab() {
   const {
-    status, goal, plan, result, error, thread, stopping, runId,
-    submit, confirm, cancel, reset, stop, continueTask,
+    status, goal, plan, result, error, thread, stopping, runId, tasks,
+    submit, confirm, cancel, reset, stop, continueTask, openTask, loadTasks,
   } = useDelegateStore();
+
+  // Refresh the reachable task history whenever we return to the idle screen.
+  useEffect(() => { if (status === 'idle') void loadTasks(); }, [status, loadTasks]);
   const theme = tabTheme('delegate');
   const [followUp, setFollowUp] = useState('');
   const isRunning = !['idle', 'completed', 'needs_review', 'failed', 'awaiting_confirmation'].includes(status);
@@ -37,11 +40,42 @@ export default function DelegateTab() {
     await continueTask(text);
   };
 
-  // Idle → the goal entry hero.
+  // Idle → the goal entry hero + reachable task history. Terminal tasks no
+  // longer auto-restore on launch (they used to greet you with a stale error),
+  // so this list is how a finished task stays reachable.
   if (status === 'idle') {
     return (
       <div className="flex-1 overflow-y-auto">
         <DelegateTaskInput onSubmit={submit} />
+        {tasks.length > 0 && (
+          <div className="max-w-2xl mx-auto px-8 pb-10">
+            <h3 className="text-[10px] uppercase tracking-wider text-artha-subtle font-semibold mb-2">
+              Recent tasks
+            </h3>
+            <ul className="space-y-1">
+              {tasks.slice(0, 8).map((t) => (
+                <li key={t.session_id}>
+                  <button
+                    onClick={() => void openTask(t.session_id, t.last_run_id)}
+                    className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg border border-artha-border hover:border-artha-muted transition-colors"
+                  >
+                    <span className="text-sm text-artha-text truncate flex-1">{t.title}</span>
+                    {/* Evidence-derived label — never a raw "completed". */}
+                    <span
+                      className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        t.isComplete ? 'bg-artha-accent/15 text-artha-accent'
+                          : t.status === 'failed' ? 'bg-artha-danger/15 text-artha-danger'
+                          : 'bg-artha-warn/15 text-artha-warn'
+                      }`}
+                    >
+                      {t.label}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     );
   }

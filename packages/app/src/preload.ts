@@ -228,7 +228,13 @@ const api = {
     >,
     /** All Delegate tasks, newest first — more than one can now exist. */
     list: () => ipcRenderer.invoke('delegate:list') as Promise<
-      { session_id: string; title: string; created_at: number; last_run_id: string | null; last_status: string | null }[]
+      {
+        session_id: string; title: string; created_at: number; last_run_id: string | null;
+        /** Evidence-derived outcome per task (never the raw executor status). */
+        status: 'running' | 'completed' | 'needs_review' | 'failed';
+        label: string;
+        isComplete: boolean;
+      }[]
     >,
     /** Poll a running Task; terminal responses carry the output + artifacts. */
     status: (runId: string, sessionId: string) =>

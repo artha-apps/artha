@@ -37,6 +37,12 @@ interface DelegateState {
   thread: { sender_type: string; content: string; created_at: number }[];
   /** True while a stop request is in flight. */
   stopping: boolean;
+  /** Past delegate tasks (newest first) so a finished task stays reachable.
+   *  Each carries the EVIDENCE-DERIVED label, never a raw "completed". */
+  tasks: {
+    session_id: string; title: string; created_at: number; last_run_id: string | null;
+    status: 'running' | 'completed' | 'needs_review' | 'failed'; label: string; isComplete: boolean;
+  }[];
 
   // ── Actions ────────────────────────────────────────────────────────────────
   /** Hand a goal to Artha: understand → retrieve context → plan. Auto-executes
@@ -54,6 +60,8 @@ interface DelegateState {
   loadThread: () => Promise<void>;
   /** Open an existing task by session id (multi-task support). */
   openTask: (sessionId: string, runId: string | null) => Promise<void>;
+  /** Load the task history (drives the "Recent tasks" list). */
+  loadTasks: () => Promise<void>;
   /** Clear everything and start a fresh delegation. */
   reset: () => void;
 }
@@ -124,6 +132,7 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
   sessionId: restored?.sessionId ?? null,
   thread: [],
   stopping: false,
+  tasks: [],
 
   submit: async (goal) => {
     const trimmed = goal.trim();
@@ -215,8 +224,43 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
   },
 
   openTask: async (sessionId, runId) => {
-    set({ sessionId, runId, status: 'completed', error: null, plan: null, result: null });
+    // Reopen with the task's HONEST state. This used to hardcode
+    // status:'completed', which re-asserted a completion the evidence may not
+    // support — the exact false-completion this phase removed.
+    set({ sessionId, runId, error: null, plan: null, result: null, status: 'reviewing' });
+    if (runId) {
+      try {
+        const st = await window.artha.delegate.status(runId, sessionId);
+        if (st.status === 'failed') {
+          set({ status: 'failed', error: st.message || st.output || 'The task did not complete.' });
+        } else if (st.status === 'running') {
+          set({ status: 'executing' });
+        } else {
+          set({
+            status: st.isComplete ? 'completed' : 'needs_review',
+            result: {
+              summary: st.output?.trim() || st.message,
+              files: st.files ?? [],
+              nextActions: st.requiredAction ? [st.requiredAction] : ['Continue this task with a follow-up'],
+              verified: st.isComplete,
+              outcomeLabel: st.label,
+              outcomeMessage: st.message,
+              requiredAction: st.requiredAction,
+            },
+          });
+        }
+      } catch {
+        set({ status: 'needs_review' });   // never claim completed on a lookup failure
+      }
+    }
     await get().loadThread();
+  },
+
+  loadTasks: async () => {
+    try {
+      if (!window.artha?.delegate?.list) return;
+      set({ tasks: await window.artha.delegate.list() });
+    } catch { /* history is best-effort */ }
   },
 }));
 
