@@ -16,6 +16,7 @@
  */
 import { BrowserWindow } from 'electron';
 import * as os from 'os';
+import * as fs from 'fs';
 import { sendNotification } from '../notify';
 import { getActiveLLMClient, type StreamedMessage, type TaskType } from '../llm/client';
 import { MCPRegistry, type ToolContext } from '../mcp/registry';
@@ -27,6 +28,7 @@ import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getS
 import { buildShallowTree } from './folderTree';
 import { getRunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
+import { recordAcceptanceCriteria } from '../bodhi/criteria';
 import { classifyToolResult, isFailure, countsAsCompletedMutation } from './toolOutcome';
 import OpenAI from 'openai';
 import {
@@ -1889,6 +1891,38 @@ RULES — follow exactly, no exceptions:
         }
 
         recordStep(stepIdx++, 'final', { content: finalText });
+
+        // Acceptance criteria: check the run's CONCRETE claims (the paths it
+        // said it wrote/moved) against reality on disk, so "Completed —
+        // verified" has to be earned. A run that claims a file it never
+        // produced now fails verification instead of showing a green check.
+        // Model-independent and best-effort — never breaks the run.
+        try {
+          // Authoritative paths the run registered as artifacts (docs_generate
+          // writes these), cross-checking the text-parsed tool results.
+          let artifactPaths: string[] = [];
+          try {
+            artifactPaths = (db.prepare(
+              `SELECT file_path FROM artifacts WHERE session_id=?`
+            ).all(args.sessionId) as { file_path: string }[]).map(a => a.file_path);
+          } catch { /* artifacts are best-effort evidence */ }
+
+          const crit = recordAcceptanceCriteria(db, {
+            runId: args.runId,
+            sessionId: args.sessionId,
+            goal: args.goal,
+            mutations,
+            artifactPaths,
+            exists: (p: string) => fs.existsSync(p),
+          });
+          if (crit.recorded > 0) {
+            recordStep(stepIdx++, 'system', {
+              note: 'acceptance-criteria',
+              recorded: crit.recorded, passed: crit.passed,
+              failed: crit.failed, unverified: crit.truncated,
+            });
+          }
+        } catch { /* bookkeeping must never break a run */ }
         if (sendUnfulfilled) {
           // A requested send never happened — this is NOT a completion. Report
           // it honestly so Delegate can't show a green "completed".
