@@ -37,6 +37,9 @@ export type DelegateStatus =
   | 'executing'
   | 'reviewing'
   | 'completed'
+  // Terminal but NOT system-verified: the run finished and produced a result
+  // you accept, or stopped without confirmation. Never a green "completed".
+  | 'needs_review'
   | 'failed';
 
 /** One step in Artha's plan. `tools`/`agent` declare what the step will use so
@@ -83,6 +86,13 @@ export interface DelegateResult {
   files: DelegateResultFile[];
   /** Suggested next actions the user might take. */
   nextActions: string[];
+  /** Honest outcome from the backend projection (bodhi/delegateOutcome). The
+   *  real engine always sets these; the mock engine omits them (the view then
+   *  falls back to its "completion not verified" default). */
+  verified?: boolean;              // true ONLY when system-verified complete
+  outcomeLabel?: string;           // "Completed — verified" / "Ready for your review"
+  outcomeMessage?: string;         // one honest sentence
+  requiredAction?: string | null;  // what the user should do next, if anything
 }
 
 // ── Engine contract ──────────────────────────────────────────────────────────
@@ -338,24 +348,25 @@ export const ipcDelegateEngine: DelegateEngine = {
       // eslint-disable-next-line no-console
       console.info(`[Delegate] run ${runId}: ${st.status} (${st.stepCount} steps)`);
 
-      if (st.status === 'completed') {
-        // Previously every plan step was force-stamped 'done' here purely
-      // because the RUN reached a terminal state — asserting step-level
-      // success for steps that were never sent to the backend (audit U1).
+      if (st.status === 'completed' || st.status === 'needs_review') {
+        // Both are terminal. 'completed' = system-verified; 'needs_review' =
+        // finished/stopped without machine verification. The honest label +
+        // message come from the backend projection — the renderer never
+        // authors a completion claim (audit U3).
         hooks.onStage('reviewing');
-        await wait(400);
-        hooks.onStage('completed');
+        await wait(300);
+        hooks.onStage(st.status);
         return {
-          // Never invent a completion sentence. If the agent produced no
-        // output, say so — the renderer must not author the claim (audit U3).
-        summary: st.output?.trim()
-          || 'The run finished but produced no output, so completion could not be verified.',
+          summary: st.output?.trim()
+            || 'The run finished but produced no output, so completion could not be verified.',
           files: st.files ?? [],
-          nextActions: [
-            'Review the output',
-            'Refine the result with a follow-up',
-            'Save this as a reusable workflow',
-          ],
+          nextActions: st.requiredAction
+            ? [st.requiredAction, 'Refine the result with a follow-up', 'Save this as a reusable workflow']
+            : ['Review the output', 'Refine the result with a follow-up', 'Save this as a reusable workflow'],
+          verified: st.isComplete,
+          outcomeLabel: st.label,
+          outcomeMessage: st.message,
+          requiredAction: st.requiredAction,
         };
       }
 
@@ -364,7 +375,7 @@ export const ipcDelegateEngine: DelegateEngine = {
         // Surface the agent's own honest explanation (e.g. "the email was NOT
         // sent…") rather than a generic string — the backend already writes the
         // truthful message; hiding it would re-introduce the dishonesty.
-        throw new Error(st.output?.trim() || 'Task failed during execution.');
+        throw new Error(st.message?.trim() || st.output?.trim() || 'Task failed during execution.');
       }
 
       // NOTE: we deliberately do NOT advance steps on a timer any more.
