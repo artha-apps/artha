@@ -10,7 +10,11 @@ const { state } = vi.hoisted(() => ({
   state: {
     activeRow: undefined as Record<string, unknown> | undefined,
     savedRows: [] as Record<string, unknown>[],
-    profileRows: {} as Record<string, string>, // task_type -> ollama_name (model_profiles best)
+    profileRows: {} as Record<string, string>, // task_type -> ollama_name (synthesis best, .get)
+    // task_type -> passer rows (quality > 0), for the aux-phase .all() query.
+    profilePassers: {} as Record<string, { ollama_name: string; quality: number; latency_ms: number }[]>,
+    // task_types that have ANY benchmark row (passing or failing).
+    benchmarkedTasks: [] as string[],
     localRows: [] as { ollama_name: string }[], // provider='ollama' listing
   },
 }));
@@ -37,7 +41,11 @@ function fakeDb() {
     prepare: (sql: string) => ({
       get: (...args: unknown[]) => {
         if (sql.includes('router_overrides')) return undefined;
-        if (sql.includes('model_profiles')) {
+        // "any benchmark row for this task?" probe (aux fallback).
+        if (sql.includes('SELECT 1 FROM model_profiles')) {
+          return state.benchmarkedTasks.includes(args[0] as string) ? { 1: 1 } : undefined;
+        }
+        if (sql.includes('model_profiles')) { // synthesis best (.get, LIMIT 1)
           const name = state.profileRows[args[0] as string];
           return name ? { ollama_name: name } : undefined;
         }
@@ -45,13 +53,21 @@ function fakeDb() {
         if (sql.includes('WHERE ollama_name')) return state.savedRows.find(r => r.ollama_name === args[0]);
         return undefined;
       },
-      all: () => (state.localRows.length && /provider='ollama'/.test(sql) ? state.localRows : []),
+      all: (...args: unknown[]) => {
+        // Aux-phase passer query: model_profiles WHERE quality > 0.
+        if (sql.includes('model_profiles') && sql.includes('quality > 0')) {
+          return state.profilePassers[args[0] as string] ?? [];
+        }
+        // Installed-model listing.
+        if (/provider='ollama'/.test(sql)) return state.localRows;
+        return [];
+      },
       run: () => ({ changes: 1 }),
     }),
   };
 }
 
-import { resolveTransport, NoModelConfiguredError } from './client';
+import { resolveTransport, NoModelConfiguredError, modelParamsB } from './client';
 import { LOCAL_API_KEY_PLACEHOLDER } from '../security/secretString';
 
 const seal = (plain: string) => 'v1:enc:' + Buffer.from(`FAKE!${plain}`).toString('base64');
@@ -65,6 +81,8 @@ beforeEach(() => {
   state.activeRow = undefined;
   state.savedRows = [];
   state.profileRows = {};
+  state.profilePassers = {};
+  state.benchmarkedTasks = [];
   state.localRows = [];
 });
 
@@ -118,6 +136,47 @@ describe('M2 — cloud-active users are not steered to localhost aux models', ()
     state.localRows = [{ ollama_name: 'llama3.3:70b' }, { ollama_name: 'llama3.2:3b' }];
     const t = resolveTransport(fakeDb(), undefined, 'plan');
     expect(t.model).toBe('llama3.2:3b'); // smallest by parsed param count
+  });
+});
+
+describe('aux phases are latency-capped at the active model size (Delegate slowness fix)', () => {
+  const localActive = (name: string) => ({
+    model_id: 'l', ollama_name: name, base_url: 'http://localhost:11434/v1',
+    api_key: 'ollama', provider: 'ollama', context_window: 8192, is_active: 1,
+  });
+
+  it("the founder's case: tool_args does NOT run on a benchmarked 70B when active is 14B", () => {
+    // Real observed state: 7b scored 0 on tool_args (FAILED), 70b scored 1.0.
+    // Quality-first would pick the 70B for every tool turn (~2 min each). The
+    // 7b failed the benchmark, so we must NOT route there either — fall back to
+    // the active 14B: capable, and far faster than a 70B.
+    state.activeRow = localActive('qwen2.5:14b-instruct-q4_K_M');
+    state.profilePassers = { tool_args: [{ ollama_name: 'llama3.3:70b', quality: 1.0, latency_ms: 1382 }] };
+    state.benchmarkedTasks = ['tool_args']; // 7b(fail) + 70b(pass) rows exist
+    state.localRows = [
+      { ollama_name: 'qwen2.5:7b' }, { ollama_name: 'qwen2.5:72b' },
+      { ollama_name: 'llama3.3:70b' }, { ollama_name: 'qwen2.5:14b-instruct-q4_K_M' },
+    ];
+    const t = resolveTransport(fakeDb(), undefined, 'tool_args');
+    expect(t.model).toBe('qwen2.5:14b-instruct-q4_K_M'); // active, NOT the 70B, NOT the failed 7b
+    expect(modelParamsB(t.model)).toBeLessThan(70);
+  });
+
+  it('a passing model that is ≤ active is still used (quality preserved)', () => {
+    state.activeRow = localActive('qwen2.5:14b-instruct-q4_K_M');
+    state.profilePassers = { plan: [{ ollama_name: 'qwen2.5:7b', quality: 1.0, latency_ms: 408 }] };
+    state.benchmarkedTasks = ['plan'];
+    state.localRows = [{ ollama_name: 'qwen2.5:7b' }, { ollama_name: 'qwen2.5:14b-instruct-q4_K_M' }];
+    const t = resolveTransport(fakeDb(), undefined, 'plan');
+    expect(t.model).toBe('qwen2.5:7b');
+  });
+
+  it('with NO benchmarks (fresh install), uses the smallest installed model ≤ active', () => {
+    state.activeRow = localActive('qwen2.5:14b-instruct-q4_K_M');
+    // no benchmarkedTasks, no passers
+    state.localRows = [{ ollama_name: 'llama3.2:3b' }, { ollama_name: 'qwen2.5:14b-instruct-q4_K_M' }];
+    const t = resolveTransport(fakeDb(), undefined, 'tool_args');
+    expect(t.model).toBe('llama3.2:3b');
   });
 });
 

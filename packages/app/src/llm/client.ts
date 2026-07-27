@@ -420,10 +420,20 @@ function safeParseArgs(s: unknown): Record<string, unknown> {
  */
 export type TaskType = 'plan' | 'tool_args' | 'synthesis';
 
+/** Parse parameter count (in billions) from an Ollama tag:
+ *  `qwen2.5:7b` → 7, `…:72b` → 72, `llama3.2:3b-instruct-q4` → 3.
+ *  Unknown/unsized tags sort as Infinity (treated as "large"). */
+export function modelParamsB(name: string): number {
+  const tag = name.includes(':') ? name.slice(name.lastIndexOf(':') + 1) : name;
+  const m = tag.match(/(\d+(?:\.\d+)?)\s*b\b/i);
+  return m ? parseFloat(m[1]) : Infinity;
+}
+
 /** Pick the best Ollama model for a given task, in priority order:
  *  1. modelOverride (caller pinned a specific model — e.g. fork replay)
  *  2. router_overrides row for this task_type (user pinned)
- *  3. highest-quality model_profiles row for this task_type
+ *  3. highest-quality model_profiles row — but for the latency-sensitive
+ *     auxiliary phases (plan/tool_args), CAPPED at the active model's size
  *  4. fall through to whatever's in llm_models WHERE is_active=1
  */
 function resolveModelName(modelOverride?: string, taskType?: TaskType): string | undefined {
@@ -435,47 +445,72 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
     const pinned = db
       .prepare(`SELECT ollama_name FROM router_overrides WHERE task_type=?`)
       .get(taskType) as { ollama_name: string } | undefined;
-    if (pinned?.ollama_name) return pinned.ollama_name;
+    if (pinned?.ollama_name) return pinned.ollama_name; // user pin always wins
 
+    // For the auxiliary phases (planning + tool-arg formatting) we optimise for
+    // LATENCY, not quality: these turns don't need a big model, and running them
+    // on one is the single biggest cause of slow Delegate runs. The benchmark
+    // ranks by quality, so with a 70B benchmarked it would steer EVERY tool
+    // turn onto the 70B — observed as ~2 min per turn. So we cap the aux pick at
+    // the user's ACTIVE model size: an aux phase may be that size or smaller,
+    // never larger than the model they chose for answers.
+    const isAux = taskType === 'plan' || taskType === 'tool_args';
+
+    if (isAux) {
+      const active = db
+        .prepare(`SELECT ollama_name, provider, base_url FROM llm_models WHERE is_active=1 LIMIT 1`)
+        .get() as { ollama_name?: string; provider?: string; base_url?: string } | undefined;
+      // Cloud-active user with leftover local rows: don't steer aux phases to a
+      // localhost server that provider-aware startup no longer auto-starts.
+      if (active && !isOllamaManaged(active.provider, active.base_url)) return undefined;
+      const activeB = active?.ollama_name ? modelParamsB(active.ollama_name) : Infinity;
+
+      // Best benchmarked model that PASSED (quality > 0) and is no larger than
+      // the active model, fastest first. Never a bigger model than the user
+      // chose for answers — running an aux phase on a 70B is the #1 cause of
+      // slow Delegate turns.
+      const passers = db
+        .prepare(
+          `SELECT ollama_name FROM model_profiles
+             WHERE task_type=? AND quality > 0
+             ORDER BY quality DESC, latency_ms ASC`
+        )
+        .all(taskType) as { ollama_name: string }[];
+      const capped = passers.find(p => modelParamsB(p.ollama_name) <= activeB);
+      if (capped) return capped.ollama_name;
+
+      // Are there ANY benchmark rows for this task? If so, the model that didn't
+      // pass is a KNOWN-BAD choice — we must not steer an aux phase onto a small
+      // model that failed the tool-call benchmark just to save time. Fall back
+      // to the ACTIVE model: it's the user's capable default and still ≤ any
+      // oversized benchmarked giant.
+      const benchmarked = db
+        .prepare(`SELECT 1 FROM model_profiles WHERE task_type=? LIMIT 1`)
+        .get(taskType);
+      if (benchmarked) return undefined; // ⇒ caller uses the active model
+
+      // No benchmarks at all (fresh install): keep the original latency
+      // optimisation — smallest installed model ≤ active — since we have no
+      // signal that any small model is unfit.
+      const rows = db
+        .prepare(`SELECT ollama_name FROM llm_models WHERE provider='ollama'`)
+        .all() as { ollama_name: string }[];
+      const smallest = rows
+        .map(r => ({ name: r.ollama_name, b: modelParamsB(r.ollama_name) }))
+        .filter(r => r.b <= activeB)
+        .sort((a, b) => a.b - b.b)[0];
+      return smallest?.name; // undefined ⇒ caller uses the active model
+    }
+
+    // Quality-sensitive phases (synthesis): highest-quality benchmarked model,
+    // else fall through to the active model.
     const best = db
       .prepare(
         `SELECT ollama_name FROM model_profiles
          WHERE task_type=? ORDER BY quality DESC, latency_ms ASC LIMIT 1`
       )
       .get(taskType) as { ollama_name: string } | undefined;
-    if (best?.ollama_name) return best.ollama_name;
-
-    // No benchmark + no user override. For the latency-sensitive auxiliary
-    // phases, fall back to the SMALLEST installed local model rather than the
-    // active (possibly huge) answer model — planning + tool-arg formatting
-    // don't need a 70B, and running them on one is the main cause of slow
-    // turns. 'synthesis' is quality-sensitive (doc generation, final combine)
-    // so it deliberately falls through to the active model.
-    //
-    // ONLY when the active model is itself Ollama-managed: a cloud-active
-    // user with leftover local rows must not have plan/tool_args steered to
-    // a localhost server that provider-aware startup no longer auto-starts
-    // (review findings M2/H2 — every task message failed at the plan phase).
-    if (taskType === 'plan' || taskType === 'tool_args') {
-      const active = db
-        .prepare(`SELECT provider, base_url FROM llm_models WHERE is_active=1 LIMIT 1`)
-        .get() as { provider?: string; base_url?: string } | undefined;
-      if (active && !isOllamaManaged(active.provider, active.base_url)) return undefined;
-      const rows = db
-        .prepare(`SELECT ollama_name FROM llm_models WHERE provider='ollama'`)
-        .all() as { ollama_name: string }[];
-      // Parse parameter count from the tag (…:7b, :72b, :3b-instruct-q4 → 7/72/3).
-      const params = (n: string): number => {
-        const tag = n.includes(':') ? n.slice(n.lastIndexOf(':') + 1) : n;
-        const m = tag.match(/(\d+(?:\.\d+)?)\s*b\b/i);
-        return m ? parseFloat(m[1]) : Infinity;
-      };
-      const smallest = rows
-        .map(r => ({ name: r.ollama_name, b: params(r.ollama_name) }))
-        .sort((a, b) => a.b - b.b)[0];
-      return smallest?.name;
-    }
-    return undefined;
+    return best?.ollama_name;
   } catch {
     return undefined;
   }

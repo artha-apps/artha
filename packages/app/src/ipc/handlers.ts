@@ -870,8 +870,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // thread, so the task view can be a real conversation rather than a
   // one-shot result panel.
   ipcMain.handle('delegate:thread', (_e, sessionId: string) => {
+    // NOTE: messages has `timestamp`, NOT created_at — the original query threw
+    // "no such column" on every call, so the persistent task thread never
+    // loaded. Alias to created_at to keep the renderer contract.
     return getDb().prepare(
-      `SELECT sender_type, content, created_at FROM messages
+      `SELECT sender_type, content, timestamp AS created_at FROM messages
         WHERE session_id=? ORDER BY rowid ASC`
     ).all(sessionId) as { sender_type: string; content: string; created_at: number }[];
   });
