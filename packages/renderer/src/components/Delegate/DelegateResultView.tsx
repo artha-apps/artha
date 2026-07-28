@@ -20,7 +20,9 @@ function fileIcon(kind: DelegateResultFile['kind']) {
   }
 }
 
-export default function DelegateResultView({ result }: { result: DelegateResult }) {
+export default function DelegateResultView(
+  { result, onDecide }: { result: DelegateResult; onDecide?: (d: 'accepted' | 'rejected') => void },
+) {
   const theme = tabTheme('delegate');
 
   // The honest state comes from the backend projection (bodhi/delegateOutcome).
@@ -29,6 +31,10 @@ export default function DelegateResultView({ result }: { result: DelegateResult 
   // mock engine omits these; fall back to the not-verified framing.
   const verified = result.verified === true;
   const label = result.outcomeLabel ?? 'Ready for your review';
+  // Offer Accept/Reject only for a genuinely reviewable result (not verified,
+  // and the host wired a handler). Accepting is what turns review into an
+  // honest "Completed" — a recorded human sign-off, not a model claim.
+  const canDecide = !verified && !!onDecide;
 
   return (
     <div className="rounded-xl border border-artha-border bg-artha-surface p-4">
@@ -65,6 +71,27 @@ export default function DelegateResultView({ result }: { result: DelegateResult 
           </span>
         )}
       </div>
+
+      {/* Accept / request-changes on a reviewable result. Accept records a
+          human sign-off (approval_granted) → the task honestly becomes
+          Completed; Request changes keeps it open for a follow-up. */}
+      {canDecide && (
+        <div className="flex items-center gap-2 mb-4">
+          <button
+            onClick={() => onDecide!('accepted')}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors"
+            style={{ backgroundColor: theme.accent }}
+          >
+            <CheckCircle2 size={13} /> Accept result
+          </button>
+          <button
+            onClick={() => onDecide!('rejected')}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-artha-muted border border-artha-border hover:text-artha-text hover:border-artha-muted transition-colors"
+          >
+            Request changes
+          </button>
+        </div>
+      )}
 
       {/* Summary — the model's own words. Labelled as such so it is never
           mistaken for a system-verified statement of outcome. */}

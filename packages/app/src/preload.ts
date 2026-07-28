@@ -222,6 +222,13 @@ const api = {
       ipcRenderer.invoke('delegate:continue', sessionId, message) as Promise<{
         ok: boolean; runId?: string; sessionId?: string; error?: string;
       }>,
+    /** Accept or reject a reviewed result. Accept → the task honestly becomes
+     *  "Completed — verified" (recorded human sign-off); reject keeps it open. */
+    decide: (runId: string, sessionId: string, decision: 'accepted' | 'rejected') =>
+      ipcRenderer.invoke('delegate:decide', runId, sessionId, decision) as Promise<{
+        ok: boolean; status?: 'running' | 'completed' | 'needs_review' | 'failed';
+        label?: string; message?: string; isComplete?: boolean; error?: string;
+      }>,
     /** The task's conversation so far (user + agent messages, one thread). */
     thread: (sessionId: string) => ipcRenderer.invoke('delegate:thread', sessionId) as Promise<
       { sender_type: string; content: string; created_at: number }[]

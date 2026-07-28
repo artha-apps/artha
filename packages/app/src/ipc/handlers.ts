@@ -59,6 +59,7 @@ import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill,
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
 import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { deriveDelegateOutcome } from '../bodhi/delegateOutcome';
+import { recordAcceptance } from '../bodhi/acceptance';
 import { parseSkillImport } from '../skills/util';
 import { getSkillMetrics, getSkillModelStats, getSkillToolUsage, getSkillFailures } from '../skills/metrics';
 import { getDefaultRagIndexer } from '../rag/indexer';
@@ -842,6 +843,20 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (row.status !== 'running') return { ok: true, alreadyFinished: true };
     orchestrator.cancelWorkflow(row.workflow_id);
     return { ok: true, alreadyFinished: false };
+  });
+
+  // Accept or reject a REVIEWED result. Accept records an approval_granted
+  // criterion so the task honestly reaches "Completed — verified" (backed by a
+  // human sign-off, not a model claim); reject logs the decision and keeps the
+  // task reviewable so the user can continue it with feedback.
+  ipcMain.handle('delegate:decide', (_e, runId: string, sessionId: string, decision: 'accepted' | 'rejected') => {
+    const run = getDb().prepare(`SELECT goal FROM agent_runs WHERE run_id=?`).get(runId) as { goal: string } | undefined;
+    if (!run) return { ok: false, error: 'That task no longer exists.' };
+    const res = recordAcceptance(getDb(), { runId, sessionId, goal: run.goal ?? '', decision });
+    if (!res.ok) return { ok: false, error: res.error ?? 'Could not record your decision.' };
+    // Return the fresh, evidence-derived outcome so the UI updates honestly.
+    const outcome = deriveDelegateOutcome(getDb(), runId);
+    return { ok: true, status: outcome.uiStatus, label: outcome.label, message: outcome.message, isComplete: outcome.isComplete };
   });
 
   // Continue an existing Delegate task IN ITS OWN session, so follow-ups keep

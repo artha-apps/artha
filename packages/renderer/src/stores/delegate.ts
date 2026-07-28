@@ -62,6 +62,8 @@ interface DelegateState {
   openTask: (sessionId: string, runId: string | null) => Promise<void>;
   /** Load the task history (drives the "Recent tasks" list). */
   loadTasks: () => Promise<void>;
+  /** Accept (→ Completed) or reject (→ stays in review) a reviewed result. */
+  decide: (decision: 'accepted' | 'rejected') => Promise<void>;
   /** Clear everything and start a fresh delegation. */
   reset: () => void;
 }
@@ -261,6 +263,28 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
       if (!window.artha?.delegate?.list) return;
       set({ tasks: await window.artha.delegate.list() });
     } catch { /* history is best-effort */ }
+  },
+
+  decide: async (decision) => {
+    const { runId, sessionId, result } = get();
+    if (!runId || !sessionId || !window.artha?.delegate?.decide) return;
+    const res = await window.artha.delegate.decide(runId, sessionId, decision);
+    if (!res.ok) { set({ error: res.error ?? 'Could not record your decision.' }); return; }
+    if (decision === 'accepted') {
+      // The projection now reports the task completed — reflect it honestly.
+      set({
+        status: 'completed',
+        result: result ? { ...result, verified: true, outcomeLabel: res.label ?? 'Completed — verified', outcomeMessage: res.message ?? result.outcomeMessage, requiredAction: null } : result,
+      });
+    } else {
+      // Rejected: stays in review. Prompt the user to say what to change (the
+      // follow-up composer handles the actual continue).
+      set({
+        status: 'needs_review',
+        result: result ? { ...result, requiredAction: 'Tell Artha what to change below, then send.' } : result,
+      });
+    }
+    void get().loadThread();
   },
 }));
 
