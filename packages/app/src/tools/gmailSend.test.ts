@@ -165,6 +165,29 @@ describe('never double-sends (crash safety)', () => {
     expect(out.outcome_unknown).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();   // did NOT try to send a second copy
   });
+
+  it('RESUME SAFETY: a continue/resume in a DIFFERENT run cannot re-send a confirmed email', async () => {
+    // The write-ahead guard keys on the CONTENT fingerprint, not the run_id —
+    // so a follow-up ("continue this task"), which starts a fresh run, still
+    // hits the confirmed record and refuses. This is the guarantee that
+    // resuming or challenging a task never re-fires a consequential action.
+    connectGoogle();
+    global.fetch = vi.fn().mockResolvedValue(okResponse('msg-runA')) as never;
+    const first = JSON.parse(await invokeGmailSendTool('email_send',
+      { to: 'jk@example.com', subject: 'Hi', body: 'yes or No?' }, { runId: 'run-A' }));
+    expect(first.sent).toBe(true);
+    // The audit row is stamped with run-A.
+    expect(store.actions[0]).toMatchObject({ state: 'confirmed' });
+
+    // Same email, brand-new run (run-B) — the resume path. Must be refused.
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as never;
+    const resend = JSON.parse(await invokeGmailSendTool('email_send',
+      { to: 'jk@example.com', subject: 'Hi', body: 'yes or No?' }, { runId: 'run-B' }));
+    expect(resend.sent).toBe(false);
+    expect(resend.duplicate).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();   // no second delivery across runs
+  });
 });
 
 describe('honest failure reporting', () => {

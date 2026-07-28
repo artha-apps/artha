@@ -60,6 +60,7 @@ import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInpu
 import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { deriveDelegateOutcome } from '../bodhi/delegateOutcome';
 import { recordAcceptance } from '../bodhi/acceptance';
+import { readRunEvidence } from '../bodhi/evidence';
 import { parseSkillImport } from '../skills/util';
 import { getSkillMetrics, getSkillModelStats, getSkillToolUsage, getSkillFailures } from '../skills/metrics';
 import { getDefaultRagIndexer } from '../rag/indexer';
@@ -858,6 +859,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const outcome = deriveDelegateOutcome(getDb(), runId);
     return { ok: true, status: outcome.uiStatus, label: outcome.label, message: outcome.message, isComplete: outcome.isComplete };
   });
+
+  // The inspectable completion-evidence for a run: which acceptance criteria
+  // were checked (and passed/failed) and the evidence behind them. Lets the user
+  // see WHY a task is or isn't verified, instead of trusting a bare label.
+  ipcMain.handle('delegate:evidence', (_e, runId: string) => readRunEvidence(getDb(), runId));
 
   // Continue an existing Delegate task IN ITS OWN session, so follow-ups keep
   // the task's context, plan and history instead of silently starting an
