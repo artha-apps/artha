@@ -24,7 +24,7 @@ import DelegateResultView from './DelegateResultView';
 export default function DelegateTab() {
   const {
     status, goal, plan, result, error, thread, stopping, runId, tasks,
-    submit, confirm, cancel, reset, stop, continueTask, openTask, loadTasks,
+    submit, confirm, cancel, reset, stop, continueTask, openTask, loadTasks, decide,
   } = useDelegateStore();
 
   // Refresh the reachable task history whenever we return to the idle screen.
@@ -143,7 +143,7 @@ export default function DelegateTab() {
             unverified run (needs_review); the view itself renders the honest
             label/message. */}
         {(status === 'completed' || status === 'needs_review') && result && (
-          <DelegateResultView result={result} />
+          <DelegateResultView result={result} onDecide={(d) => void decide(d)} />
         )}
 
         {/* Conversation — the task stays OPEN. Previously the final response
