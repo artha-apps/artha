@@ -21,9 +21,7 @@ import { getDb } from '../db/schema';
 import { getRunContext } from './runContext';
 import { getSessionScopes } from '../db/scopes';
 import { isValidVector, EMBED_DIM } from '../rag/vectorIntegrity';
-
-const OLLAMA_EMBED_URL = 'http://localhost:11434/api/embeddings';
-const EMBED_MODEL = 'nomic-embed-text';
+import { getActiveEmbeddingProvider } from '../rag/embeddingProvider';
 
 /** Result of a context-gather pass: the rendered <context> block for the
  *  system prompt, plus a 0-1 score of how relevant the surfaced memory was. */
@@ -53,20 +51,12 @@ interface MemoryRow {
  *  cached embedding once at write time instead of ranking re-embedding every
  *  candidate per message. */
 export async function embedText(text: string): Promise<number[] | null> {
-  try {
-    const res = await fetch(OLLAMA_EMBED_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
-    });
-    const json = (await res.json()) as { embedding?: number[] };
-    // Validate before caching: empty, all-zero, non-finite or wrong-dimension
-    // payloads are treated as "unavailable" rather than persisted — Artha
-    // never stores a knowingly invalid vector (see rag/vectorIntegrity.ts).
-    return isValidVector(json.embedding, EMBED_DIM) ? json.embedding : null;
-  } catch {
-    return null;
-  }
+  // Routes through the EmbeddingProvider port (Phase B). Still the local Ollama
+  // nomic-768 embedder — behaviour is unchanged. Returns null on any non-ok
+  // outcome (unavailable/invalid/error) so callers keep their graceful
+  // fall-back; the provider already rejects knowingly-invalid vectors.
+  const outcome = await getActiveEmbeddingProvider().embed(text);
+  return outcome.ok ? outcome.result.vector : null;
 }
 
 /** Canonical text a memory row is embedded as — write paths and ranking MUST
