@@ -14,6 +14,7 @@
 import { create } from 'zustand';
 import {
   delegateEngine,
+  pollRunToTerminal,
   type DelegateStatus,
   type DelegatePlan,
   type DelegatePlanStep,
@@ -198,22 +199,27 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
     const trimmed = message.trim();
     const { sessionId } = get();
     if (!trimmed || !sessionId) return;
-    set({ error: null, status: 'executing' });
+    // Challenge/revise from ANY terminal state. delegate:continue starts ONE
+    // run in the SAME session on the follow-up message; we then POLL that run.
+    // (Previously this called runExecution, which started a SECOND run via
+    // delegate.start — in a new session, on the original goal — and tracked the
+    // wrong one. That's why follow-ups didn't work.)
+    set({ error: null, status: 'executing', result: null });
     try {
       const res = await window.artha.delegate.continue(sessionId, trimmed);
-      if (!res.ok) { set({ status: 'failed', error: res.error ?? 'Could not continue the task.' }); return; }
-      if (res.runId) set({ runId: res.runId });
+      if (!res.ok || !res.runId) { set({ status: 'failed', error: res.error ?? 'Could not continue the task.' }); return; }
+      set({ runId: res.runId });
       await get().loadThread();
-      // Poll the new run to completion, reusing the existing engine path.
-      await runExecution(
-        get().plan ?? {
-          goal: trimmed, summary: trimmed, steps: [],
-          requiresApproval: false, expectedOutput: '',
-        },
-        set, get,
-      );
+      const result = await pollRunToTerminal(res.runId, sessionId, {
+        onStage: (s) => set({ status: s }),
+        onStep: () => { /* per-step markers come from the backend trace */ },
+      });
+      const terminal: DelegateStatus = result.verified ? 'completed' : 'needs_review';
+      set({ result, status: terminal });
+      await get().loadThread();
     } catch (err) {
       set({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
+      void get().loadThread();
     }
   },
 
