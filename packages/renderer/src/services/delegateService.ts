@@ -327,66 +327,67 @@ export const ipcDelegateEngine: DelegateEngine = {
     hooks.onIds?.({ runId, sessionId });
     // eslint-disable-next-line no-console
     console.info(`[Delegate] started run ${runId} (capability: ${capability}) — polling…`);
-
-    const steps = plan.steps;
-    const cursor = 0;
-    if (steps[cursor]) hooks.onStep(steps[cursor].index, 'running');
-
-    const startedAt = Date.now();
-    for (;;) {
-      await wait(POLL_INTERVAL_MS);
-
-      let st: Awaited<ReturnType<typeof window.artha.delegate.status>>;
-      try {
-        st = await window.artha.delegate.status(runId, sessionId);
-      } catch {
-        // Transient IPC hiccup — keep polling unless we've blown the ceiling.
-        if (Date.now() - startedAt > MAX_POLL_MS) throw new Error('Delegate task timed out.');
-        continue;
-      }
-
-      // eslint-disable-next-line no-console
-      console.info(`[Delegate] run ${runId}: ${st.status} (${st.stepCount} steps)`);
-
-      if (st.status === 'completed' || st.status === 'needs_review') {
-        // Both are terminal. 'completed' = system-verified; 'needs_review' =
-        // finished/stopped without machine verification. The honest label +
-        // message come from the backend projection — the renderer never
-        // authors a completion claim (audit U3).
-        hooks.onStage('reviewing');
-        await wait(300);
-        hooks.onStage(st.status);
-        return {
-          summary: st.output?.trim()
-            || 'The run finished but produced no output, so completion could not be verified.',
-          files: st.files ?? [],
-          nextActions: st.requiredAction
-            ? [st.requiredAction, 'Refine the result with a follow-up', 'Save this as a reusable workflow']
-            : ['Review the output', 'Refine the result with a follow-up', 'Save this as a reusable workflow'],
-          verified: st.isComplete,
-          outcomeLabel: st.label,
-          outcomeMessage: st.message,
-          requiredAction: st.requiredAction,
-        };
-      }
-
-      if (st.status === 'failed') {
-        if (steps[cursor]) hooks.onStep(steps[cursor].index, 'failed');
-        // Surface the agent's own honest explanation (e.g. "the email was NOT
-        // sent…") rather than a generic string — the backend already writes the
-        // truthful message; hiding it would re-introduce the dishonesty.
-        throw new Error(st.message?.trim() || st.output?.trim() || 'Task failed during execution.');
-      }
-
-      // NOTE: we deliberately do NOT advance steps on a timer any more.
-      // A green check per 1.2s of wall clock asserted per-step success the UI
-      // had no evidence for (audit U2). Real per-step state needs the backend
-      // step trace; until that is wired, the plan shows as illustrative.
-
-      if (Date.now() - startedAt > MAX_POLL_MS) throw new Error('Delegate task timed out.');
-    }
+    return pollRunToTerminal(runId, sessionId, hooks, plan.steps);
   },
 };
+
+/**
+ * Poll an ALREADY-STARTED run to its terminal state and return the honest
+ * result. Shared by first-run execution AND by follow-ups/continues — a
+ * follow-up must poll the run that `delegate:continue` already started, NOT
+ * kick off a second run (the old continue path called execute(), which started
+ * a fresh run in a NEW session on the ORIGINAL goal — two runs, wrong one
+ * tracked). Exported so the store's continueTask can reuse it.
+ */
+export async function pollRunToTerminal(
+  runId: string,
+  sessionId: string,
+  hooks: ExecuteHooks,
+  steps: DelegatePlanStep[] = [],
+): Promise<DelegateResult> {
+  const cursor = 0;
+  if (steps[cursor]) hooks.onStep(steps[cursor].index, 'running');
+  const startedAt = Date.now();
+  for (;;) {
+    await wait(POLL_INTERVAL_MS);
+
+    let st: Awaited<ReturnType<typeof window.artha.delegate.status>>;
+    try {
+      st = await window.artha.delegate.status(runId, sessionId);
+    } catch {
+      if (Date.now() - startedAt > MAX_POLL_MS) throw new Error('Delegate task timed out.');
+      continue;
+    }
+
+    // eslint-disable-next-line no-console
+    console.info(`[Delegate] run ${runId}: ${st.status} (${st.stepCount} steps)`);
+
+    if (st.status === 'completed' || st.status === 'needs_review') {
+      hooks.onStage('reviewing');
+      await wait(300);
+      hooks.onStage(st.status);
+      return {
+        summary: st.output?.trim()
+          || 'The run finished but produced no output, so completion could not be verified.',
+        files: st.files ?? [],
+        nextActions: st.requiredAction
+          ? [st.requiredAction, 'Refine the result with a follow-up', 'Save this as a reusable workflow']
+          : ['Review the output', 'Refine the result with a follow-up', 'Save this as a reusable workflow'],
+        verified: st.isComplete,
+        outcomeLabel: st.label,
+        outcomeMessage: st.message,
+        requiredAction: st.requiredAction,
+      };
+    }
+
+    if (st.status === 'failed') {
+      if (steps[cursor]) hooks.onStep(steps[cursor].index, 'failed');
+      throw new Error(st.message?.trim() || st.output?.trim() || 'Task failed during execution.');
+    }
+
+    if (Date.now() - startedAt > MAX_POLL_MS) throw new Error('Delegate task timed out.');
+  }
+}
 
 /** Resolve the engine at CALL time (not module-load time). Picking it once at
  *  load is fragile: if this module first evaluated before the preload bridge was
