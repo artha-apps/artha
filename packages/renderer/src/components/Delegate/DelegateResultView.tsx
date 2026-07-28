@@ -6,9 +6,73 @@
  * write to disk). When Delegate is wired to the real engine, each file maps to
  * an `artifacts` row and these become openable.
  */
-import { CheckCircle2, ClipboardCheck, FileText, FileSpreadsheet, Presentation, StickyNote, ArrowRight } from 'lucide-react';
+import { useState } from 'react';
+import { CheckCircle2, ClipboardCheck, FileText, FileSpreadsheet, Presentation, StickyNote, ArrowRight, ChevronRight, Check, X, HelpCircle } from 'lucide-react';
 import type { DelegateResult, DelegateResultFile } from '../../services/delegateService';
 import { tabTheme } from '../../lib/tabTheme';
+
+type Criterion = { description: string; outcome: string; predicate: string | null; required: boolean };
+type Evidence = { kind: string; status: string; summary: string };
+
+/** Small pass/fail/pending marker for a criterion outcome. */
+function OutcomeIcon({ outcome }: { outcome: string }) {
+  if (outcome === 'passed') return <Check size={12} className="text-artha-accent shrink-0" />;
+  if (outcome === 'failed') return <X size={12} className="text-artha-danger shrink-0" />;
+  return <HelpCircle size={12} className="text-artha-warn shrink-0" />;
+}
+
+/** Collapsible "why is this verified?" panel — lazy-loads the run's evidence. */
+function EvidencePanel({ runId }: { runId: string }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<{ criteria: Criterion[]; evidence: Evidence[]; empty: boolean } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = async () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !data && window.artha?.delegate?.evidence) {
+      setLoading(true);
+      try { setData(await window.artha.delegate.evidence(runId)); } catch { /* best-effort */ }
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mb-4 border-t border-artha-border pt-3">
+      <button onClick={() => void toggle()} className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-artha-subtle font-semibold hover:text-artha-text transition-colors">
+        <ChevronRight size={12} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
+        Evidence
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          {loading && <p className="text-xs text-artha-muted">Loading…</p>}
+          {data?.empty && (
+            <p className="text-xs text-artha-muted">
+              No machine-checkable evidence for this task — that's why it asks for your review rather than reporting itself verified.
+            </p>
+          )}
+          {data && data.criteria.length > 0 && (
+            <ul className="space-y-1">
+              {data.criteria.map((c, i) => (
+                <li key={i} className="flex items-start gap-2 text-xs text-artha-text">
+                  <span className="mt-0.5"><OutcomeIcon outcome={c.outcome} /></span>
+                  <span>{c.description} <span className="text-artha-subtle">({c.outcome})</span></span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {data && data.evidence.length > 0 && (
+            <ul className="space-y-1 pt-1">
+              {data.evidence.map((e, i) => (
+                <li key={i} className="text-[11px] text-artha-muted">• {e.summary || `${e.kind}: ${e.status}`}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Pick an icon for a result file by its coarse kind. */
 function fileIcon(kind: DelegateResultFile['kind']) {
@@ -21,7 +85,7 @@ function fileIcon(kind: DelegateResultFile['kind']) {
 }
 
 export default function DelegateResultView(
-  { result, onDecide }: { result: DelegateResult; onDecide?: (d: 'accepted' | 'rejected') => void },
+  { result, onDecide, runId }: { result: DelegateResult; onDecide?: (d: 'accepted' | 'rejected') => void; runId?: string | null },
 ) {
   const theme = tabTheme('delegate');
 
@@ -92,6 +156,9 @@ export default function DelegateResultView(
           </button>
         </div>
       )}
+
+      {/* Inspectable evidence — WHY this is (or isn't) verified. */}
+      {runId && <EvidencePanel runId={runId} />}
 
       {/* Summary — the model's own words. Labelled as such so it is never
           mistaken for a system-verified statement of outcome. */}

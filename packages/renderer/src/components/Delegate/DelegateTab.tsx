@@ -143,7 +143,7 @@ export default function DelegateTab() {
             unverified run (needs_review); the view itself renders the honest
             label/message. */}
         {(status === 'completed' || status === 'needs_review') && result && (
-          <DelegateResultView result={result} onDecide={(d) => void decide(d)} />
+          <DelegateResultView result={result} runId={runId} onDecide={(d) => void decide(d)} />
         )}
 
         {/* Conversation — the task stays OPEN. Previously the final response

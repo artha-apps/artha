@@ -229,6 +229,13 @@ const api = {
         ok: boolean; status?: 'running' | 'completed' | 'needs_review' | 'failed';
         label?: string; message?: string; isComplete?: boolean; error?: string;
       }>,
+    /** Inspectable completion evidence: the criteria (passed/failed) + evidence
+     *  behind a run's verification state. */
+    evidence: (runId: string) => ipcRenderer.invoke('delegate:evidence', runId) as Promise<{
+      criteria: { description: string; outcome: string; predicate: string | null; required: boolean }[];
+      evidence: { kind: string; status: string; summary: string }[];
+      empty: boolean;
+    }>,
     /** The task's conversation so far (user + agent messages, one thread). */
     thread: (sessionId: string) => ipcRenderer.invoke('delegate:thread', sessionId) as Promise<
       { sender_type: string; content: string; created_at: number }[]
