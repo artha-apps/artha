@@ -25,7 +25,16 @@ For each: package · installed/fixed versions · severity · direct/transitive �
 
 ## Pre-existing finding surfaced by the cross-OS CI matrix (not introduced by PR #42)
 
-**Windows system-path sandboxing is POSIX-only.** `packages/app/src/tools/filesystem.ts:61` blocks writes using a POSIX list (`/System`, `/Library/System`, `/usr`, `/etc`, `/bin`, `/sbin`, `/private/etc`). There is no Windows equivalent (`C:\Windows`, `C:\Program Files`, `%SystemRoot%`), so on Windows the agent's filesystem sandbox relies only on the per-chat scope check, not on an absolute system-directory denylist. The two tests covering this were POSIX-only and had never run on Windows before the OS matrix was added in this PR; they are now skipped on win32 rather than asserting behaviour the code does not implement.
+**Windows system-path sandboxing is POSIX-only.** ✅ **RESOLVED (v0.4.16, issue #43).**
+Previously `filesystem.ts` blocked writes using a POSIX-only list, so on Windows
+the agent's sandbox relied only on the per-chat scope check. Now `isSystemPath`
+is platform-aware: on Windows it blocks `C:\Windows`, `C:\Program Files` /
+`(x86)`, `C:\ProgramData`, `System Volume Information`, `$Recycle.Bin`,
+`Recovery`, and UNC shares — on any drive, case-insensitively, both separators.
+Every filesystem op (read, list, move src+dst, copy src+dst, create, delete)
+runs through it, so writes into system dirs are blocked too. Covered by
+`filesystem.systemPath.test.ts`, which exercises both blocklists on any host
+(no Windows machine required).
 
 | Field | Value |
 |---|---|

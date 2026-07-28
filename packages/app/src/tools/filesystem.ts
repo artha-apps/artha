@@ -3,7 +3,9 @@
  * search, and organise files on the user's machine.
  *
  * Security: all paths are validated to stay within the user's home directory.
- * System directories (/System, /Library, /usr, /etc etc.) are blocked.
+ * System directories are blocked on BOTH platforms — POSIX (/System, /usr,
+ * /etc, …) and Windows (C:\Windows, C:\Program Files, C:\ProgramData, UNC
+ * shares, …). See `isSystemPath`.
  */
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
@@ -50,6 +52,36 @@ function realResolve(resolved: string): string {
  *
  *  `allowedRoots` empty/undefined ⇒ no per-chat scope; fall back to the
  *  historical home-directory-wide behaviour (system dirs still blocked). */
+/** POSIX OS-system roots the agent may never touch. Segment-aware matching
+ *  below means `/etc` blocks `/etc` and `/etc/x` but NOT `/etched`. */
+const POSIX_SYSTEM_DIRS = ['/System', '/Library/System', '/usr', '/etc', '/bin', '/sbin', '/private/etc'];
+
+/**
+ * True when `resolved` is inside a protected OS-system location. Pure and
+ * platform-parameterized so BOTH the POSIX and Windows blocklists are testable
+ * on any host (pass `platform` explicitly in tests).
+ *
+ * Closes the Windows gap (#43): the old POSIX-only list matched none of
+ * `C:\Windows\System32`, `C:\Program Files`, … so on Windows the system-path
+ * guard was effectively absent — the agent could move/delete OS files.
+ */
+export function isSystemPath(resolved: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === 'win32') {
+    // Windows FS is case-insensitive and accepts both separators.
+    const n = resolved.replace(/\//g, '\\').toLowerCase();
+    if (n.startsWith('\\\\')) return true; // UNC share — never a user-data path
+    return [
+      /^[a-z]:\\windows(\\|$)/,
+      /^[a-z]:\\program files( \(x86\))?(\\|$)/,
+      /^[a-z]:\\programdata(\\|$)/,
+      /^[a-z]:\\system volume information(\\|$)/,
+      /^[a-z]:\\\$recycle\.bin(\\|$)/,
+      /^[a-z]:\\recovery(\\|$)/,
+    ].some(re => re.test(n));
+  }
+  return POSIX_SYSTEM_DIRS.some(b => resolved === b || resolved.startsWith(b + '/'));
+}
+
 function safePath(p: string, allowedRoots?: ScopeRoot[] | null): string {
   if (!p || typeof p !== 'string') {
     throw new Error(`Invalid path argument: received ${JSON.stringify(p)}`);
@@ -58,8 +90,7 @@ function safePath(p: string, allowedRoots?: ScopeRoot[] | null): string {
   // Validate the symlink-resolved path too, so a symlink can't escape the
   // sandbox or reach a system dir through an allowed folder.
   const real = realResolve(resolved);
-  const blocked = ['/System', '/Library/System', '/usr', '/etc', '/bin', '/sbin', '/private/etc'];
-  if (blocked.some(b => resolved.startsWith(b) || real.startsWith(b))) {
+  if (isSystemPath(resolved) || isSystemPath(real)) {
     throw new Error(`Access denied: cannot access system directory "${resolved}"`);
   }
   if (allowedRoots && allowedRoots.length) {
