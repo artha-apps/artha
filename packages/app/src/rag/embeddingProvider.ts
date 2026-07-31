@@ -73,6 +73,47 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 }
 
 /**
+ * A cloud OpenAI-compatible embedder (OpenAI, Together, Groq, … — anything that
+ * speaks the `/embeddings` endpoint). `isLocal = false`: calling it SENDS the
+ * given text to a third party. It therefore must only ever be reached through
+ * the consent-gated resolver (see resolveEmbeddingProvider / D-B1) — never made
+ * the default. The API key is passed in already-resolved (the caller opens the
+ * sealed BYOK key via usableApiKey); this class never touches storage.
+ */
+export class OpenAiEmbeddingProvider implements EmbeddingProvider {
+  readonly isLocal = false;
+  readonly id: string;
+  constructor(
+    readonly model: string,
+    readonly dim: number,
+    private readonly baseUrl: string,
+    private readonly apiKey: string,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {
+    this.id = `cloud:${model}`;
+  }
+
+  async embed(text: string): Promise<EmbedOutcome> {
+    let json: { data?: { embedding?: number[] }[] };
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl.replace(/\/$/, '')}/embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify({ model: this.model, input: text }),
+      });
+      if (res.status === 401 || res.status === 403) return { ok: false, reason: 'unavailable', detail: 'auth rejected' };
+      if (!res.ok) return { ok: false, reason: 'unavailable', detail: `HTTP ${res.status}` };
+      json = (await res.json()) as { data?: { embedding?: number[] }[] };
+    } catch (e) {
+      return { ok: false, reason: 'unavailable', detail: e instanceof Error ? e.message : String(e) };
+    }
+    const vec = json.data?.[0]?.embedding;
+    if (!isValidVector(vec, this.dim)) return { ok: false, reason: 'invalid' };
+    return { ok: true, result: { vector: vec, model: this.model, dim: this.dim } };
+  }
+}
+
+/**
  * The active embedder. Slice 1: always the local Ollama provider — there is no
  * cloud embedder yet, so this can never route indexed text off-device. Slice 2
  * will resolve per-index (an index is queried with the embedder it was written
