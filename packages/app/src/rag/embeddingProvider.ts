@@ -129,3 +129,32 @@ export function getActiveEmbeddingProvider(): EmbeddingProvider {
 export function setActiveEmbeddingProvider(p: EmbeddingProvider): void {
   activeProvider = p;
 }
+
+/** What an index/store was embedded WITH. */
+export interface EmbedderIdentity { model: string; dim: number }
+
+export type MatchResult =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+/**
+ * D-B3: may `provider` be used to query data that was embedded with `built`?
+ * Only if the vector spaces match — SAME dimension AND same model. A 768-dim
+ * nomic index searched with a 1536-dim cloud embedder would return garbage
+ * similarities, so we refuse with an honest message rather than embed the query
+ * into the wrong space. Pure — the query path calls this before embedding.
+ */
+export function embedderMatchesIndex(built: EmbedderIdentity, provider: EmbeddingProvider): MatchResult {
+  if (built.dim !== provider.dim) {
+    return { ok: false, reason:
+      `This index was built with ${built.model} (${built.dim}-dim) but the active embedder is ` +
+      `${provider.model} (${provider.dim}-dim). Searching across different embedders returns ` +
+      `meaningless results — re-index this folder with the current embedder to search it.` };
+  }
+  if (built.model !== provider.model) {
+    return { ok: false, reason:
+      `This index was built with ${built.model}, but the active embedder is ${provider.model}. ` +
+      `Re-index with the current embedder to search it reliably.` };
+  }
+  return { ok: true };
+}

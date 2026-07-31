@@ -174,6 +174,7 @@ export async function initDatabase(): Promise<void> {
       name            TEXT NOT NULL,
       directory_path  TEXT NOT NULL,
       embedding_model TEXT NOT NULL DEFAULT 'nomic-embed-text',
+      embedding_dim   INTEGER NOT NULL DEFAULT 768,
       last_indexed    INTEGER,
       doc_count       INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL DEFAULT (unixepoch())
@@ -839,6 +840,20 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Artha] project_id migration skipped:', err);
+  }
+
+  // Phase B (D-B2): record the embedding DIMENSION per index alongside the
+  // model, so a query can be refused if the active embedder's vector space
+  // differs from the one the index was built with (a 768-dim nomic index can't
+  // be searched with a 1536-dim cloud embedder). Additive; existing rows default
+  // to nomic's 768.
+  try {
+    const ragCols = db.prepare(`PRAGMA table_info(rag_indexes)`).all() as { name: string }[];
+    if (!ragCols.some(c => c.name === 'embedding_dim')) {
+      db.exec(`ALTER TABLE rag_indexes ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 768`);
+    }
+  } catch (err) {
+    console.warn('[Artha] embedding_dim migration skipped:', err);
   }
 
   // Migration v4→v5: rag_index_id + summary on projects — Phase 2/3 columns
