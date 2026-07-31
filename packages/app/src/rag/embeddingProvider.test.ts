@@ -4,7 +4,7 @@
  * non-local provider would send indexed text off-device.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { OllamaEmbeddingProvider, getActiveEmbeddingProvider } from './embeddingProvider';
+import { OllamaEmbeddingProvider, getActiveEmbeddingProvider, embedderMatchesIndex } from './embeddingProvider';
 
 const okVec = () => Array.from({ length: 768 }, (_, i) => (i % 7) * 0.01 + 0.001);
 
@@ -52,5 +52,22 @@ describe('OllamaEmbeddingProvider', () => {
 describe('active provider (Slice 1)', () => {
   it('defaults to a LOCAL provider — no cloud embedder can route text off-device yet', () => {
     expect(getActiveEmbeddingProvider().isLocal).toBe(true);
+  });
+});
+
+describe('embedderMatchesIndex — D-B3 vector-space guard', () => {
+  const nomic = new OllamaEmbeddingProvider('nomic-embed-text', 768);
+  it('matches when model AND dim agree', () => {
+    expect(embedderMatchesIndex({ model: 'nomic-embed-text', dim: 768 }, nomic)).toEqual({ ok: true });
+  });
+  it('REFUSES on a dimension mismatch (the garbage-similarity case)', () => {
+    const r = embedderMatchesIndex({ model: 'text-embedding-3-small', dim: 1536 }, nomic);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/re-index/i);
+  });
+  it('REFUSES on a same-dim but different-model mismatch', () => {
+    const r = embedderMatchesIndex({ model: 'other-768', dim: 768 }, nomic);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/re-index/i);
   });
 });
