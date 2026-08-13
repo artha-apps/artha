@@ -133,6 +133,19 @@ export function setActiveEmbeddingProvider(p: EmbeddingProvider): void {
 /** What an index/store was embedded WITH. */
 export interface EmbedderIdentity { model: string; dim: number }
 
+/**
+ * Thrown by the query path when an index's vector space doesn't match the
+ * active embedder (D-B3). Carries the index name so multi-index search can
+ * report WHICH index needs re-indexing instead of silently skipping it.
+ */
+export class EmbedderMismatchError extends Error {
+  readonly code = 'EMBEDDER_MISMATCH';
+  constructor(readonly indexName: string, reason: string) {
+    super(reason);
+    this.name = 'EmbedderMismatchError';
+  }
+}
+
 export type MatchResult =
   | { ok: true }
   | { ok: false; reason: string };
@@ -144,6 +157,43 @@ export type MatchResult =
  * similarities, so we refuse with an honest message rather than embed the query
  * into the wrong space. Pure — the query path calls this before embedding.
  */
+/** Result of a pre-consent connectivity probe. */
+export type EmbedProbeResult = { ok: true; dim: number } | { ok: false; error: string };
+
+/**
+ * One live /embeddings call made BEFORE cloud-embedding consent is recorded
+ * (test-before-activate — the same pattern BYOK chat models use). Sends only a
+ * fixed harmless sentence, never user content, so nothing private crosses the
+ * boundary during the probe. On success returns the model's ACTUAL dimension,
+ * derived from the response and never guessed — that value is what gets stored
+ * on the consent record and later stamped on each index row (D-B2).
+ */
+export async function probeCloudEmbedding(
+  baseUrl: string, apiKey: string, model: string, fetchImpl: typeof fetch = fetch,
+): Promise<EmbedProbeResult> {
+  let json: { data?: { embedding?: unknown }[] };
+  try {
+    const res = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, input: 'Artha embedding connectivity test.' }),
+    });
+    if (res.status === 401 || res.status === 403) return { ok: false, error: 'The provider rejected the API key.' };
+    if (res.status === 404) return { ok: false, error: `The provider does not offer an embedding model named "${model}".` };
+    if (!res.ok) return { ok: false, error: `The embedding endpoint returned HTTP ${res.status}.` };
+    json = await res.json() as { data?: { embedding?: unknown }[] };
+  } catch {
+    return { ok: false, error: 'Could not reach the embedding endpoint.' };
+  }
+  const vec = json.data?.[0]?.embedding;
+  if (!Array.isArray(vec) || vec.length === 0 ||
+      !vec.every(x => typeof x === 'number' && Number.isFinite(x)) ||
+      vec.every(x => x === 0)) {
+    return { ok: false, error: 'The embedding response was empty or invalid.' };
+  }
+  return { ok: true, dim: vec.length };
+}
+
 export function embedderMatchesIndex(built: EmbedderIdentity, provider: EmbeddingProvider): MatchResult {
   if (built.dim !== provider.dim) {
     return { ok: false, reason:

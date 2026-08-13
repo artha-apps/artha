@@ -47,22 +47,22 @@ beforeEach(() => {
 describe('rag_search scoping', () => {
   it('confines retrieval to the chat folders\' indexes when scoped', async () => {
     await invokeRagTool('rag_search', { query: 'invoices' }, ['idxA', 'idxB']);
-    expect(searchSpy).toHaveBeenCalledWith('invoices', 6, ['idxA', 'idxB']);
+    expect(searchSpy).toHaveBeenCalledWith('invoices', 6, ['idxA', 'idxB'], { mismatches: [] });
   });
 
   it('searches every index (null) for an unscoped chat', async () => {
     await invokeRagTool('rag_search', { query: 'invoices', top_k: 3 }, null);
-    expect(searchSpy).toHaveBeenCalledWith('invoices', 3, null);
+    expect(searchSpy).toHaveBeenCalledWith('invoices', 3, null, { mismatches: [] });
   });
 
   it('treats an empty scope list as unscoped (search all)', async () => {
     await invokeRagTool('rag_search', { query: 'invoices' }, []);
-    expect(searchSpy).toHaveBeenLastCalledWith('invoices', 6, null);
+    expect(searchSpy).toHaveBeenLastCalledWith('invoices', 6, null, { mismatches: [] });
   });
 
   it('clamps top_k into [1,20]', async () => {
     await invokeRagTool('rag_search', { query: 'x', top_k: 999 }, null);
-    expect(searchSpy).toHaveBeenCalledWith('x', 20, null);
+    expect(searchSpy).toHaveBeenCalledWith('x', 20, null, { mismatches: [] });
   });
 });
 

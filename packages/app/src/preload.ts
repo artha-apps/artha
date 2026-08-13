@@ -528,6 +528,19 @@ const api = {
     deleteIndex: (id: string) => ipcRenderer.invoke('rag:deleteIndex', id),
     rebuildIndex: (id: string) => ipcRenderer.invoke('rag:rebuildIndex', id) as Promise<{ ok: boolean; embedded: number; error?: string }>,
     selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory') as Promise<string | null>,
+    // ── Embedding provider (Phase B Slice 2c — D-B1 consent surface) ──
+    // Which embedder is active, the recorded cloud consent (if any), and the
+    // saved BYOK model rows that could host cloud embeddings.
+    embeddingStatus: () => ipcRenderer.invoke('embedding:getStatus') as Promise<{
+      active: { id: string; model: string; dim: number; isLocal: boolean };
+      consent: { modelId: string; model: string; dim: number; consentedAt: number } | null;
+      cloudModels: { model_id: string; name: string; provider: string; base_url: string }[];
+    }>,
+    // Callers MUST show the explicit "your indexed text will be sent to X"
+    // disclosure BEFORE invoking this — consent is recorded on success only.
+    enableCloudEmbedding: (modelId: string, model: string) =>
+      ipcRenderer.invoke('embedding:enableCloud', modelId, model) as Promise<{ ok: boolean; dim?: number; error?: string }>,
+    disableCloudEmbedding: () => ipcRenderer.invoke('embedding:disableCloud') as Promise<{ ok: boolean }>,
   },
 
   // ── Document Generation ──────────────────────────────────────────────────

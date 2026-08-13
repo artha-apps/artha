@@ -19,14 +19,31 @@ export interface RagHit {
  *  agent's context window from blowing up on large documents. */
 const SNIPPET_CHARS = 320;
 
+/** An index that could not be searched because its vector space doesn't match
+ *  the active embedder (D-B3) — surfaced honestly, never silently skipped. */
+export interface MismatchNote {
+  index: string;
+  reason: string;
+}
+
 /** Render retrieval hits as a numbered, source-labelled list. Empty hits get an
- *  actionable message so the model doesn't fabricate file contents. */
-export function formatRagResults(query: string, hits: RagHit[], semanticUnavailable = false): string {
+ *  actionable message so the model doesn't fabricate file contents. Indexes
+ *  skipped for an embedder mismatch are reported by name — "no matches" must
+ *  never stand in for "could not be searched". */
+export function formatRagResults(
+  query: string, hits: RagHit[], semanticUnavailable = false, mismatches: MismatchNote[] = [],
+): string {
+  const mismatchNote = mismatches.length
+    ? '\n\n' + mismatches.map(m => `NOTE: index "${m.index}" could NOT be searched: ${m.reason}`).join('\n')
+    : '';
   if (hits.length === 0) {
     // Never report "nothing matched" when the retriever could not run — that
     // reads as a content answer and invites the model to fill the gap.
     if (semanticUnavailable) {
-      return `Semantic search is unavailable right now (local embeddings are not running), so your indexed files could NOT be searched for "${query}". This is not a statement about their contents. Tell the user to start Ollama (or install the embedding model) — or read specific files directly instead.`;
+      return `Semantic search is unavailable right now (embeddings are not running), so your indexed files could NOT be searched for "${query}". This is not a statement about their contents. Tell the user to start Ollama (or install the embedding model) — or read specific files directly instead.` + mismatchNote;
+    }
+    if (mismatches.length) {
+      return `Some of your indexes could NOT be searched for "${query}" because they were built with a different embedder than the one currently active. This is not a statement about their contents — the user can rebuild those indexes in the RAG panel to make them searchable again.` + mismatchNote;
     }
     return `No matching passages found in your indexed files for "${query}". The user may need to add an index in the RAG panel.`;
   }
@@ -35,7 +52,7 @@ export function formatRagResults(query: string, hits: RagHit[], semanticUnavaila
     const snippet = h.text.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_CHARS);
     return `${i + 1}. [${name}] (relevance ${h.score.toFixed(2)})\n${snippet}`;
   });
-  return `Found ${hits.length} passage(s) for "${query}":\n\n${lines.join('\n\n')}`;
+  return `Found ${hits.length} passage(s) for "${query}":\n\n${lines.join('\n\n')}` + mismatchNote;
 }
 
 /** Render the list of configured indexes for rag_list_indexes. */

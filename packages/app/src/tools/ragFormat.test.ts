@@ -67,3 +67,23 @@ describe('formatRagResults — degraded retriever honesty (review M2)', () => {
     expect(out).toMatch(/No matching passages/i);
   });
 });
+
+describe('formatRagResults — embedder-mismatch honesty (Slice 2c, D-B3)', () => {
+  const hit = { filePath: '/x/notes.md', text: 'Revenue rose in Q3.', score: 0.91 };
+  const mm = [{ index: 'Old Docs', reason: 'This index was built with nomic-embed-text (768-dim) but the active embedder is text-embedding-3-small (1536-dim). Re-index to search it.' }];
+
+  it('names the unsearchable index alongside real hits', () => {
+    const out = formatRagResults('revenue', [hit], false, mm);
+    expect(out).toContain('[notes.md]');
+    expect(out).toContain('"Old Docs"');
+    expect(out).toMatch(/could NOT be searched/i);
+  });
+
+  it('never claims "no matches" when the only indexes were unsearchable', () => {
+    const out = formatRagResults('revenue', [], false, mm);
+    expect(out).not.toMatch(/No matching passages/i);
+    expect(out).toMatch(/could NOT be searched/i);
+    expect(out).toMatch(/not a statement about their contents/i);
+    expect(out).toContain('"Old Docs"');
+  });
+});

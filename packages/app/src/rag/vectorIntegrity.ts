@@ -25,8 +25,10 @@ export const EMBED_DIM = 768;
 export class EmbeddingUnavailableError extends Error {
   readonly code = 'EMBEDDING_UNAVAILABLE';
   constructor(reason?: string) {
+    // Provider-neutral wording: since Slice 2c the failing embedder can be the
+    // local Ollama one OR a consent-gated cloud one.
     super(
-      'Local embeddings are unavailable' + (reason ? ` (${reason})` : '') +
+      'Embeddings are unavailable' + (reason ? ` (${reason})` : '') +
       ' — semantic indexing is paused; documents remain searchable by keyword.'
     );
     this.name = 'EmbeddingUnavailableError';

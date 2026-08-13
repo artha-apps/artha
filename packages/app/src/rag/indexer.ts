@@ -1,6 +1,9 @@
 /**
- * RAG Indexer — builds and queries a local vector index over user files.
- * Uses Ollama's embedding endpoint (nomic-embed-text by default).
+ * RAG Indexer — builds and queries a vector index over user files.
+ * Embeds through the EmbeddingProvider port (Phase B): the local Ollama
+ * nomic-embed-text provider by default, or a consent-gated cloud provider
+ * (D-B1) resolved per operation. Each index records the model + dimension it
+ * was built with (D-B2) and refuses cross-vector-space queries (D-B3).
  * Stores vectors in a simple JSON file index (Phase 1 — LanceDB in Phase 2).
  */
 import * as fs from 'fs';
@@ -12,8 +15,11 @@ import { extractText } from './extract';
 import { parseIndexFile, type Chunk, type IndexFile } from './indexFormat';
 import { chunkOnBoundaries } from './chunk';
 import {
-  EmbeddingUnavailableError, partitionByVectorValidity, isValidVector, EMBED_DIM,
+  EmbeddingUnavailableError, partitionByVectorValidity, isValidVector,
 } from './vectorIntegrity';
+import {
+  type EmbeddingProvider, OllamaEmbeddingProvider, embedderMatchesIndex, EmbedderMismatchError,
+} from './embeddingProvider';
 
 /** A retrieved chunk with its originating file — used to cite real sources in
  *  generated documents (not just anonymous context). */
@@ -34,8 +40,6 @@ const CHUNK_SIZE = 512;
 /** Overlap between consecutive chunks so a fact straddling a boundary still
  *  appears intact in at least one chunk. */
 const CHUNK_OVERLAP = 64;
-const OLLAMA_EMBED_URL = 'http://localhost:11434/api/embeddings';
-const EMBED_MODEL = 'nomic-embed-text';
 /** Per-chunk embedding timeout. Without it, a hung (not refused) runtime
  *  multiplies undici's ~10s connect timeout by the chunk count. */
 const EMBED_TIMEOUT_MS = 15_000;
@@ -45,9 +49,14 @@ const EMBED_TIMEOUT_MS = 15_000;
  *  `<indexId>.json` file under `indexDir`). */
 export class RAGIndexer {
   private indexDir: string;
+  /** Resolves the embedder PER OPERATION (never cached) so granting or
+   *  revoking cloud-embedding consent takes effect on the very next build or
+   *  query. Defaults to the local Ollama embedder. */
+  private getProvider: () => EmbeddingProvider;
 
-  constructor(indexDir: string) {
+  constructor(indexDir: string, getProvider?: () => EmbeddingProvider) {
     this.indexDir = indexDir;
+    this.getProvider = getProvider ?? (() => new OllamaEmbeddingProvider());
     fs.mkdirSync(indexDir, { recursive: true });
   }
 
@@ -56,11 +65,24 @@ export class RAGIndexer {
    *  chunks indexed and updates `rag_indexes.doc_count` + `last_indexed`. */
   async buildIndex(indexId: string, dirPath: string): Promise<number> {
     const indexPath = path.join(this.indexDir, `${indexId}.json`);
+    const provider = this.getProvider();
+    const db = getDb();
+
+    // What this index was built with LAST time (D-B2). If the active embedder
+    // differs (the user enabled or revoked cloud embeddings since), every
+    // cached vector is in the wrong vector space — discard the cache and
+    // re-embed everything. The chunk TEXT is re-extracted from the files, so
+    // nothing is lost; only the expensive embeddings are redone.
+    const prevIdentity = db.prepare(
+      `SELECT embedding_model, embedding_dim FROM rag_indexes WHERE index_id=?`
+    ).get(indexId) as { embedding_model?: string; embedding_dim?: number } | undefined;
+    const identityChanged = !!prevIdentity &&
+      (prevIdentity.embedding_model !== provider.model || prevIdentity.embedding_dim !== provider.dim);
 
     // Load the previous index (if any) so we can reuse embeddings for files
     // whose content hasn't changed — re-embedding is the expensive part.
     let prev: { chunks: Chunk[]; fileHashes: Record<string, string> } = { chunks: [], fileHashes: {} };
-    if (fs.existsSync(indexPath)) {
+    if (!identityChanged && fs.existsSync(indexPath)) {
       try { prev = parseIndexFile(fs.readFileSync(indexPath, 'utf-8')); } catch { /* rebuild from scratch */ }
     }
     const prevByFile = new Map<string, Chunk[]>();
@@ -94,7 +116,7 @@ export class RAGIndexer {
         // embedder upgrades them instead of stranding them forever.
         const cached = prevByFile.get(file);
         if (prev.fileHashes[file] === hash && cached?.length &&
-            cached.every(c => isValidVector(c.embedding, EMBED_DIM))) {
+            cached.every(c => isValidVector(c.embedding, provider.dim))) {
           chunks.push(...cached);
           continue;
         }
@@ -109,7 +131,7 @@ export class RAGIndexer {
             continue;
           }
           try {
-            const embedding = await this.embed(chunk.text);
+            const embedding = await this.embed(provider, chunk.text);
             chunks.push({ ...chunk, embedding });
           } catch (err) {
             if (!(err instanceof EmbeddingUnavailableError)) throw err;
@@ -130,7 +152,6 @@ export class RAGIndexer {
     const payload: IndexFile = { version: 2, chunks, fileHashes };
     fs.writeFileSync(indexPath, JSON.stringify(payload));
 
-    const db = getDb();
     // doc_count reflects EMBEDDED chunks only, so a degraded index never
     // reports a healthy count. Sanitized diagnostics: counts, never content.
     const embedded = chunks.length - pending;
@@ -140,8 +161,10 @@ export class RAGIndexer {
         `(embedder unavailable); ${embedded} embedded. Semantic search excludes the pending chunks.`
       );
     }
-    db.prepare(`UPDATE rag_indexes SET doc_count=?, last_indexed=unixepoch() WHERE index_id=?`)
-      .run(embedded, indexId);
+    // Record what the index was ACTUALLY built with (D-B2) so the query path
+    // can refuse cross-vector-space searches with an honest message (D-B3).
+    db.prepare(`UPDATE rag_indexes SET doc_count=?, last_indexed=unixepoch(), embedding_model=?, embedding_dim=? WHERE index_id=?`)
+      .run(embedded, provider.model, provider.dim, indexId);
 
     return embedded;
   }
@@ -160,21 +183,38 @@ export class RAGIndexer {
     const indexPath = path.join(this.indexDir, `${indexId}.json`);
     if (!fs.existsSync(indexPath)) return [];
 
+    const provider = this.getProvider();
+    // D-B3 guard: refuse to embed the query into a different vector space than
+    // the index was built in — cross-space similarities are meaningless noise,
+    // and (equally important) a query against a LOCAL index must not be sent
+    // to a cloud embedder the index never touched. A missing row (legacy DB)
+    // is assumed to match the active embedder, preserving pre-2c behavior.
+    const row = getDb().prepare(
+      `SELECT name, embedding_model, embedding_dim FROM rag_indexes WHERE index_id=?`
+    ).get(indexId) as { name?: string; embedding_model?: string; embedding_dim?: number } | undefined;
+    const built = {
+      model: row?.embedding_model ?? provider.model,
+      dim: row?.embedding_dim ?? provider.dim,
+    };
+    const match = embedderMatchesIndex(built, provider);
+    if (!match.ok) throw new EmbedderMismatchError(row?.name ?? indexId, match.reason);
+
     const { chunks } = parseIndexFile(fs.readFileSync(indexPath, 'utf-8'));
 
     // No embedder → NO semantic results (callers degrade to keyword). We
     // never compare against a fabricated query vector, and never crash chat.
     let queryEmbedding: number[];
     try {
-      queryEmbedding = await this.embed(query);
+      queryEmbedding = await this.embed(provider, query);
     } catch (err) {
       if (!(err instanceof EmbeddingUnavailableError)) throw err;
       return [];
     }
 
     // Exclude pending chunks AND legacy invalid vectors (all-zero from the
-    // pre-patch fallback, non-finite, wrong dimension) from scoring.
-    const { valid, excludedCount } = partitionByVectorValidity(chunks, EMBED_DIM);
+    // pre-patch fallback, non-finite, wrong dimension) from scoring. Validity
+    // is judged against the dimension the INDEX was built with.
+    const { valid, excludedCount } = partitionByVectorValidity(chunks, built.dim);
     if (excludedCount > 0) {
       console.warn(
         `[Artha] RAG index ${indexId}: ${excludedCount} chunk(s) excluded from semantic search ` +
@@ -225,42 +265,45 @@ export class RAGIndexer {
   }
 
   /**
-   * Call Ollama's /api/embeddings (LOCAL only — Phase A has no cloud
-   * embedder, so indexing can never route user content off-device).
+   * Embed via the resolved provider (local Ollama, or a consent-gated cloud
+   * embedder — see resolveEmbeddingProvider / D-B1).
    *
    * THROWS `EmbeddingUnavailableError` on any failure or malformed/invalid
    * response. It never returns a fabricated vector: the old zero-vector
    * fallback made unusable indexes look functional (Phase A integrity
    * invariant, founder directive 2026-07-23).
+   *
+   * Hard timeout: a reachable-but-hung runtime (model loading, machine
+   * resuming, packet-dropping firewall) must not stall indexing for minutes
+   * per chunk. On timeout the in-flight request is abandoned (the provider
+   * port has no abort channel); `buildIndex`'s embedderDown latch stops any
+   * further requests for that build, so at most one request leaks.
    */
-  private async embed(text: string): Promise<number[]> {
-    let json: { embedding?: unknown };
-    // Hard timeout: a reachable-but-hung runtime (model loading, machine
-    // resuming, packet-dropping firewall) must not stall indexing for
-    // minutes per chunk. Mirrors the abort guards in ollamaRuntime.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
+  private async embed(provider: EmbeddingProvider, text: string): Promise<number[]> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const res = await fetch(OLLAMA_EMBED_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new EmbeddingUnavailableError(`embedding endpoint returned ${res.status}`);
-      json = await res.json() as { embedding?: unknown };
+      const outcome = await Promise.race([
+        provider.embed(text),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new EmbeddingUnavailableError('embedding timed out')), EMBED_TIMEOUT_MS);
+        }),
+      ]);
+      if (!outcome.ok) {
+        // Empty, wrong-dimension, all-zero, or non-finite payloads are invalid
+        // — treat exactly like unavailability rather than persisting them.
+        throw new EmbeddingUnavailableError(
+          outcome.reason === 'invalid'
+            ? 'embedding response was empty or invalid'
+            : outcome.detail ? `embedding endpoint: ${outcome.detail}` : 'embedding runtime unreachable'
+        );
+      }
+      return outcome.result.vector;
     } catch (err) {
       if (err instanceof EmbeddingUnavailableError) throw err;
-      throw new EmbeddingUnavailableError('local embedding runtime unreachable');
+      throw new EmbeddingUnavailableError('embedding runtime unreachable');
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
-    // Empty, wrong-dimension, all-zero, or non-finite payloads are invalid —
-    // treat exactly like unavailability rather than persisting them.
-    if (!isValidVector(json.embedding, EMBED_DIM)) {
-      throw new EmbeddingUnavailableError('embedding response was empty or invalid');
-    }
-    return json.embedding;
   }
 }
 
@@ -268,13 +311,29 @@ export class RAGIndexer {
 
 let defaultIndexer: RAGIndexer | null = null;
 
+/** The consent-gated embedder resolver the app injects at startup (see
+ *  registerIpcHandlers → setDefaultEmbeddingResolver). Kept as an injection
+ *  point — not a static import — so importing this module never drags in the
+ *  llm/client credential stack (keychain, sealed keys) in unit tests. Until
+ *  injected, the default indexer embeds with the local Ollama provider, which
+ *  is exactly the D-B1 fail-closed behavior. */
+let defaultProviderResolver: (() => EmbeddingProvider) | null = null;
+
+export function setDefaultEmbeddingResolver(resolver: () => EmbeddingProvider): void {
+  defaultProviderResolver = resolver;
+  defaultIndexer = null; // rebuild with the resolver on next use
+}
+
 /** The app-wide indexer, rooted at <userData>/rag-indexes. Used by both the IPC
  *  layer and the docs_generate tool so they share one on-disk index set. */
 export function getDefaultRagIndexer(): RAGIndexer {
   if (!defaultIndexer) {
     // Resolved on FIRST USE, never at import time — main.ts may have
     // redirected userData (QA profile isolation) after this module loaded.
-    defaultIndexer = new RAGIndexer(path.join(app.getPath('userData'), 'rag-indexes'));
+    defaultIndexer = new RAGIndexer(
+      path.join(app.getPath('userData'), 'rag-indexes'),
+      defaultProviderResolver ?? undefined,
+    );
   }
   return defaultIndexer;
 }
@@ -289,8 +348,14 @@ export function __resetDefaultIndexerForTests(): void {
  *  `rag_search` tool. When `indexIds` is given (and non-empty), only those
  *  indexes are searched — this is how a scoped chat confines retrieval to its
  *  attached folders; otherwise every configured index is searched.
- *  Failures (Ollama down, missing index files) degrade to fewer/no results. */
-export async function searchAllIndexes(query: string, topK = 6, indexIds?: string[] | null): Promise<RetrievedChunk[]> {
+ *  Failures (Ollama down, missing index files) degrade to fewer/no results.
+ *  An index whose vector space doesn't match the active embedder (D-B3) is
+ *  skipped and recorded in `diag` so callers can say WHICH indexes couldn't
+ *  be searched instead of silently reporting "no matches". */
+export async function searchAllIndexes(
+  query: string, topK = 6, indexIds?: string[] | null,
+  diag?: { mismatches: { index: string; reason: string }[] },
+): Promise<RetrievedChunk[]> {
   const indexer = getDefaultRagIndexer();
   const indexes = (indexIds && indexIds.length)
     ? indexIds.map(index_id => ({ index_id }))
@@ -299,7 +364,12 @@ export async function searchAllIndexes(query: string, topK = 6, indexIds?: strin
   for (const { index_id } of indexes) {
     try {
       all.push(...await indexer.queryWithSources(index_id, query, topK));
-    } catch {
+    } catch (err) {
+      if (err instanceof EmbedderMismatchError) {
+        diag?.mismatches.push({ index: err.indexName, reason: err.message });
+        console.warn(`[Artha] RAG index skipped (embedder mismatch): ${err.message}`);
+        continue;
+      }
       /* skip a bad index */
     }
   }
