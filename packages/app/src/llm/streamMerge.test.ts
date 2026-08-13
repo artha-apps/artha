@@ -54,3 +54,61 @@ describe('toToolCalls', () => {
     expect(calls[0].id).toMatch(/^call_/);
   });
 });
+
+// ── Provider side-channel preservation (Gemini thought_signature) ────────────
+
+describe('extra_content passthrough (Gemini 3.x thought signatures)', () => {
+  it('keeps extra_content from the first delta through reassembly and emission', () => {
+    const sig = { google: { thought_signature: 'Er4DCrsD…' } };
+    let acc = applyToolCallDeltas([], [
+      { index: 0, id: 'call_1', function: { name: 'web_search' }, extra_content: sig },
+    ]);
+    acc = applyToolCallDeltas(acc, [
+      { index: 0, function: { arguments: '{"query":"blogs"}' } }, // later chunks carry no extra_content
+    ]);
+    const calls = toToolCalls(acc);
+    // Gemini 400s the whole follow-up turn if this is not echoed back verbatim.
+    expect((calls[0] as unknown as { extra_content?: unknown }).extra_content).toEqual(sig);
+    expect(calls[0].function.arguments).toBe('{"query":"blogs"}');
+  });
+
+  it('emits no extra_content key for providers that never sent one', () => {
+    const calls = toToolCalls([{ id: 'call_1', name: 'fs_read', arguments: '{}' }]);
+    expect('extra_content' in calls[0]).toBe(false);
+  });
+});
+
+describe('id-keyed deltas without index (Gemini parallel tool calls)', () => {
+  it('keeps two complete id-keyed calls separate instead of fusing into slot 0', () => {
+    // Gemini's compat stream: each parallel call arrives as ONE complete delta
+    // with an id and NO index. Pre-fix these fused into "namename" + two JSON
+    // bodies concatenated, which broke tool dispatch entirely.
+    let acc = applyToolCallDeltas([], [
+      { id: 'call_a', function: { name: 'get_weather', arguments: '{"city":"Paris"}' } },
+    ]);
+    acc = applyToolCallDeltas(acc, [
+      { id: 'call_b', function: { name: 'get_weather', arguments: '{"city":"London"}' } },
+    ]);
+    const calls = toToolCalls(acc);
+    expect(calls).toHaveLength(2);
+    expect(calls.map(c => c.function.arguments)).toEqual(['{"city":"Paris"}', '{"city":"London"}']);
+    expect(calls.every(c => c.function.name === 'get_weather')).toBe(true);
+  });
+
+  it('routes a repeated id back to its own slot', () => {
+    let acc = applyToolCallDeltas([], [
+      { id: 'call_a', function: { name: 'search', arguments: '{"q":' } },
+      { id: 'call_b', function: { name: 'read', arguments: '{}' } },
+    ]);
+    acc = applyToolCallDeltas(acc, [{ id: 'call_a', function: { arguments: '"x"}' } }]);
+    const calls = toToolCalls(acc);
+    expect(calls[0].function.arguments).toBe('{"q":"x"}');
+    expect(calls[1].function.arguments).toBe('{}');
+  });
+
+  it('appends bare argument fragments (no index, no id) to the last slot', () => {
+    let acc = applyToolCallDeltas([], [{ id: 'call_a', function: { name: 'search', arguments: '{"q":' } }]);
+    acc = applyToolCallDeltas(acc, [{ function: { arguments: '"y"}' } }]);
+    expect(toToolCalls(acc)[0].function.arguments).toBe('{"q":"y"}');
+  });
+});

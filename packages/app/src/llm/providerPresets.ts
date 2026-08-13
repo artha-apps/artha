@@ -54,7 +54,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     id: 'gemini', label: 'Google Gemini', kind: 'cloud',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', keyRequired: true, keyHint: 'AIza…',
-    modelHint: 'gemini-2.5-flash', docsUrl: 'https://aistudio.google.com/apikey',
+    // 'gemini-flash-latest' is Google's rolling alias for the current flash
+    // model — pinned versions (gemini-2.5-flash) started 404ing when Google
+    // retired them, which stranded the preset (live-verified 2026-08-12).
+    modelHint: 'gemini-flash-latest', docsUrl: 'https://aistudio.google.com/apikey',
     capabilityKey: 'gemini',
   },
   {
