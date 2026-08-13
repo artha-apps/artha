@@ -103,10 +103,14 @@
 | `src/net/ssrfGuard.ts` | `assertPublicURL()` — SSRF guard for agent-driven fetch/navigate; http(s)-only + rejects private/loopback/link-local/metadata IPs (resolves DNS, catches rebinding), with a user allowlist for local dev hosts |
 | `src/net/rateLimiter.ts` | `createRateLimiter()` — tiny in-memory token-bucket limiter (lazy refill), used to throttle the LAN `/chat` route per client IP |
 | **rag/** | |
-| `src/rag/indexer.ts` | `RagIndexer` — walks a folder, extracts + chunks + embeds files, persists the index |
+| `src/rag/indexer.ts` | `RagIndexer` — walks a folder, extracts + chunks + embeds files (via the resolved EmbeddingProvider), persists the index; records per-index embedding model+dim (D-B2) and refuses cross-vector-space queries (D-B3) |
 | `src/rag/extract.ts` | Text extraction from files (txt, pdf via pdf-parse, docx via mammoth) for indexing |
 | `src/rag/chunk.ts` | Splits document text into overlapping chunks with stable ids for embedding |
 | `src/rag/indexFormat.ts` | `Chunk` type + on-disk index (v2) read/write helpers |
+| `src/rag/vectorIntegrity.ts` | Phase A invariant: never store/compare a knowingly invalid embedding — `isValidVector`, `partitionByVectorValidity`, typed `EmbeddingUnavailableError` |
+| `src/rag/embeddingProvider.ts` | EmbeddingProvider port — local Ollama + cloud OpenAI-compat embedders, `embedderMatchesIndex` guard + `EmbedderMismatchError` (D-B3), `probeCloudEmbedding` test-before-activate probe |
+| `src/rag/embeddingConsent.ts` | D-B1 privacy gate in code — cloud embedder resolves ONLY with an explicit consent record + openable BYOK key; every gap fails closed to local. grant/revoke/read consent |
+| `src/rag/embeddingResolver.ts` | Main-process composition: `resolveActiveEmbedder()` = consent gate + `usableApiKey` KeyOpener over saved llm_models rows (URL always from the row, never the renderer) |
 | **docs/** | |
 | `src/docs/generator.ts` | `generateDocument()` — renders DOCX (`docx`), PPTX (`pptxgenjs`), XLSX (`xlsx`), PDF (`pdf-lib`) from a spec |
 | **scheduler/** | |

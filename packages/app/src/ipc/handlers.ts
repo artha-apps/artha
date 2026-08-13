@@ -63,7 +63,10 @@ import { recordAcceptance } from '../bodhi/acceptance';
 import { readRunEvidence } from '../bodhi/evidence';
 import { parseSkillImport } from '../skills/util';
 import { getSkillMetrics, getSkillModelStats, getSkillToolUsage, getSkillFailures } from '../skills/metrics';
-import { getDefaultRagIndexer } from '../rag/indexer';
+import { getDefaultRagIndexer, setDefaultEmbeddingResolver } from '../rag/indexer';
+import { readCloudEmbeddingConfig, grantCloudEmbeddingConsent, revokeCloudEmbeddingConsent } from '../rag/embeddingConsent';
+import { openLlmModelKey, resolveActiveEmbedder } from '../rag/embeddingResolver';
+import { probeCloudEmbedding } from '../rag/embeddingProvider';
 import { listContacts, addContact, listInteractions, logInteraction, deleteContact } from '../tools/crm';
 import { listEntities, listRelations, queryGraphDb } from '../bodhi/knowledgeGraph';
 import { buildShallowTree } from '../agent/folderTree';
@@ -105,6 +108,12 @@ let orchestrator: AgentOrchestrator;
 // outside an isolated profile. getDefaultRagIndexer() memoizes on first
 // real use, by which time app.setPath('userData') has run.
 const ragIndexer = { buildIndex: (id: string, dir: string) => getDefaultRagIndexer().buildIndex(id, dir) };
+
+// Wire the consent-gated embedder resolver (D-B1, Slice 2c) into the shared
+// indexer. Module-level (not per-registration) and BEFORE any first use, so
+// every build/query resolves local-vs-cloud through the consent gate. Without
+// this call the indexer defaults to local Ollama — the fail-closed direction.
+setDefaultEmbeddingResolver(resolveActiveEmbedder);
 
 // ── IDE MCP HTTP server ─────────────────────────────────────────────────────
 // The IDE Integration panel writes editor configs pointing at
@@ -2025,6 +2034,57 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (!row) return { ok: false, error: 'That index no longer exists.', embedded: 0 };
     const embedded = await ragIndexer.buildIndex(id, row.directory_path);
     return { ok: true, embedded };
+  });
+
+  // ── Embedding provider (Phase B Slice 2c — the D-B1 consent surface) ────
+  // Which embedder is active right now, the recorded consent (if any), and
+  // the saved cloud (BYOK) model rows that could host cloud embeddings.
+  ipcMain.handle('embedding:getStatus', () => {
+    const db = getDb();
+    const active = resolveActiveEmbedder();
+    const rows = db.prepare(`SELECT model_id, name, provider, base_url FROM llm_models ORDER BY name`)
+      .all() as { model_id: string; name: string; provider: string; base_url: string }[];
+    return {
+      active: { id: active.id, model: active.model, dim: active.dim, isLocal: active.isLocal },
+      consent: readCloudEmbeddingConfig(db),
+      cloudModels: rows.filter(r => !isOllamaManaged(r.provider, r.base_url)),
+    };
+  });
+
+  // Turn cloud embeddings ON. The renderer must only call this AFTER showing
+  // the explicit disclosure (indexed text + queries are sent to the provider).
+  // Test-before-activate: one probe with a fixed harmless sentence — consent
+  // is recorded ONLY on success, and the stored dimension comes from the
+  // provider's actual response, never a guess.
+  ipcMain.handle('embedding:enableCloud', async (_e, modelId: string, embedModel: string) => {
+    const db = getDb();
+    if (typeof modelId !== 'string' || !modelId || typeof embedModel !== 'string' || !embedModel.trim()) {
+      return { ok: false, error: 'Pick a cloud model and an embedding model name.' };
+    }
+    const modelRow = db.prepare(`SELECT provider, base_url FROM llm_models WHERE model_id=?`)
+      .get(modelId) as { provider: string; base_url: string } | undefined;
+    if (!modelRow) return { ok: false, error: 'That model no longer exists.' };
+    if (isOllamaManaged(modelRow.provider, modelRow.base_url)) {
+      return { ok: false, error: 'Pick a cloud (BYOK) model — local Ollama models are already the default embedder.' };
+    }
+    // Key + URL resolve main-side from the SAVED row (same rule as the probe
+    // path above, security review H1) — the renderer never supplies either.
+    const creds = openLlmModelKey(db, modelId);
+    if (!creds) return { ok: false, error: 'That model’s API key is unavailable (locked or missing) — re-enter it in Models.' };
+    const probe = await probeCloudEmbedding(creds.baseUrl, creds.apiKey, embedModel.trim());
+    if (!probe.ok) return { ok: false, error: probe.error };
+    grantCloudEmbeddingConsent(db, {
+      modelId, model: embedModel.trim(), dim: probe.dim, consentedAt: Math.floor(Date.now() / 1000),
+    });
+    return { ok: true, dim: probe.dim };
+  });
+
+  // Turn cloud embeddings back OFF (revoke consent). Existing cloud-built
+  // indexes stay on disk but are refused at query time (D-B3) until rebuilt
+  // locally — the RAG panel shows which.
+  ipcMain.handle('embedding:disableCloud', () => {
+    revokeCloudEmbeddingConsent(getDb());
+    return { ok: true };
   });
 
   // ── Document Generation ─────────────────────────────────────────────────

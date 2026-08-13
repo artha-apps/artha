@@ -82,10 +82,13 @@ export async function invokeRagTool(
     if (!query) return 'Error: "query" is required.';
     const topK = Math.min(Math.max(Number(args.top_k) || 6, 1), 20);
     // When the chat is scoped to folders, confine retrieval to their indexes.
-    const hits = await searchAllIndexes(query, topK, scoped ? ragIndexIds : null);
+    // `diag` collects indexes skipped for an embedder mismatch (D-B3) so the
+    // answer names them instead of implying they held no matches.
+    const diag = { mismatches: [] as { index: string; reason: string }[] };
+    const hits = await searchAllIndexes(query, topK, scoped ? ragIndexIds : null, diag);
     // Zero hits is ambiguous: no match, or no retriever? Ask only in that case.
     const degraded = hits.length === 0 ? !(await getSemanticStatus()).available : false;
-    return formatRagResults(query, hits, degraded);
+    return formatRagResults(query, hits, degraded, diag.mismatches);
   }
 
   throw new Error(`Unknown rag tool: ${name}`);
