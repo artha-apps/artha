@@ -50,6 +50,7 @@ import {
 } from '../security/secretString';
 import { setSessionKey, getSessionKey, deleteSessionKey } from '../security/sessionKeys';
 import { PROVIDER_PRESETS } from '../llm/providerPresets';
+import { getModelCatalog } from '../llm/modelCatalog';
 import { discoverModels, testConnection } from '../llm/providerProbe';
 import { getEffectiveCapabilities } from '../llm/capabilities';
 import { isOllamaManaged } from '../llm/providerKind';
@@ -1601,6 +1602,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // Provider preset registry — static data (llm/providerPresets.ts); the
   // renderer renders whatever this returns, so new providers ship data-only.
   ipcMain.handle('llm:listProviderPresets', () => PROVIDER_PRESETS);
+
+  // Curated pull catalog — remote (artha.space static JSON) with the bundled
+  // list as offline fallback, so newly released models reach the Browse tab
+  // without an app release (llm/modelCatalog.ts). Never rejects.
+  ipcMain.handle('llm:getModelCatalog', () => getModelCatalog());
 
   // Resolve key + TARGET for a probe. Two modes, deliberately asymmetric:
   //   - apiKey (pre-save): the renderer supplies both URL and the key it

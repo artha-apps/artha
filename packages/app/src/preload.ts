@@ -435,6 +435,16 @@ const api = {
         { ok: true; latencyMs: number; model: string } |
         { ok: false; error: { kind: string; status?: number; message: string; retryable: boolean } }
       >,
+    // Curated pull catalog — remote-refreshed with bundled fallback (see
+    // llm/modelCatalog.ts). Never rejects; `source` says which list you got.
+    getModelCatalog: () => ipcRenderer.invoke('llm:getModelCatalog') as Promise<{
+      entries: {
+        tag: string; label: string; family: string; size: string;
+        ramRequired: number; speed: string; description: string;
+        badge: string | null; minOllamaVersion?: string;
+      }[];
+      source: 'remote' | 'bundled';
+    }>,
     // Static provider preset registry (data-only; see llm/providerPresets.ts).
     listProviderPresets: () => ipcRenderer.invoke('llm:listProviderPresets') as Promise<{
       id: string; label: string; kind: 'cloud' | 'gateway' | 'runtime-remote' | 'custom';
