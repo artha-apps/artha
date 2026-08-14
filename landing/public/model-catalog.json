@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-08-12",
+  "_comment": "Curated Browse-tab model catalog fetched by installed Artha apps (packages/app/src/llm/modelCatalog.ts). Editing this file updates every installed app within ~6h — no release needed. Keep entries honest: ramRequired gates a warning chip, minOllamaVersion is a display hint. Mirror meaningful changes into BUNDLED_CATALOG (the offline fallback).",
+  "models": [
+    {
+      "tag": "llama3.2:3b",
+      "label": "Llama 3.2 3B",
+      "family": "Llama",
+      "size": "~2 GB",
+      "ramRequired": 4,
+      "speed": "Fast",
+      "description": "Meta's lightweight model. Great for quick tasks on any Mac.",
+      "badge": "Recommended for most"
+    },
+    {
+      "tag": "llama3.2:1b",
+      "label": "Llama 3.2 1B",
+      "family": "Llama",
+      "size": "~0.8 GB",
+      "ramRequired": 2,
+      "speed": "Very fast",
+      "description": "Ultra-lightweight. Instant responses, ideal for low-RAM machines.",
+      "badge": null
+    },
+    {
+      "tag": "qwen2.5:7b",
+      "label": "Qwen 2.5 7B",
+      "family": "Qwen",
+      "size": "~4.7 GB",
+      "ramRequired": 8,
+      "speed": "Medium",
+      "description": "Best tool-calling accuracy. The default Artha model for agentic tasks.",
+      "badge": "Best for agents"
+    },
+    {
+      "tag": "muse-glimmer:30b",
+      "label": "Muse Glimmer 30B",
+      "family": "Muse",
+      "size": "~19 GB",
+      "ramRequired": 32,
+      "speed": "Medium",
+      "description": "Meta's open agentic model (Aug 2026) — built for local multi-step tool use, coding, and vision. Strongest local agent if your machine can hold it.",
+      "badge": "New",
+      "minOllamaVersion": "0.11.0"
+    },
+    {
+      "tag": "qwen2.5:14b",
+      "label": "Qwen 2.5 14B",
+      "family": "Qwen",
+      "size": "~9 GB",
+      "ramRequired": 16,
+      "speed": "Medium",
+      "description": "Stronger reasoning and tool use. Needs 16 GB+ RAM.",
+      "badge": null
+    },
+    {
+      "tag": "qwen2.5:72b",
+      "label": "Qwen 2.5 72B",
+      "family": "Qwen",
+      "size": "~47 GB",
+      "ramRequired": 64,
+      "speed": "Slow",
+      "description": "Flagship Qwen — top-tier tool-calling and reasoning. Best agentic accuracy. Needs a 64 GB+ machine.",
+      "badge": "Most capable"
+    },
+    {
+      "tag": "llama3.3:70b",
+      "label": "Llama 3.3 70B",
+      "family": "Llama",
+      "size": "~43 GB",
+      "ramRequired": 48,
+      "speed": "Slow",
+      "description": "Meta's latest 70B — excellent reasoning and solid tool use. Needs 48 GB+ RAM.",
+      "badge": null
+    },
+    {
+      "tag": "mistral:7b",
+      "label": "Mistral 7B",
+      "family": "Mistral",
+      "size": "~4.1 GB",
+      "ramRequired": 8,
+      "speed": "Medium",
+      "description": "Strong general-purpose European model. Great instruction following.",
+      "badge": null
+    },
+    {
+      "tag": "gemma3:4b",
+      "label": "Gemma 3 4B",
+      "family": "Gemma",
+      "size": "~3.3 GB",
+      "ramRequired": 6,
+      "speed": "Fast",
+      "description": "Google's efficient model. Good balance of speed and capability.",
+      "badge": null
+    },
+    {
+      "tag": "phi4:14b",
+      "label": "Phi 4 14B",
+      "family": "Phi",
+      "size": "~8.9 GB",
+      "ramRequired": 16,
+      "speed": "Medium",
+      "description": "Microsoft's reasoning-focused model. Excellent at structured tasks.",
+      "badge": null
+    },
+    {
+      "tag": "deepseek-r1:7b",
+      "label": "DeepSeek R1 7B",
+      "family": "DeepSeek",
+      "size": "~4.7 GB",
+      "ramRequired": 8,
+      "speed": "Medium",
+      "description": "Chain-of-thought reasoning model. Shows its thinking process.",
+      "badge": null
+    },
+    {
+      "tag": "codellama:7b",
+      "label": "CodeLlama 7B",
+      "family": "CodeLlama",
+      "size": "~3.8 GB",
+      "ramRequired": 8,
+      "speed": "Medium",
+      "description": "Specialized for coding tasks. Use for programming workflows.",
+      "badge": null
+    },
+    {
+      "tag": "nomic-embed-text",
+      "label": "Nomic Embed Text",
+      "family": "Nomic",
+      "size": "~0.3 GB",
+      "ramRequired": 2,
+      "speed": "Very fast",
+      "description": "Embedding model for RAG and semantic search. Not a chat model.",
+      "badge": "For RAG"
+    }
+  ]
+}

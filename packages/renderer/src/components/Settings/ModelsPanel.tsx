@@ -117,8 +117,24 @@ function qMark(q: number | null): string {
   return q >= 0.8 ? '✓' : q >= 0.4 ? '~' : '✗';
 }
 
-/** Curated catalog of popular Ollama models users can pull in one click. */
-const MODEL_CATALOG = [
+/** One Browse-tab catalog entry (mirrors llm/modelCatalog.ts, served over IPC). */
+interface CatalogEntry {
+  tag: string;
+  label: string;
+  family: string;
+  size: string;
+  ramRequired: number;
+  speed: string;
+  description: string;
+  badge: string | null;
+  /** Oldest Ollama version known to run this model — display hint only. */
+  minOllamaVersion?: string;
+}
+
+/** Bundled fallback catalog (non-Electron/test contexts). The IPC catalog —
+ *  remote-refreshed from artha.space with its own bundled fallback — is the
+ *  source of truth; this only keeps the Browse tab usable if that call fails. */
+const MODEL_CATALOG: CatalogEntry[] = [
   {
     tag: 'llama3.2:3b',
     label: 'Llama 3.2 3B',
@@ -148,6 +164,17 @@ const MODEL_CATALOG = [
     speed: 'Medium',
     description: 'Best tool-calling accuracy. The default Artha model for agentic tasks.',
     badge: 'Best for agents',
+  },
+  {
+    tag: 'muse-glimmer:30b',
+    label: 'Muse Glimmer 30B',
+    family: 'Muse',
+    size: '~19 GB',
+    ramRequired: 32,
+    speed: 'Medium',
+    description: 'Meta\'s open agentic model (Aug 2026) — built for local multi-step tool use, coding, and vision. Strongest local agent if your machine can hold it.',
+    badge: 'New',
+    minOllamaVersion: '0.11.0',
   },
   {
     tag: 'qwen2.5:14b',
@@ -253,6 +280,7 @@ function formatSize(bytes: number): string {
 /** Derive the family label from the raw Ollama model name for the colored badge. */
 function modelFamily(name: string): string {
   const n = name.toLowerCase();
+  if (n.includes('muse')) return 'Muse';
   if (n.includes('qwen')) return 'Qwen';
   if (n.includes('llama')) return 'Llama';
   if (n.includes('mistral')) return 'Mistral';
@@ -267,6 +295,7 @@ function modelFamily(name: string): string {
 /** Map a family name to a Tailwind color class pair for the inline badge. */
 function familyColor(family: string): string {
   const map: Record<string, string> = {
+    Muse: 'text-sky-400 bg-sky-400/10',
     Qwen: 'text-blue-400 bg-blue-400/10',
     Llama: 'text-orange-400 bg-orange-400/10',
     Mistral: 'text-violet-400 bg-violet-400/10',
@@ -334,6 +363,15 @@ export default function ModelsPanel() {
   // Tab controls which list is shown: models already on disk vs the pull catalog.
   const [tab, setTab] = useState<'installed' | 'browse'>('installed');
 
+  // Browse catalog — seeded with the bundled list, replaced by the IPC catalog
+  // (remote-refreshed) when it arrives so new models appear without a release.
+  const [catalog, setCatalog] = useState<CatalogEntry[]>(MODEL_CATALOG);
+
+  // Free-text pull — any Ollama tag, not just catalog entries. `customPullTag`
+  // is the last submitted tag; its progress renders via the shared `pulling` map.
+  const [customTag, setCustomTag] = useState('');
+  const [customPullTag, setCustomPullTag] = useState<string | null>(null);
+
   /** Pull model list + hardware info + active model.
    *  Ollama reachability is checked independently so a hardware-detection
    *  failure never falsely shows the "Ollama not running" banner. */
@@ -355,6 +393,12 @@ export default function ModelsPanel() {
     // BYOK form usable if the call fails (non-Electron/test contexts).
     window.artha.llm.listProviderPresets?.()
       .then(p => { if (Array.isArray(p) && p.length) setPresets(p as ProviderPreset[]); })
+      .catch(() => {});
+
+    // Browse catalog — remote-refreshed main-process list; the bundled seed
+    // stays if the call fails so the tab never renders empty.
+    window.artha.llm.getModelCatalog?.()
+      .then(c => { if (Array.isArray(c?.entries) && c.entries.length) setCatalog(c.entries); })
       .catch(() => {});
 
     // 2. Configured (saved) models — cloud BYOK must show even when Ollama is offline
@@ -453,6 +497,19 @@ export default function ModelsPanel() {
       setProfiles(await window.artha.router.listProfiles());
     } catch { /* Ollama down — card stays "Not benchmarked" */ }
     finally { setBenching(null); }
+  };
+
+  /** Client-side sanity check for a hand-typed Ollama tag: name[/name][:tag]. */
+  const TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)?(:[A-Za-z0-9._-]+)?$/;
+
+  /** Pull a hand-typed tag — same streaming pipeline as catalog pulls, so a
+   *  model missing from the catalog (too new, niche) is never blocked. */
+  const pullCustom = () => {
+    const tag = customTag.trim();
+    if (!TAG_RE.test(tag)) return;
+    setCustomPullTag(tag);
+    setCustomTag('');
+    void pullModel(tag);
   };
 
   /** Pull a model from the catalog using the streaming endpoint. */
@@ -895,7 +952,53 @@ export default function ModelsPanel() {
       {/* ── Browse & Install catalog ── */}
       {tab === 'browse' && (
         <div className="space-y-3">
-          {MODEL_CATALOG.map((entry) => {
+          {/* Free-text pull — escape hatch so brand-new models (not yet in the
+              curated catalog) can still be installed from inside Artha. */}
+          <div className="rounded-xl border border-artha-border bg-artha-s2 p-3">
+            <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); pullCustom(); }}>
+              <input
+                value={customTag}
+                onChange={(e) => setCustomTag(e.target.value)}
+                placeholder="Pull any Ollama model by tag — e.g. muse-glimmer:30b"
+                spellCheck={false}
+                className="flex-1 min-w-0 bg-artha-s1 border border-artha-border rounded-lg px-3 py-1.5 text-xs text-artha-text placeholder:text-artha-muted focus:outline-none focus:border-artha-accent/50 font-mono"
+              />
+              <button
+                type="submit"
+                disabled={!ollamaOnline || !TAG_RE.test(customTag.trim())}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-artha-accent/15 hover:bg-artha-accent/25 disabled:opacity-40 disabled:cursor-not-allowed text-artha-accent text-xs font-medium transition-colors"
+              >
+                <Download size={12} /> Pull
+              </button>
+            </form>
+            {customTag.trim().length > 0 && !TAG_RE.test(customTag.trim()) && (
+              <p className="mt-1.5 text-xs text-artha-danger">
+                Not a valid Ollama tag — letters, digits, dots and dashes only, like <code className="font-mono">name:tag</code>.
+              </p>
+            )}
+            {customPullTag && pulling[customPullTag] && (() => {
+              const p = pulling[customPullTag];
+              return p.status === 'error' ? (
+                <p className="mt-2 text-xs text-artha-danger">{p.error ?? 'Pull failed'} — <code className="font-mono">{customPullTag}</code></p>
+              ) : p.status === 'success' ? (
+                <span className="mt-2 flex items-center gap-1 text-xs text-artha-success">
+                  <CheckCircle2 size={13} /> Installed <code className="font-mono">{customPullTag}</code>
+                </span>
+              ) : (
+                <div className="mt-2 flex items-center gap-2 text-xs text-artha-muted">
+                  <RefreshCw size={11} className="animate-spin" />
+                  <span>{p.status === 'starting' ? 'Starting…' : `${p.percent ?? 0}%`} — <code className="font-mono">{customPullTag}</code></span>
+                  {typeof p.percent === 'number' && (
+                    <div className="flex-1 h-1 rounded-full bg-artha-text/8">
+                      <div className="h-1 rounded-full bg-artha-accent transition-all" style={{ width: `${p.percent}%` }} />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+
+          {catalog.map((entry) => {
             const isInstalled = installedTags.has(entry.tag);
             const isActive = entry.tag === activeModel || entry.tag.split(':')[0] === activeModel?.split(':')[0];
             const progress = pulling[entry.tag];
@@ -943,6 +1046,12 @@ export default function ModelsPanel() {
                       </span>
                       <span className="text-artha-border">·</span>
                       <code className="text-[10px] text-artha-muted font-mono">{entry.tag}</code>
+                      {entry.minOllamaVersion && (
+                        <>
+                          <span className="text-artha-border">·</span>
+                          <span className="text-[11px] text-artha-muted">Ollama ≥ {entry.minOllamaVersion}</span>
+                        </>
+                      )}
                     </div>
                   </div>
 

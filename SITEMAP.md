@@ -72,6 +72,7 @@
 | `src/llm/client.ts` | `getActiveLLMClient()` — returns an OpenAI-compat client for the active model; respects context_window |
 | `src/llm/ollamaRuntime.ts` | Ollama lifecycle — `ensureModelReady()` (auto-start the server if down + pre-warm the active model at matching num_ctx on launch, emitting `model:status`), `ensureEmbedModel()` (background-pulls `nomic-embed-text` when missing so semantic memory/RAG never silently degrade to keyword), `unloadActiveModel()` (keep_alive 0 on quit), `stopOllamaIfStarted()` (only a server WE spawned). Never instructs the user to run terminal commands; only stops what it started |
 | `src/llm/streamMerge.ts` | Merges streamed tool-call deltas (id+name on first chunk, args appended after) into complete tool calls |
+| `src/llm/modelCatalog.ts` | Curated Browse-tab pull catalog — `getModelCatalog()` fetches `artha.space/model-catalog.json` (anonymous GET, 6h cache, strict entry validation) with `BUNDLED_CATALOG` as the offline/failure fallback, so new models ship without an app release. Fallback-path + validation unit-tested (`modelCatalog.test.ts`) |
 | **mcp/** | |
 | `src/mcp/registry.ts` | `MCPRegistry` — manages MCP server processes, tool schemas, invocations; injects decrypted connector credentials via `spawnEnv` (augmented PATH) and records per-server `conn_status` |
 | `src/mcp/registry-catalog.ts` | 22 curated MCP marketplace entries (filesystem, web, productivity, …) |
@@ -223,6 +224,7 @@
 | `public/logo-wordmark.png`, `logo-wordmark-72.png`, `logo-full.png` | ARTHA wordmark / full lockup |
 | `public/favicon-16.png`, `favicon-32.png`, `favicon-256.png`, `apple-touch-icon.png` | PNG favicons + Apple touch icon |
 | `public/og-image.png` | Open Graph / Twitter card image |
+| `public/model-catalog.json` | Remote model catalog consumed by installed apps (`packages/app/src/llm/modelCatalog.ts`) — editing it updates every app's Browse tab within ~6h, no release needed. Mirror meaningful changes into `BUNDLED_CATALOG` |
 | `app/api/stripe/checkout/route.ts` | (live `landing/`) POST — creates a Stripe Checkout session for the one-time Pro purchase, returns the session URL |
 | `app/api/stripe/webhook/route.ts` | (live `landing/`) POST — verifies Stripe signature on `checkout.session.completed`, generates a signed Pro license key, emails it via Resend |
 | `app/api/stripe/price/route.ts` | (live `landing/`) GET — returns the authoritative Pro price (and test/live mode) from the Stripe Price so the pricing card never hardcodes an amount |
