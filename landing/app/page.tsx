@@ -1,7 +1,7 @@
 'use client';
 
-import Image from 'next/image';
 import { useEffect, useState } from 'react';
+import { Mark } from './components/Mark';
 
 /**
  * Public pricing visibility. The four-tier model (Free capped / Personal
@@ -57,22 +57,6 @@ function formatReleaseDate(iso: string) {
     timeZone: 'UTC',
     timeZoneName: 'short',
   }).format(d);
-}
-
-/** Brand mark — Devanagari अ inside a sacred-geometry mandala.
- *  Source artwork is gold on near-black, so the mark reads as a dark
- *  medallion on the cream page background. */
-function Mark({ size = 32 }: { size?: number }) {
-  return (
-    <Image
-      src="/logo-mark.png"
-      alt=""
-      width={size}
-      height={size}
-      className="brand-mark"
-      priority
-    />
-  );
 }
 
 
@@ -588,6 +572,11 @@ export default function Page() {
                 <li>
                   <a href="#features">Features</a>
                 </li>
+                {SHOW_PRICING && (
+                  <li>
+                    <a href="/subscribe">Subscribe</a>
+                  </li>
+                )}
                 <li>
                   <a href="#getting-started">Get started</a>
                 </li>

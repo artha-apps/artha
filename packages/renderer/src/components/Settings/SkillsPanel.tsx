@@ -848,7 +848,7 @@ export default function SkillsPanel() {
                     ) : (
                       <span
                         className="text-[10px] text-artha-subtle"
-                        title="Starter templates are included with Personal and higher — see artha.space for plans"
+                        title="Starter templates are included with Personal and higher — subscribe at artha.space/subscribe"
                       >
                         Personal plan
                       </span>

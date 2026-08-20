@@ -105,7 +105,7 @@ export async function invokeDocsTool(name: string, args: Record<string, unknown>
   if (ents.docsPerMonth !== null) {
     const used = docsGeneratedThisMonth();
     if (used >= ents.docsPerMonth) {
-      return `Error: the Free plan includes ${ents.docsPerMonth} generated documents per month and this month's allowance is used up (${used}/${ents.docsPerMonth}). Tell the user the limit resets next month, or they can upgrade to Personal at artha.space for unlimited documents.`;
+      return `Error: the Free plan includes ${ents.docsPerMonth} generated documents per month and this month's allowance is used up (${used}/${ents.docsPerMonth}). Tell the user the limit resets next month, or they can upgrade to Personal at artha.space/subscribe for unlimited documents.`;
     }
   }
 
