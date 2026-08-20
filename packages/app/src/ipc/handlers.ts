@@ -1325,7 +1325,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (ents.maxContextPacks !== null) {
       const count = (getDb().prepare(`SELECT COUNT(*) AS n FROM context_packs`).get() as { n: number }).n;
       if (count >= ents.maxContextPacks) {
-        throw new Error(`The Free plan includes ${ents.maxContextPacks} saved context pack${ents.maxContextPacks === 1 ? '' : 's'}. Delete one first, or upgrade to Personal for unlimited packs — artha.space.`);
+        throw new Error(`The Free plan includes ${ents.maxContextPacks} saved context pack${ents.maxContextPacks === 1 ? '' : 's'}. Delete one first, or upgrade to Personal for unlimited packs — artha.space/subscribe.`);
       }
     }
     return savePackFromSession(sessionId, name, overrides ?? {});
@@ -2400,7 +2400,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     // solo). Existing tasks keep running for downgraded users until disabled;
     // only CREATING and RE-ENABLING are gated.
     if (!currentEntitlements().scheduler) {
-      throw new Error('Scheduled tasks require a Personal (or higher) license — see artha.space for plans.');
+      throw new Error('Scheduled tasks require a Personal (or higher) license — subscribe at artha.space/subscribe.');
     }
     return sched.create(input);
   });
@@ -2410,7 +2410,7 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('scheduler:toggle', (_e, taskId: string, enabled: boolean) => {
     if (enabled && !currentEntitlements().scheduler) {
-      throw new Error('Scheduled tasks require a Personal (or higher) license — see artha.space for plans.');
+      throw new Error('Scheduled tasks require a Personal (or higher) license — subscribe at artha.space/subscribe.');
     }
     return sched.toggle(taskId, enabled);
   });

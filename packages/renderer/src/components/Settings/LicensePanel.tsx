@@ -163,8 +163,17 @@ export default function LicensePanel() {
         </div>
 
         <p className="text-[11px] text-artha-muted">
-          Don't have a key? See plans at artha.space/#pricing — Personal for the full solo
-          experience, Team for LAN collaboration, Business for compliance features.
+          Don't have a key?{' '}
+          <a
+            href="https://artha.space/subscribe"
+            target="_blank"
+            rel="noreferrer"
+            className="text-artha-accent hover:underline"
+          >
+            Subscribe at artha.space/subscribe
+          </a>{' '}
+          — Personal for the full solo experience, Team for LAN collaboration, Business for
+          compliance features.
         </p>
       </div>
     </div>

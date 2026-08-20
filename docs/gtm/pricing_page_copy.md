@@ -1,7 +1,9 @@
 # Artha Pricing Page — Canonical Copy
 
-> **Status:** matches the shipped product and the live pricing section on
-> artha.space (landing/app/page.tsx). Wire tiers in license keys:
+> **Status:** matches the shipped product, the live pricing section on
+> artha.space (landing/app/page.tsx), and the dedicated checkout page at
+> artha.space/subscribe (landing/app/subscribe/ — deep-link with
+> `?plan=personal-annual|personal-6mo|team|business&seats=N`). Wire tiers in license keys:
 > `free | pro (Personal) | team (Team) | enterprise (Business)`.
 > All amounts USD; authoritative prices come from Stripe via `/api/stripe/price`.
 > This replaces the earlier draft that promised cloud sync, SSO/SAML, and

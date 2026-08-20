@@ -18,6 +18,9 @@
  *   STRIPE_PRICE_ID_TEAM             — recurring yearly per-unit Price (licensed qty)
  *   STRIPE_PRICE_ID_BUSINESS         — recurring yearly per-unit Price (licensed qty)
  *   NEXT_PUBLIC_URL                  — public URL of this deployment
+ *
+ * Body: { plan, seats?, email?, from?: 'subscribe' } — `from` only changes
+ * the cancel_url (see below); the landing page omits it.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -76,6 +79,14 @@ export async function POST(req: NextRequest) {
       req.nextUrl.origin ??
       'https://artha.space';
 
+    // Where a cancelled checkout lands. The landing page's pricing section is
+    // the default; /subscribe sends `from: 'subscribe'` so the user returns to
+    // the dedicated page with their plan + seat count still selected.
+    const cancelUrl =
+      body.from === 'subscribe'
+        ? `${baseUrl}/subscribe?plan=${planId}${plan.perSeat ? `&seats=${quantity}` : ''}`
+        : `${baseUrl}/#pricing`;
+
     const session = await stripe.checkout.sessions.create({
       // All plans are subscriptions; the offline key simply carries an expiry
       // and the webhook re-mints it on every renewal invoice. NOTE: do NOT add
@@ -92,7 +103,7 @@ export async function POST(req: NextRequest) {
       // the PRICE id (authoritative), never on this.
       metadata: { customer_email: email ?? '', plan: planId },
       success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/#pricing`,
+      cancel_url: cancelUrl,
     });
 
     return NextResponse.json({ url: session.url });

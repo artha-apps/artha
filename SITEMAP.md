@@ -225,10 +225,13 @@
 | `public/favicon-16.png`, `favicon-32.png`, `favicon-256.png`, `apple-touch-icon.png` | PNG favicons + Apple touch icon |
 | `public/og-image.png` | Open Graph / Twitter card image |
 | `public/model-catalog.json` | Remote model catalog consumed by installed apps (`packages/app/src/llm/modelCatalog.ts`) — editing it updates every app's Browse tab within ~6h, no release needed. Mirror meaningful changes into `BUNDLED_CATALOG` |
-| `app/api/stripe/checkout/route.ts` | (live `landing/`) POST — creates a Stripe Checkout session for the one-time Pro purchase, returns the session URL |
+| `app/api/stripe/checkout/route.ts` | (live `landing/`) POST — creates a Stripe Checkout subscription session for one of the four plans (personal-annual / personal-6mo / team / business, seat qty clamped), returns the session URL; `from: 'subscribe'` routes cancels back to `/subscribe` |
 | `app/api/stripe/webhook/route.ts` | (live `landing/`) POST — verifies Stripe signature on `checkout.session.completed`, generates a signed Pro license key, emails it via Resend |
 | `app/api/stripe/price/route.ts` | (live `landing/`) GET — returns the authoritative Pro price (and test/live mode) from the Stripe Price so the pricing card never hardcodes an amount |
-| `app/success/page.tsx` | (live `landing/`) post-checkout thank-you page with license-key delivery instructions |
+| `app/success/page.tsx` | (live `landing/`) post-checkout thank-you page — looks up the Stripe session server-side (`?session_id=`) to name the plan, seats, and inbox; degrades to generic copy if Stripe is unavailable |
+| `app/subscribe/page.tsx` | (live `landing/`) `/subscribe` — dedicated checkout page (metadata + server wrapper); deep-linkable via `?plan=personal-annual\|personal-6mo\|team\|business&seats=N&email=` for the in-app License screen and renewal emails |
+| `app/subscribe/SubscribeClient.tsx` | (live `landing/`) client UI for `/subscribe`: plan radio cards, Personal annual/6-mo toggle, Team/Business seat stepper, optional email, sticky order summary → POST `/api/stripe/checkout` (`from: 'subscribe'`), comparison table + FAQ mirrored from `docs/gtm/pricing_page_copy.md` |
+| `app/components/Mark.tsx` | (live `landing/`) shared mandala-अ brand mark (`next/image`) used by the landing page and `/subscribe` header/footer |
 | `lib/license-gen.ts` | (live `landing/`) server-side Ed25519 license-key signer (uses `ARTHA_LICENSE_PRIVATE_KEY`); matches the app's `packages/app/src/license/verify.ts` |
 
 ---
