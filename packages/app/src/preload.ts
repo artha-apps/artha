@@ -395,7 +395,12 @@ const api = {
     // Uninstall a local Ollama model — frees its on-disk blobs and drops its DB row.
     deleteModel: (name: string) =>
       ipcRenderer.invoke('llm:deleteModel', name) as Promise<{ ok: boolean; error?: string }>,
-    onPullProgress: (cb: (p: { name: string; status: string; completed?: number; total?: number; percent?: number; error?: string }) => void) => {
+    // `code: 'ollama_outdated'` = the server is too old for this model; the UI
+    // offers "Update Ollama" (below) instead of showing Ollama's raw 412.
+    onPullProgress: (cb: (p: {
+      name: string; status: string; completed?: number; total?: number; percent?: number; error?: string;
+      code?: 'ollama_outdated'; serverVersion?: string | null; minVersion?: string;
+    }) => void) => {
       ipcRenderer.on('llm:pullProgress', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('llm:pullProgress');
     },
@@ -445,6 +450,32 @@ const api = {
       }[];
       source: 'remote' | 'bundled';
     }>,
+    // Artha-managed Ollama runtime — install/update Ollama through Artha
+    // (llm/ollamaRuntimeManager.ts) and, with consent, make it the server.
+    runtimeReport: () => ipcRenderer.invoke('ollama:runtimeReport') as Promise<{
+      serverReachable: boolean; serverVersion: string | null; serverIsManaged: boolean;
+      externalServerRunning: boolean; managed: { version: string } | null;
+      pinned: { version: string; source: 'remote' | 'bundled' };
+      updateAvailable: boolean; platformSupported: boolean; consentGranted: boolean;
+    }>,
+    runtimeInstall: () => ipcRenderer.invoke('ollama:runtimeInstall') as Promise<
+      { ok: true; version: string; alreadyInstalled: boolean } | { ok: false; error: string; cancelled: boolean }
+    >,
+    runtimeCancel: () => ipcRenderer.invoke('ollama:runtimeCancel') as Promise<boolean>,
+    // allowStopExternal=true is the user's consent click to replace an Ollama
+    // that Artha did not start (menubar app / Homebrew / service).
+    runtimeSwitch: (opts: { allowStopExternal: boolean }) =>
+      ipcRenderer.invoke('ollama:runtimeSwitch', opts) as Promise<
+        { ok: true; version: string } |
+        { ok: false; reason: 'no_managed_runtime' | 'external_running' | 'external_still_running' | 'start_failed' | 'version_mismatch'; detail: string }
+      >,
+    onRuntimeProgress: (cb: (p: {
+      phase: 'resolving' | 'downloading' | 'verifying' | 'extracting' | 'installed' | 'error' | 'cancelled';
+      version?: string; receivedBytes?: number; totalBytes?: number; percent?: number; error?: string;
+    }) => void) => {
+      ipcRenderer.on('ollama:runtimeProgress', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('ollama:runtimeProgress');
+    },
     // Static provider preset registry (data-only; see llm/providerPresets.ts).
     listProviderPresets: () => ipcRenderer.invoke('llm:listProviderPresets') as Promise<{
       id: string; label: string; kind: 'cloud' | 'gateway' | 'runtime-remote' | 'custom';

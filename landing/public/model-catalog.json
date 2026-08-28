@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updated": "2026-08-12",
+  "updated": "2026-08-28",
   "_comment": "Curated Browse-tab model catalog fetched by installed Artha apps (packages/app/src/llm/modelCatalog.ts). Editing this file updates every installed app within ~6h — no release needed. Keep entries honest: ramRequired gates a warning chip, minOllamaVersion is a display hint. Mirror meaningful changes into BUNDLED_CATALOG (the offline fallback).",
   "models": [
     {
@@ -42,7 +42,7 @@
       "speed": "Medium",
       "description": "Meta's open agentic model (Aug 2026) — built for local multi-step tool use, coding, and vision. Strongest local agent if your machine can hold it.",
       "badge": "New",
-      "minOllamaVersion": "0.11.0"
+      "minOllamaVersion": "0.33.0"
     },
     {
       "tag": "qwen2.5:14b",

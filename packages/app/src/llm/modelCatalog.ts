@@ -84,7 +84,7 @@ export const BUNDLED_CATALOG: CatalogEntry[] = [
     description:
       "Meta's open agentic model (Aug 2026) — built for local multi-step tool use, coding, and vision. Strongest local agent if your machine can hold it.",
     badge: 'New',
-    minOllamaVersion: '0.11.0',
+    minOllamaVersion: '0.33.0',
   },
   {
     tag: 'qwen2.5:14b',

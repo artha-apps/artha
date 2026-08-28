@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, CheckCircle2, AlertTriangle, ExternalLink, RefreshCw, Settings2 } from 'lucide-react';
 import { useChatStore } from '../stores/chat';
+import OllamaRuntimeUpdater from './OllamaRuntimeUpdater';
 
 type Phase = 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'no_model' | 'error';
 interface ModelStatus { phase: Phase; model?: string; detail?: string }
@@ -81,17 +82,19 @@ export default function ModelStatusBanner() {
     );
   }
 
-  // Persistent: Ollama not installed → guide to download (can't auto-install).
+  // Persistent: Ollama not installed → Artha installs its own copy (pinned
+  // official release, checksum-verified) — the website is the fallback.
   if (phase === 'not_installed') {
     return (
       <Card tone="warn" icon={<AlertTriangle size={16} className="text-artha-warn" />}>
         <p className="text-sm font-medium text-artha-text">Ollama isn't installed</p>
         <p className="text-xs text-artha-muted mt-0.5 leading-relaxed">
-          Artha runs models locally via Ollama. Install it once, then Artha starts it for you.
+          Artha runs models locally via Ollama. Artha can install it for you — no terminal, nothing outside Artha's own folder.
         </p>
+        <OllamaRuntimeUpdater variant="inline" onDone={() => { void window.artha.llm.ensureModel(); }} />
         <a href="https://ollama.com/download" target="_blank" rel="noreferrer"
-          className="mt-2 inline-flex items-center gap-1.5 text-xs text-artha-accent hover:underline">
-          Download Ollama <ExternalLink size={11} />
+          className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-artha-muted hover:text-artha-text hover:underline">
+          or download from ollama.com <ExternalLink size={10} />
         </a>
       </Card>
     );

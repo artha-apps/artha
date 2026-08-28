@@ -22,10 +22,38 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import { getDb } from '../db/schema';
 import { isOllamaManaged } from './providerKind';
+import { readManagedRuntime, resolvePinnedVersion, type ManagedRuntime } from './ollamaRuntimeManager';
+import { getServerVersion, compareVersions } from './ollamaVersion';
 
 const execFileAsync = promisify(execFile);
 const OLLAMA_HOST = 'http://localhost:11434';
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// ── Artha-managed runtime (see ollamaRuntimeManager.ts) ────────────────────
+// The userData root is INJECTED by main.ts once the profile is resolved —
+// this module must not resolve paths on its own (bootstrap-safety invariant,
+// threat model §8b). Until set, no managed runtime is considered.
+let managedRoot: string | null = null;
+export function setManagedRuntimeRoot(userDataDir: string): void { managedRoot = userDataDir; }
+/** The Artha-installed Ollama, if any. */
+export function getManagedRuntime(): ManagedRuntime | null {
+  return managedRoot ? readManagedRuntime(managedRoot) : null;
+}
+
+/** Which binary the server WE started came from (null = we didn't start it). */
+export type ServerOrigin = 'managed' | 'system' | 'app';
+let serverOrigin: ServerOrigin | null = null;
+
+/** Durable consent: the user chose "let Artha manage Ollama" — persisted in
+ *  users.settings_json so a login-item Ollama.app re-taking :11434 next boot
+ *  is replaced again WITHOUT re-asking. Off by default; only ever set by the
+ *  explicit consent step in the UI (ollama:runtimeSwitch). */
+export function managedConsentGranted(): boolean {
+  try {
+    const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+    return JSON.parse(row?.settings_json ?? '{}').ollama_runtime_managed === true;
+  } catch { return false; }
+}
 
 export type ModelStatusPhase =
   | 'checking' | 'starting' | 'warming' | 'ready' | 'not_installed' | 'no_model' | 'error';
@@ -71,21 +99,31 @@ const CLI_CANDIDATES = [
 
 const MAC_APP = '/Applications/Ollama.app';
 
-function findCli(): string | undefined {
+/** A system-installed CLI (Homebrew / official installer symlink), if any. */
+function findSystemCli(): string | undefined {
   for (const p of CLI_CANDIDATES) {
     try { if (fs.existsSync(p)) return p; } catch { /* ignore */ }
   }
   return undefined;
 }
+/** The binary to start: the Artha-managed runtime wins when installed (the
+ *  user put it there through Artha precisely so Artha would run it), else a
+ *  system CLI. */
+function findCli(): { path: string; origin: ServerOrigin } | undefined {
+  const managed = getManagedRuntime();
+  if (managed) return { path: managed.binPath, origin: 'managed' };
+  const sys = findSystemCli();
+  return sys ? { path: sys, origin: 'system' } : undefined;
+}
 function macAppInstalled(): boolean {
   try { return fs.existsSync(MAC_APP); } catch { return false; }
 }
-/** Is Ollama installed at all (CLI or macOS app)? */
+/** Is Ollama installed at all (managed runtime, system CLI, or macOS app)? */
 export function ollamaInstalled(): boolean { return !!findCli() || macAppInstalled(); }
 
-/** Start the Ollama server: prefer the CLI (`ollama serve`); else launch the
- *  macOS menubar app (which starts the server). Returns whether a start was
- *  attempted. */
+/** Start the Ollama server: prefer a CLI binary (`ollama serve` — managed
+ *  first, then system); else launch the macOS menubar app (which starts the
+ *  server). Returns whether a start was attempted. */
 async function startServer(): Promise<boolean> {
   const cli = findCli();
   if (cli) {
@@ -93,10 +131,11 @@ async function startServer(): Promise<boolean> {
       // Detached + unref so the daemon outlives a window close; ignore stdio so
       // it doesn't tie to our pipes. We keep the handle to stop it on quit if
       // the user opted in.
-      const child = spawn(cli, ['serve'], { detached: true, stdio: 'ignore' });
+      const child = spawn(cli.path, ['serve'], { detached: true, stdio: 'ignore' });
       child.unref();
       serverProc = child;
       startedByArtha = true;
+      serverOrigin = cli.origin;
       return true;
     } catch { /* fall through to the app */ }
   }
@@ -106,10 +145,145 @@ async function startServer(): Promise<boolean> {
       // The menubar app owns its own server lifecycle — mark that we triggered a
       // start, but leave `serverProc` null so we never kill the user's app.
       startedByArtha = true;
+      serverOrigin = 'app';
       return true;
     } catch { /* fall through */ }
   }
   return false;
+}
+
+/** Poll until the server answers (or not) within `ms`. */
+async function waitUp(ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await isUp()) return true;
+    await sleep(500);
+  }
+  return false;
+}
+async function waitDown(ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (!(await isUp())) return true;
+    await sleep(500);
+  }
+  return false;
+}
+
+/**
+ * Stop an Ollama server Artha did NOT start. Only ever called from the
+ * consent-gated switch below — the user has explicitly agreed that Artha may
+ * replace the copy running on :11434 with its managed one. Graceful first
+ * (quit the menubar app), then a TERM to a process that is verifiably
+ * `ollama`. Never touches anything that isn't Ollama. Returns whether the
+ * port is free afterwards.
+ */
+async function stopExternalServer(): Promise<boolean> {
+  if (process.platform === 'darwin') {
+    try { await execFileAsync('osascript', ['-e', 'tell application "Ollama" to quit']); } catch { /* not running as an app */ }
+    if (await waitDown(6_000)) return true;
+  }
+  if (process.platform === 'win32') {
+    for (const image of ['ollama app.exe', 'ollama.exe']) {
+      try { await execFileAsync('taskkill', ['/IM', image, '/F'], { windowsHide: true }); } catch { /* not running */ }
+    }
+    return waitDown(6_000);
+  }
+  // POSIX: find the listener on :11434 and TERM it if it is an ollama process.
+  try {
+    const { stdout } = await execFileAsync('lsof', ['-tiTCP:11434', '-sTCP:LISTEN']);
+    for (const pidStr of stdout.split('\n').map(s => s.trim()).filter(Boolean)) {
+      const pid = Number(pidStr);
+      if (!Number.isInteger(pid) || pid <= 1) continue;
+      try {
+        const { stdout: comm } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)]);
+        if (!/ollama/i.test(comm)) continue; // a squatter — not ours to kill
+        process.kill(pid, 'SIGTERM');
+      } catch { /* gone already */ }
+    }
+  } catch { /* lsof missing or nothing listening */ }
+  return waitDown(6_000);
+}
+
+export type SwitchResult =
+  | { ok: true; version: string }
+  | { ok: false; reason: 'no_managed_runtime' | 'external_running' | 'external_still_running' | 'start_failed' | 'version_mismatch'; detail: string };
+
+/**
+ * Make the Artha-managed runtime the server on :11434.
+ *   - Nothing running → start managed.
+ *   - Artha started the current server → stop it, start managed.
+ *   - Someone ELSE started it → only with `allowStopExternal` (the consent
+ *     click), else return `external_running` so the UI can ask.
+ * Verifies the version that answers afterwards is really the managed one.
+ */
+export async function switchToManagedRuntime(opts: { allowStopExternal: boolean }): Promise<SwitchResult> {
+  const managed = getManagedRuntime();
+  if (!managed) return { ok: false, reason: 'no_managed_runtime', detail: 'Artha has not installed its own Ollama yet.' };
+
+  if (await isUp()) {
+    const current = await getServerVersion(OLLAMA_HOST);
+    if (startedByArtha && serverOrigin === 'managed' && current === managed.version) return { ok: true, version: managed.version };
+    if (startedByArtha && serverProc?.pid) {
+      await stopOllamaIfStarted();
+      if (!(await waitDown(6_000))) return { ok: false, reason: 'external_still_running', detail: 'The previous Ollama server did not stop.' };
+    } else {
+      if (!opts.allowStopExternal) {
+        return { ok: false, reason: 'external_running', detail: `Ollama ${current ?? '(unknown version)'} is running outside Artha.` };
+      }
+      if (!(await stopExternalServer())) {
+        return { ok: false, reason: 'external_still_running', detail: 'Artha could not stop the Ollama that is already running on this machine (it may be a system service). Quit it, then try again.' };
+      }
+    }
+  }
+
+  startedByArtha = false; serverProc = null; serverOrigin = null;
+  if (!(await startServer()) || serverOrigin !== 'managed') {
+    return { ok: false, reason: 'start_failed', detail: 'Could not start the Artha-managed Ollama.' };
+  }
+  if (!(await waitUp(20_000))) return { ok: false, reason: 'start_failed', detail: 'The Artha-managed Ollama did not start in time.' };
+  const v = await getServerVersion(OLLAMA_HOST);
+  if (v !== managed.version) {
+    return { ok: false, reason: 'version_mismatch', detail: `Expected Ollama ${managed.version} to answer but got ${v ?? 'nothing'}.` };
+  }
+  return { ok: true, version: v };
+}
+
+/** Everything the Models UI needs to explain the engine state honestly. */
+export interface RuntimeReport {
+  serverReachable: boolean;
+  serverVersion: string | null;
+  /** True when the running server was started by Artha from its managed copy. */
+  serverIsManaged: boolean;
+  /** True when a server is up that Artha did not start (menubar app, brew, systemd). */
+  externalServerRunning: boolean;
+  managed: { version: string } | null;
+  pinned: { version: string; source: 'remote' | 'bundled' };
+  /** The pinned version is newer than what is answering (or than the managed copy when nothing answers). */
+  updateAvailable: boolean;
+  platformSupported: boolean;
+  consentGranted: boolean;
+}
+
+export async function getRuntimeReport(): Promise<RuntimeReport> {
+  const [up, pinned] = await Promise.all([isUp(), resolvePinnedVersion()]);
+  const serverVersion = up ? await getServerVersion(OLLAMA_HOST) : null;
+  const managed = getManagedRuntime();
+  const serverIsManaged = up && startedByArtha && serverOrigin === 'managed';
+  const baseline = serverVersion ?? managed?.version ?? null;
+  const supported = ['darwin', 'win32', 'linux'].includes(process.platform)
+    && ['arm64', 'x64'].includes(process.arch);
+  return {
+    serverReachable: up,
+    serverVersion,
+    serverIsManaged,
+    externalServerRunning: up && !startedByArtha,
+    managed: managed ? { version: managed.version } : null,
+    pinned,
+    updateAvailable: baseline === null || compareVersions(baseline, pinned.version) < 0,
+    platformSupported: supported,
+    consentGranted: managedConsentGranted(),
+  };
 }
 
 /** Active model row from the DB (mirrors getActiveLLMClient), including
@@ -175,6 +349,23 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
     return st;
   }
 
+  // Durable consent path: the user told Artha to manage Ollama, but something
+  // else (typically the login-item menubar app) is answering on :11434 with an
+  // OLDER version than Artha's managed copy. Replace it — the consent copy said
+  // exactly this would happen. Failure is non-fatal: we carry on with whatever
+  // is running and the Models panel shows the honest state.
+  if (await isUp()) {
+    const managed = getManagedRuntime();
+    if (managed && !startedByArtha && managedConsentGranted()) {
+      const v = await getServerVersion(OLLAMA_HOST);
+      if (v && compareVersions(v, managed.version) < 0) {
+        set({ phase: 'starting', model: m?.name, detail: `Switching to Ollama ${managed.version}…` });
+        const sw = await switchToManagedRuntime({ allowStopExternal: true });
+        if (!sw.ok) console.warn(`[Artha] managed-runtime switch skipped: ${sw.detail}`);
+      }
+    }
+  }
+
   if (!(await isUp())) {
     // "Install Ollama" is only the right message when a LOCAL model is (or is
     // about to be) the active one. With nothing configured at all, the honest
@@ -186,13 +377,7 @@ export async function ensureModelReady(emit: (s: ModelStatus) => void): Promise<
     set({ phase: 'starting', model: m?.name });
     if (!(await startServer())) return set({ phase: m ? 'not_installed' : 'no_model', ollamaInstalled: false });
     // Cold daemon start is usually a couple seconds; poll up to 20s.
-    const deadline = Date.now() + 20_000;
-    let up = false;
-    while (Date.now() < deadline) {
-      if (await isUp()) { up = true; break; }
-      await sleep(600);
-    }
-    if (!up) return set({ phase: 'error', detail: 'Ollama did not start in time.' });
+    if (!(await waitUp(20_000))) return set({ phase: 'error', detail: 'Ollama did not start in time.' });
   }
 
   // Server up but nothing active: report the truthful empty state (the old
@@ -301,5 +486,7 @@ export async function stopOllamaIfStarted(): Promise<void> {
     try { serverProc.kill('SIGTERM'); } catch { /* best-effort */ }
   } finally {
     serverProc = null;
+    startedByArtha = false;
+    serverOrigin = null;
   }
 }

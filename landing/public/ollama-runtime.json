@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-08-28",
+  "_comment": "Curated Ollama release that installed Artha apps install/update to THROUGH Artha (packages/app/src/llm/ollamaRuntimeManager.ts). Binaries are fetched from the official GitHub release for this exact tag and SHA-256-verified against its sha256sum.txt. Only bump after running Artha against the new version; apps never move BELOW their bundled pin (BUNDLED_PIN_VERSION), so this can only roll users forward.",
+  "version": "0.33.2"
+}
