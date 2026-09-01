@@ -22,6 +22,7 @@ import {
   Cloud, User, Building2, KeyRound, Lock, HardDrive, Shield,
 } from 'lucide-react';
 import OrgSetup from './OrgSetup';
+import OllamaRuntimeUpdater from '../OllamaRuntimeUpdater';
 import MemoryImport from '../MemoryImport/MemoryImport';
 import { BrandWordmark } from '../ui/BrandWordmark';
 
@@ -335,13 +336,14 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               {notInstalled ? (
                 <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
                   <p className="text-sm text-artha-text font-medium mb-1">Install Ollama to run models locally</p>
-                  <p className="text-xs text-artha-muted leading-relaxed mb-3">
-                    Artha uses <span className="text-artha-text">Ollama</span> to run models on your machine. Install it once —
-                    after that, Artha starts it for you automatically.
+                  <p className="text-xs text-artha-muted leading-relaxed mb-1">
+                    Artha uses <span className="text-artha-text">Ollama</span> to run models on your machine. Artha can install it
+                    for you right here — after that, it starts Ollama automatically.
                   </p>
+                  <OllamaRuntimeUpdater variant="inline" onDone={() => { void refresh(); }} />
                   <a href="https://ollama.com/download" target="_blank" rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 text-xs text-artha-accent hover:underline">
-                    Download Ollama <ExternalLink size={11} />
+                    className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-artha-muted hover:text-artha-text hover:underline">
+                    or download from ollama.com <ExternalLink size={10} />
                   </a>
                 </div>
               ) : runtimeError ? (

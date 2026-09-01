@@ -22,7 +22,7 @@ import { BrowserController } from './browser/controller';
 import { SchedulerService } from './scheduler/scheduler';
 import { initSentry, withTransaction, captureException, setOllamaConnectedTag } from './sentry';
 import { startHealthCheckpointing, stopHealthCheckpointing } from './db/health';
-import { ensureModelReady, unloadActiveModel, stopOllamaIfStarted } from './llm/ollamaRuntime';
+import { ensureModelReady, unloadActiveModel, stopOllamaIfStarted, setManagedRuntimeRoot } from './llm/ollamaRuntime';
 import { resolveQaProfile } from './system/qaProfile';
 
 /** Probe whether the local Ollama runtime is reachable. Best-effort with a
@@ -196,6 +196,10 @@ async function createWindow(): Promise<void> {
   // pre-warm the active model so the user's first message is fast (no cold
   // load). Non-blocking — the window is already up; progress streams to the
   // renderer's startup banner via `model:status`.
+  // The Artha-managed Ollama (llm/ollamaRuntimeManager.ts) lives under the
+  // RESOLVED profile root — injected here, after QA-profile resolution, per
+  // the bootstrap-safety invariant (no per-module path resolution).
+  setManagedRuntimeRoot(app.getPath('userData'));
   ensureModelReady((status) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('model:status', status);

@@ -82,7 +82,12 @@ import {
   setPackShared, describeSharedPacks,
 } from '../agent/contextPacks';
 import { setSentryRuntimeEnabled, setOllamaConnectedTag, setMcpServerCountTag } from '../sentry';
-import { ensureModelReady, getModelStatus, getSemanticStatus } from '../llm/ollamaRuntime';
+import {
+  ensureModelReady, getModelStatus, getSemanticStatus,
+  getRuntimeReport, switchToManagedRuntime,
+} from '../llm/ollamaRuntime';
+import { installManagedRuntime } from '../llm/ollamaRuntimeManager';
+import { getServerVersion, versionSatisfies, isOutdatedPullError } from '../llm/ollamaVersion';
 import { getDefaultProfile } from '../llm/profiles';
 import { FREE_ENTITLEMENTS } from '../license/entitlements';
 import { invalidateEntitlements, parseAndVerify } from '../license/verify';
@@ -1481,7 +1486,25 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // `llm:pullProgress` event so onboarding can show a real download bar.
   ipcMain.handle('llm:pullModelStream', async (_e, name: string) => {
     const emit = (payload: unknown) => safeSend('llm:pullProgress', payload);
+    /** The one failure users must never see raw: Ollama's 412 "requires a
+     *  newer version … download at ollama.com". Artha can update Ollama
+     *  itself, so the error carries a machine-readable code the UI turns into
+     *  an "Update Ollama" action instead of a website link. */
+    const outdated = (serverVersion: string | null, minVersion?: string) => {
+      const need = minVersion ? `Ollama ${minVersion} or newer` : 'a newer Ollama';
+      const have = serverVersion ? ` — this machine is running ${serverVersion}` : '';
+      emit({ name, status: 'error', code: 'ollama_outdated', serverVersion, minVersion,
+        error: `${name} needs ${need}${have}. Update Ollama through Artha to install it.` });
+      return false;
+    };
     try {
+      // Pre-flight: if the catalog states a minimum server version, check it
+      // BEFORE spending the user's bandwidth on a pull that will 412 anyway.
+      const serverVersion = await getServerVersion();
+      const entry = (await getModelCatalog()).entries.find(e => e.tag === name);
+      if (entry?.minOllamaVersion && !versionSatisfies(serverVersion, entry.minOllamaVersion)) {
+        return outdated(serverVersion, entry.minOllamaVersion);
+      }
       const res = await fetch('http://localhost:11434/api/pull', {
         method: 'POST',
         body: JSON.stringify({ name, stream: true }),
@@ -1518,6 +1541,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
       // unconditional success — so a bad tag / 404 manifest / full disk
       // finished onboarding with a broken active model (audit C1).
       if (streamError) {
+        // A hand-typed tag (not in the catalog) can still hit the 412 — map
+        // it to the same actionable code rather than echoing Ollama's text.
+        // Only cite the catalog's minimum when the server actually fails it —
+        // a stale catalog entry must not produce "needs 0.11.0, you have 0.32.5".
+        if (isOutdatedPullError(streamError)) {
+          const min = entry?.minOllamaVersion;
+          return outdated(serverVersion, min && !versionSatisfies(serverVersion, min) ? min : undefined);
+        }
         emit({ name, status: 'error', error: streamError });
         return false;
       }
@@ -1607,6 +1638,49 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // list as offline fallback, so newly released models reach the Browse tab
   // without an app release (llm/modelCatalog.ts). Never rejects.
   ipcMain.handle('llm:getModelCatalog', () => getModelCatalog());
+
+  // ── Artha-managed Ollama runtime ─────────────────────────────────────────
+  // Install/update Ollama THROUGH Artha (llm/ollamaRuntimeManager.ts): pinned
+  // official release, SHA-256-verified, extracted under userData, never
+  // touching the user's own install. Switching :11434 to the managed copy is
+  // consent-gated (llm/ollamaRuntime.ts switchToManagedRuntime).
+  ipcMain.handle('ollama:runtimeReport', () => getRuntimeReport());
+
+  let runtimeInstallAbort: AbortController | null = null;
+  ipcMain.handle('ollama:runtimeInstall', async () => {
+    if (runtimeInstallAbort) return { ok: false, error: 'An Ollama update is already in progress.' };
+    runtimeInstallAbort = new AbortController();
+    try {
+      const res = await installManagedRuntime({
+        userDataDir: app.getPath('userData'),
+        signal: runtimeInstallAbort.signal,
+        emit: (p) => safeSend('ollama:runtimeProgress', p),
+      });
+      return res.ok ? { ok: true, version: res.runtime.version, alreadyInstalled: res.alreadyInstalled }
+                    : { ok: false, error: res.error, cancelled: res.cancelled === true };
+    } finally {
+      runtimeInstallAbort = null;
+    }
+  });
+  ipcMain.handle('ollama:runtimeCancel', () => { runtimeInstallAbort?.abort(); return true; });
+
+  // `allowStopExternal: true` is the consent click — it also persists the
+  // durable "Artha manages Ollama" preference so a login-item Ollama.app that
+  // re-takes the port next boot is replaced without asking again.
+  ipcMain.handle('ollama:runtimeSwitch', async (_e, opts: { allowStopExternal?: boolean }) => {
+    const allow = opts?.allowStopExternal === true;
+    const res = await switchToManagedRuntime({ allowStopExternal: allow });
+    if (res.ok && allow) {
+      try {
+        const db = getDb();
+        const existing = JSON.parse((db.prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string })?.settings_json ?? '{}');
+        db.prepare(`UPDATE users SET settings_json=? WHERE user_id='default'`).run(JSON.stringify({ ...existing, ollama_runtime_managed: true }));
+      } catch { /* preference is a convenience; the switch itself succeeded */ }
+    }
+    // Re-warm the active model on the new server and refresh the status banner.
+    if (res.ok) void ensureModelReady((s) => safeSend('model:status', s));
+    return res;
+  });
 
   // Resolve key + TARGET for a probe. Two modes, deliberately asymmetric:
   //   - apiKey (pre-save): the renderer supplies both URL and the key it

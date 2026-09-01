@@ -3,11 +3,26 @@
  * and set the active model with one click. Includes a curated catalog
  * so users can pull new models directly from the UI.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Cpu, CheckCircle2, RefreshCw, HardDrive,
-  ChevronRight, Cloud, Plus, Trash2, Lock, Shield, Download, Zap, Star,
+  ChevronRight, Cloud, Plus, Trash2, Lock, Shield, Download, Zap, Star, ArrowUpCircle,
 } from 'lucide-react';
+import OllamaRuntimeUpdater from '../OllamaRuntimeUpdater';
+
+/** Tiny semver compare for the Browse tab's "needs a newer Ollama" gate —
+ *  mirrors llm/ollamaVersion.ts (renderer can't import main-process code). */
+function versionLt(a: string | null | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const pa = /^v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(a);
+  const pb = /^v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(b);
+  if (!pa || !pb) return false;
+  for (let i = 1; i <= 3; i++) {
+    const x = Number(pa[i] ?? 0), y = Number(pb[i] ?? 0);
+    if (x !== y) return x < y;
+  }
+  return false;
+}
 
 /** Subset of Ollama's /api/tags model entry we actually render. */
 interface OllamaModel {
@@ -67,6 +82,11 @@ interface PullProgress {
   status: string;
   percent?: number;
   error?: string;
+  /** 'ollama_outdated' = the server is too old for this model. Rendered as an
+   *  "Update Ollama" action, never as Ollama's raw 412 text. */
+  code?: 'ollama_outdated';
+  serverVersion?: string | null;
+  minVersion?: string;
 }
 
 /** One benchmark row from `model_profiles` (see router/benchmark.ts). */
@@ -174,7 +194,7 @@ const MODEL_CATALOG: CatalogEntry[] = [
     speed: 'Medium',
     description: 'Meta\'s open agentic model (Aug 2026) — built for local multi-step tool use, coding, and vision. Strongest local agent if your machine can hold it.',
     badge: 'New',
-    minOllamaVersion: '0.11.0',
+    minOllamaVersion: '0.33.0',
   },
   {
     tag: 'qwen2.5:14b',
@@ -371,6 +391,25 @@ export default function ModelsPanel() {
   // is the last submitted tag; its progress renders via the shared `pulling` map.
   const [customTag, setCustomTag] = useState('');
   const [customPullTag, setCustomPullTag] = useState<string | null>(null);
+
+  // Ollama engine (Artha-managed runtime). `serverVersion` gates catalog
+  // entries with a `minOllamaVersion` BEFORE the user clicks Pull; a model
+  // card's "Update Ollama" scrolls to the engine card and auto-starts it.
+  const [serverVersion, setServerVersion] = useState<string | null>(null);
+  const [runtimeAutoStart, setRuntimeAutoStart] = useState(false);
+  const engineRef = useRef<HTMLDivElement | null>(null);
+  const requestRuntimeUpdate = () => {
+    setTab('browse');
+    setRuntimeAutoStart(true);
+    setTimeout(() => engineRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  };
+  /** After the engine was updated: refresh everything and clear the
+   *  "needs newer Ollama" errors so the Pull buttons come back. */
+  const onRuntimeUpdated = () => {
+    setRuntimeAutoStart(false);
+    setPulling(prev => Object.fromEntries(Object.entries(prev).filter(([, p]) => p.code !== 'ollama_outdated')));
+    void load();
+  };
 
   /** Pull model list + hardware info + active model.
    *  Ollama reachability is checked independently so a hardware-detection
@@ -716,12 +755,11 @@ export default function ModelsPanel() {
         </div>
       )}
 
-      {/* Ollama offline warning */}
+      {/* Ollama offline warning — Artha starts/installs Ollama itself; the
+          user is never told to run a terminal command. */}
       {!ollamaOnline && (
         <div className="bg-artha-danger/10 border border-artha-danger/20 rounded-xl p-4 mb-6 text-sm text-artha-danger">
-          Ollama is not running. Start it with{' '}
-          <code className="bg-artha-danger/10 px-1.5 py-0.5 rounded font-mono text-xs">ollama serve</code>{' '}
-          then refresh. Or use a cloud model below.
+          Ollama isn't running. Install or start it through Artha in the Browse &amp; Install tab, or use a cloud model below.
         </div>
       )}
 
@@ -952,6 +990,16 @@ export default function ModelsPanel() {
       {/* ── Browse & Install catalog ── */}
       {tab === 'browse' && (
         <div className="space-y-3">
+          {/* Ollama engine — version, update-through-Artha, consent-gated
+              switch. Model cards that need a newer server point here. */}
+          <div ref={engineRef}>
+            <OllamaRuntimeUpdater
+              autoStart={runtimeAutoStart}
+              onReport={(r) => setServerVersion(r.serverVersion)}
+              onDone={onRuntimeUpdated}
+            />
+          </div>
+
           {/* Free-text pull — escape hatch so brand-new models (not yet in the
               curated catalog) can still be installed from inside Artha. */}
           <div className="rounded-xl border border-artha-border bg-artha-s2 p-3">
@@ -978,7 +1026,14 @@ export default function ModelsPanel() {
             )}
             {customPullTag && pulling[customPullTag] && (() => {
               const p = pulling[customPullTag];
-              return p.status === 'error' ? (
+              return p.status === 'error' && p.code === 'ollama_outdated' ? (
+                <div className="mt-2 flex items-center gap-2 flex-wrap text-xs text-amber-400">
+                  <span>{p.error}</span>
+                  <button onClick={requestRuntimeUpdate} className="inline-flex items-center gap-1 text-artha-accent hover:underline">
+                    <ArrowUpCircle size={12} /> Update Ollama
+                  </button>
+                </div>
+              ) : p.status === 'error' ? (
                 <p className="mt-2 text-xs text-artha-danger">{p.error ?? 'Pull failed'} — <code className="font-mono">{customPullTag}</code></p>
               ) : p.status === 'success' ? (
                 <span className="mt-2 flex items-center gap-1 text-xs text-artha-success">
@@ -1004,6 +1059,10 @@ export default function ModelsPanel() {
             const progress = pulling[entry.tag];
             const isPulling = !!progress && progress.status !== 'success' && progress.status !== 'error';
             const fitsRam = !hardware || hardware.gbRam >= entry.ramRequired;
+            // The running server is older than this model needs → offer the
+            // update up front instead of letting the pull fail with a 412.
+            const needsNewer = !isInstalled && versionLt(serverVersion, entry.minOllamaVersion);
+            const outdatedErr = progress?.status === 'error' && progress.code === 'ollama_outdated';
 
             return (
               <div
@@ -1049,7 +1108,9 @@ export default function ModelsPanel() {
                       {entry.minOllamaVersion && (
                         <>
                           <span className="text-artha-border">·</span>
-                          <span className="text-[11px] text-artha-muted">Ollama ≥ {entry.minOllamaVersion}</span>
+                          <span className={`text-[11px] ${needsNewer ? 'text-amber-400' : 'text-artha-muted'}`}>
+                            {needsNewer ? `Needs Ollama ≥ ${entry.minOllamaVersion} (you have ${serverVersion})` : `Ollama ≥ ${entry.minOllamaVersion}`}
+                          </span>
                         </>
                       )}
                     </div>
@@ -1086,6 +1147,13 @@ export default function ModelsPanel() {
                           </div>
                         )}
                       </div>
+                    ) : needsNewer || outdatedErr ? (
+                      <button
+                        onClick={requestRuntimeUpdate}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 text-xs font-medium transition-colors"
+                      >
+                        <ArrowUpCircle size={12} /> Update Ollama
+                      </button>
                     ) : progress?.status === 'error' ? (
                       <button
                         onClick={() => pullModel(entry.tag)}
@@ -1109,9 +1177,10 @@ export default function ModelsPanel() {
                   </div>
                 </div>
 
-                {/* Error message */}
+                {/* Error message — an outdated-server error is advice, not a
+                    failure: amber + the update action, never Ollama's raw text. */}
                 {progress?.status === 'error' && progress.error && (
-                  <p className="mt-2 text-xs text-artha-danger pl-14">{progress.error}</p>
+                  <p className={`mt-2 text-xs pl-14 ${outdatedErr ? 'text-amber-400' : 'text-artha-danger'}`}>{progress.error}</p>
                 )}
               </div>
             );
