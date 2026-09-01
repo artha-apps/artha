@@ -164,8 +164,12 @@ describe('installManagedRuntime', () => {
     expect(res.runtime.binPath.startsWith(runtimeRoot(tmp))).toBe(true);
     // The recorded pointer round-trips through the reader.
     expect(readManagedRuntime(tmp)?.binPath).toBe(res.runtime.binPath);
-    // Executable bit set and it actually runs.
-    expect(execFileSync(res.runtime.binPath).toString().trim()).toBe('0.33.2');
+    // Executable bit set and it actually runs. The fake binary is a shell
+    // script, so this last assertion is POSIX-only (the pipeline itself is
+    // exercised identically on Windows — download, verify, tar, pointer).
+    if (process.platform !== 'win32') {
+      expect(execFileSync(res.runtime.binPath).toString().trim()).toBe('0.33.2');
+    }
     // Archive and temp dirs are gone.
     expect(fs.existsSync(path.join(runtimeRoot(tmp), 'downloads', 'ollama-darwin.tgz'))).toBe(false);
     expect(fs.existsSync(path.join(runtimeRoot(tmp), 'versions', '0.33.2.tmp'))).toBe(false);
