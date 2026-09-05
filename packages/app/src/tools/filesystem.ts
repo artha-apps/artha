@@ -327,15 +327,34 @@ function matchPattern(filename: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, 'i').test(filename);
 }
 
+/** Max entries a single listing/search returns to the model. A real Downloads
+ *  folder (500+ files) rendered as pretty JSON with a full path per entry was
+ *  ~95k chars ≈ 30k tokens — it overflowed a 32k local context and cost a 72B
+ *  model 5+ minutes of prompt evaluation before Node's fetch gave up. Listings
+ *  are for orientation; anything bigger should be narrowed with fs_search_files. */
+export const MAX_LISTING_ENTRIES = 150;
+
 async function listDirectoryImpl(dirPath: string, roots?: ScopeRoot[] | null): Promise<string> {
   const resolved = safePath(expandTilde(dirPath), roots);
   const entries = await fsp.readdir(resolved, { withFileTypes: true });
-  const result = entries.map(e => ({
-    name: e.name,
-    type: e.isDirectory() ? 'folder' : 'file',
-    path: path.join(resolved, e.name),
-  }));
-  return JSON.stringify({ directory: resolved, count: result.length, entries: result }, null, 2);
+  // Compact shape: the directory once, then bare names (folders marked with a
+  // trailing "/") — the model joins directory + name itself. Folders first,
+  // then files, case-insensitive, so a capped listing is still predictable.
+  const sorted = [...entries].sort((a, b) => {
+    const da = a.isDirectory() ? 0 : 1, dbb = b.isDirectory() ? 0 : 1;
+    return da - dbb || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+  const shown = sorted.slice(0, MAX_LISTING_ENTRIES).map(e => e.isDirectory() ? `${e.name}/` : e.name);
+  const omitted = sorted.length - shown.length;
+  return JSON.stringify({
+    directory: resolved,
+    count: sorted.length,
+    entries: shown,
+    ...(omitted > 0 ? {
+      truncated: omitted,
+      hint: `${omitted} more entries not shown. Use fs_search_files with a pattern (e.g. "*.xlsx", "Trinity*") to find specific files.`,
+    } : {}),
+  });
 }
 
 async function searchFilesImpl(directory: string, pattern: string, recursive = false, roots?: ScopeRoot[] | null): Promise<string> {
@@ -362,7 +381,12 @@ async function searchFilesImpl(directory: string, pattern: string, recursive = f
   }
 
   await walk(resolved);
-  return JSON.stringify({ pattern, directory: resolved, count: matches.length, files: matches }, null, 2);
+  const shown = matches.slice(0, MAX_LISTING_ENTRIES);
+  const omitted = matches.length - shown.length;
+  return JSON.stringify({
+    pattern, directory: resolved, count: matches.length, files: shown,
+    ...(omitted > 0 ? { truncated: omitted, hint: `${omitted} more matches not shown — use a narrower pattern.` } : {}),
+  });
 }
 
 async function createDirectoryImpl(dirPath: string, roots?: ScopeRoot[] | null): Promise<string> {

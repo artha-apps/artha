@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectsWebAction,
+  detectsFileAction,
   shouldNudgeToAct,
   detectsSendIntent,
   shouldNudgeToSend,
@@ -209,5 +210,52 @@ describe('shouldNudgeToSend', () => {
   });
   it('does NOT nudge on a non-send goal', () => {
     expect(shouldNudgeToSend({ ...base, goal: 'summarize my inbox' })).toBe(false);
+  });
+});
+
+// ── File-action guard (the "move my spreadsheet" narration bug, 2026-09-05) ──
+describe('detectsFileAction', () => {
+  it('recognises file move/copy/organise requests', () => {
+    expect(detectsFileAction(
+      "move the database which is in my download folder in excel sheet named 'Trinity customer DB B2C (US)' to my project folder"
+    )).toBe(true);
+    expect(detectsFileAction('copy all PDFs from Desktop into ~/Documents/Invoices')).toBe(true);
+    expect(detectsFileAction('organise my Downloads folder by file type')).toBe(true);
+    expect(detectsFileAction('create a folder called Archive on my desktop')).toBe(true);
+    expect(detectsFileAction('delete the screenshots older than a week')).toBe(true);
+  });
+  it('ignores non-file goals', () => {
+    expect(detectsFileAction('what can I do to create a blog website')).toBe(false);
+    expect(detectsFileAction('send an email to alex@example.com')).toBe(false);
+    expect(detectsFileAction('summarise the latest news about AI')).toBe(false);
+    expect(detectsFileAction('hello, how are you?')).toBe(false);
+  });
+});
+
+describe('shouldNudgeToAct — file goals', () => {
+  const narratedMove = (o: Partial<ActGuardState> = {}): ActGuardState => ({
+    goal: "move the excel sheet 'Trinity customer DB' from Downloads to my project folder",
+    browserToolCalls: 0,
+    fsToolCalls: 0,
+    mutationCount: 0,
+    nudges: 0,
+    maxNudges: 2,
+    content: 'Step 1: Verify the presence of the Excel file in the Downloads folder.',
+    ...o,
+  });
+  it('rejects narration of a file task when no fs tool was ever called', () => {
+    expect(shouldNudgeToAct(narratedMove())).toBe(true);
+  });
+  it('accepts once the model has actually touched the filesystem or mutated', () => {
+    expect(shouldNudgeToAct(narratedMove({ fsToolCalls: 2 }))).toBe(false);
+    expect(shouldNudgeToAct(narratedMove({ mutationCount: 1 }))).toBe(false);
+  });
+  it('lets a genuine clarifying question through and respects the cap', () => {
+    expect(shouldNudgeToAct(narratedMove({ content: 'Which of the two Trinity files do you mean?' }))).toBe(false);
+    expect(shouldNudgeToAct(narratedMove({ nudges: 2 }))).toBe(false);
+  });
+  it('still leaves web-goal semantics unchanged (fsToolCalls omitted)', () => {
+    expect(shouldNudgeToAct(narratedEmail())).toBe(true);
+    expect(shouldNudgeToAct(narratedEmail({ browserToolCalls: 3 }))).toBe(false);
   });
 });

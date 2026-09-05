@@ -72,3 +72,26 @@ export function filterToolsByAllowlist(
     return allowedTools.some(a => (a.endsWith('_') ? name.startsWith(a) : name === a));
   });
 }
+
+/** How a resolved skill's allowlist applies to the run that uses it.
+ *  - 'restrict': the allowlist IS the tool scope. Used when a human chose the
+ *    skill on purpose — an explicit "/slug" invocation, or a composed
+ *    sub-capability invoked by name — so the box is intentional.
+ *  - 'advise': the skill was picked FOR the user (LLM auto-match, project or
+ *    Context-Pack default). Its playbook still shapes the prompt, but its
+ *    allowlist must NOT remove tools. A mis-routed message ("move my customer
+ *    spreadsheet to my project folder" auto-matched to the CRM agent) would
+ *    otherwise strip the very tools the goal needs; Ollama then silently
+ *    discards the model's call to an unlisted tool, the run sees empty output,
+ *    and it ends in narration that looks like a completed task. */
+export type SkillToolScope = 'restrict' | 'advise';
+
+/** The allowlist a run should actually enforce for `skill` — its own list when
+ *  the scope is restrictive, and NO filter ([] = all tools) when advisory. */
+export function effectiveAllowedTools(
+  skill: { allowedTools: string[]; toolScope?: SkillToolScope } | null | undefined,
+): string[] {
+  if (!skill) return [];
+  if (skill.toolScope === 'advise') return [];
+  return skill.allowedTools;
+}

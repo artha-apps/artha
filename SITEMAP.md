@@ -45,6 +45,8 @@
 | `src/db/health.ts` | DB health heartbeat — `startHealthCheckpointing()` writes a `db_health.checkpointed_at` row + Sentry breadcrumb every 30 min (disaster-recovery forensics) |
 | **agent/** | |
 | `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory + @-mention + Context Pack + live-environment context injection (date/time/timezone/OS/user), session skill fallback chain (pack skill → project default), tool dispatch |
+| `src/agent/historyDedupe.ts` | `dropEchoedGoal()` — strips the trailing copy of the current user request from session history so the ReAct prompt carries the goal once, not twice (pure; `historyDedupe.test.ts`) |
+| `src/agent/toolResultBudget.ts` | `clampToolResult()` — caps the model-facing copy of a tool result (~12k chars) with an explicit truncation marker; audit/UI keep the full text (`toolResultBudget.test.ts`) |
 | `src/agent/folderTree.ts` | `buildShallowTree()` — renders a shallow, noise-filtered directory tree for the working-scope context block |
 | `src/agent/mentionResolver.ts` | `resolveMentionBlock()` — expands `@chat:"title"` / `@memory:"name"` composer tokens into a REFERENCED CONTEXT prompt block at send time (condensed transcript / memory content, NOTE line for unresolved refs) |
 | `src/agent/mentionResolver.test.ts` | Vitest — mention grammar, 3-ref cap, transcript reversal/clipping, unresolved-NOTE, DB-error degradation |

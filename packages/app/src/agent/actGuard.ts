@@ -26,6 +26,16 @@ export function detectsWebAction(goal: string): boolean {
   );
 }
 
+/** Does the goal ask Artha to DO something to files on disk (move, copy,
+ *  rename, delete, organise, create a folder…)? Same role as detectsWebAction
+ *  for the filesystem: the guard it gates only fires when the model made ZERO
+ *  fs_* tool calls and nothing mutated, so a false positive is harmless. */
+export function detectsFileAction(goal: string): boolean {
+  const verb = /\b(move|copy|rename|delete|remove|trash|organi[sz]e|tidy|sort|archive|put|place|transfer|relocate|create|make|save)\b/i;
+  const object = /\b(files?|folders?|director(?:y|ies)|spreadsheets?|sheets?|excel|xlsx?|csv|pdfs?|docx?|documents?|screenshots?|photos?|images?|pictures?|videos?|downloads?|desktop|database)\b/i;
+  return verb.test(goal) && object.test(goal);
+}
+
 /** Inputs the orchestrator feeds the guard at the moment the model returns a
  *  plain-text (no-tool-call) reply. */
 export interface ActGuardState {
@@ -33,6 +43,9 @@ export interface ActGuardState {
   goal: string;
   /** How many browser_* tools the model has called so far this run. */
   browserToolCalls: number;
+  /** How many fs_* tools the model has called so far this run (optional so
+   *  older callers/tests that only care about web goals keep working). */
+  fsToolCalls?: number;
   /** How many real mutations (file moves, etc.) happened this run. */
   mutationCount: number;
   /** How many act-nudges we've already injected this run. */
@@ -53,13 +66,12 @@ export interface ActGuardState {
  *   - the reply isn't a genuine clarifying question (contains no "?").
  */
 export function shouldNudgeToAct(s: ActGuardState): boolean {
-  return (
-    s.browserToolCalls === 0 &&
-    s.mutationCount === 0 &&
-    s.nudges < s.maxNudges &&
-    !s.content.includes('?') &&
-    detectsWebAction(s.goal)
-  );
+  if (s.mutationCount !== 0 || s.nudges >= s.maxNudges || s.content.includes('?')) return false;
+  // Web goal narrated without ever driving the browser, OR file goal narrated
+  // without ever touching the filesystem. Either way nothing happened.
+  const webNarrated = detectsWebAction(s.goal) && s.browserToolCalls === 0;
+  const fileNarrated = detectsFileAction(s.goal) && (s.fsToolCalls ?? 0) === 0;
+  return webNarrated || fileNarrated;
 }
 
 /** Does the goal ask Artha to SEND a message/email (a consequential delivery,
