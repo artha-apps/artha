@@ -3,6 +3,7 @@
  * and the Electron main process (Node.js). Never expose raw ipcRenderer.
  */
 import { contextBridge, ipcRenderer } from 'electron';
+import type { AgentRoute } from './router/agentRouter';
 import type { SkillMetric, SkillModelStats, SkillToolUsage, SkillFailure } from './skills/metrics';
 
 /**
@@ -174,6 +175,12 @@ const api = {
     onSkillActive: (cb: (payload: { slug: string; name: string; icon: string }) => void) => {
       ipcRenderer.on('agent:skillActive', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:skillActive');
+    },
+    /** Which model the agent loop is ACTUALLY running on for this run, and why
+     *  (auto-routed vs the user's pick) — drives the header chip's "auto" state. */
+    onModelRouted: (cb: (route: AgentRoute) => void) => {
+      ipcRenderer.on('agent:modelRouted', (_e, r) => cb(r));
+      return () => ipcRenderer.removeAllListeners('agent:modelRouted');
     },
     onClarifyRequest: (cb: (payload: { workflowId: string; sessionId: string; goal: string; questions: string[] }) => void) => {
       ipcRenderer.on('agent:clarifyRequest', (_e, p) => cb(p));
@@ -814,6 +821,11 @@ const api = {
     listOverrides: () => ipcRenderer.invoke('router:listOverrides'),
     setOverride: (taskType: string, ollamaName: string | null) =>
       ipcRenderer.invoke('router:setOverride', taskType, ollamaName),
+    /** Current decision for the agent (act-loop) role — computed without running. */
+    getAgentRoute: () => ipcRenderer.invoke('router:getAgentRoute') as Promise<AgentRoute>,
+    /** "Use my pick anyway" (name) / "back to automatic" (null). */
+    setAgentPin: (ollamaName: string | null) =>
+      ipcRenderer.invoke('router:setAgentPin', ollamaName) as Promise<AgentRoute>,
     onBenchmarkProgress: (cb: (msg: string) => void) => {
       ipcRenderer.on('router:benchmarkProgress', (_e, m) => cb(m));
       return () => ipcRenderer.removeAllListeners('router:benchmarkProgress');

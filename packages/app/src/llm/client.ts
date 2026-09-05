@@ -23,6 +23,8 @@ import { getSessionKey } from '../security/sessionKeys';
 import { isOllamaManaged } from './providerKind';
 import { isUnsupported, markUnsupported } from './capabilities';
 import { applyToolCallDeltas, toToolCalls, type PartialToolCall } from './streamMerge';
+import { resolveAgentRoute } from '../router/agentRouter';
+import { pickNumCtx, estimateTokens } from './numCtx';
 
 /** Assembled result of a streamed completion — mirrors the bits of a
  *  ChatCompletionMessage the ReAct loop consumes. */
@@ -167,7 +169,12 @@ export class LLMClient {
       think: false,
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
-        num_ctx: this.config.contextWindow ?? 8192,
+        // Sized from THIS request (see numCtx.ts) — a static window truncates.
+        num_ctx: pickNumCtx(
+          this.config.contextWindow,
+          estimateTokens(JSON.stringify(messages) + JSON.stringify(tools ?? [])),
+          this.config.maxTokens ?? 4096,
+        ),
         num_predict: this.config.maxTokens ?? 4096,
         temperature: this.config.temperature ?? 0.3,
       },
@@ -353,7 +360,14 @@ export class LLMClient {
       ...(think ? { think: true } : {}),
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
-        num_ctx: this.config.contextWindow ?? 8192,
+        // Sized from THIS request (see numCtx.ts): the tool schemas + history
+        // decide the window, not a per-model row. Undersizing made Ollama drop
+        // the system prompt and the user's request for a routed 14B.
+        num_ctx: pickNumCtx(
+          this.config.contextWindow,
+          estimateTokens(JSON.stringify(oMessages) + JSON.stringify(tools ?? [])),
+          think ? 4096 : (this.config.maxTokens ?? 2048),
+        ),
         // When thinking is on, the reasoning tokens and the answer tokens share
         // one num_predict budget — a fixed cap (e.g. 2048) gets eaten by a long
         // chain-of-thought, truncating or emptying the actual answer
@@ -476,7 +490,9 @@ function safeParseArgs(s: unknown): Record<string, unknown> {
  * Canonical task types the router benchmarks and routes by. Must stay in sync
  * with `model_profiles.task_type` and the benchmark probe list in benchmark.ts.
  */
-export type TaskType = 'plan' | 'tool_args' | 'synthesis';
+/** 'agent' = the tool-calling act loop — routed by router/agentRouter.ts, never
+ *  simply "the picker" (founder decision 2026-09-05). */
+export type TaskType = 'plan' | 'tool_args' | 'synthesis' | 'agent';
 
 /** Parse parameter count (in billions) from an Ollama tag:
  *  `qwen2.5:7b` → 7, `…:72b` → 72, `llama3.2:3b-instruct-q4` → 3.
@@ -499,6 +515,11 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
   if (!taskType) return undefined;
 
   const db = getDb();
+  // The act loop: hardware-tier budget + tool-call eligibility, user pick
+  // honoured when it fits, cloud never auto-selected. See router/agentRouter.ts.
+  if (taskType === 'agent') {
+    try { return resolveAgentRoute(db).model ?? undefined; } catch { return undefined; }
+  }
   try {
     const pinned = db
       .prepare(`SELECT ollama_name FROM router_overrides WHERE task_type=?`)
@@ -521,7 +542,13 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
       // Cloud-active user with leftover local rows: don't steer aux phases to a
       // localhost server that provider-aware startup no longer auto-starts.
       if (active && !isOllamaManaged(active.provider, active.base_url)) return undefined;
-      const activeB = active?.ollama_name ? modelParamsB(active.ollama_name) : Infinity;
+      // Cap aux phases at the model that will actually run the AGENT loop (the
+      // routed one), not the raw picker value — otherwise a 72B pick routed to a
+      // 14B agent would still let a 70B "plan" through as ≤ active.
+      let agentName: string | undefined;
+      try { agentName = resolveAgentRoute(db).model ?? undefined; } catch { /* fall back to picker */ }
+      const sizeAnchor = agentName ?? active?.ollama_name;
+      const activeB = sizeAnchor ? modelParamsB(sizeAnchor) : Infinity;
 
       // Best benchmarked model that PASSED (quality > 0) and is no larger than
       // the active model, fastest first. Never a bigger model than the user
@@ -675,6 +702,13 @@ export function resolveTransport(db: any, modelOverride?: string, taskType?: Tas
     // aren't truncated + re-evaluated each turn; /v1 cloud path ignores it.
     contextWindow: Math.max((transport.context_window as number) ?? 8192, 8192),
   };
+}
+
+/** The model name a run with these parameters would actually execute on —
+ *  the single source of truth for audit rows and the header chip. Null when
+ *  nothing is configured. */
+export function resolveRunModel(modelOverride?: string, taskType: TaskType = 'agent'): string | null {
+  try { return resolveTransport(getDb(), modelOverride, taskType).model; } catch { return null; }
 }
 
 /** Returns an LLMClient configured from the active model in the DB.

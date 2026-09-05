@@ -18,7 +18,7 @@ import { BrowserWindow } from 'electron';
 import * as os from 'os';
 import * as fs from 'fs';
 import { sendNotification } from '../notify';
-import { getActiveLLMClient, type StreamedMessage, type TaskType } from '../llm/client';
+import { getActiveLLMClient, resolveRunModel, type StreamedMessage, type TaskType } from '../llm/client';
 import { MCPRegistry, type ToolContext } from '../mcp/registry';
 import { SkillRegistry, toActive, type ActiveSkill } from '../skills/registry';
 import { resolveMentionBlock } from './mentionResolver';
@@ -52,6 +52,7 @@ import { gatherContext } from './contextGather';
 import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, detectsFileAction, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
 import { dropEchoedGoal } from './historyDedupe';
 import { clampToolResult } from './toolResultBudget';
+import { resolveAgentRoute } from '../router/agentRouter';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
 import { evaluatePolicy } from '../bodhi/policy';
@@ -982,7 +983,13 @@ Rules:
     // per-skill model breakdown and the run's audit row are honest. A stale
     // skill pin (model uninstalled) resolves to null and falls back.
     const pinnedModel = this.resolvePinnedModel(plan.skill?.pinnedModel);
-    const model = plan.modelOverride || pinnedModel || this.activeModelName();
+    const model = plan.modelOverride || pinnedModel
+      || resolveRunModel(undefined, opts.taskType ?? 'agent') || this.activeModelName();
+    // Tell the header chip which model is doing the work and why, so an
+    // automatic switch (e.g. 72B pick → 14B agent) is visible, never silent.
+    if (!opts.silent && !plan.modelOverride && !pinnedModel) {
+      try { this.emit('agent:modelRouted', resolveAgentRoute(db)); } catch { /* chip is informational */ }
+    }
     const planStartMs = Date.now();
 
     db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`)
@@ -1253,7 +1260,10 @@ RULES — follow exactly, no exceptions:
     parentWorkflowId?: string;
   }): Promise<void> {
     const db = getDb();
-    const llm = getActiveLLMClient(args.modelOverride, args.taskType);
+    // The act loop is the 'agent' role unless the caller asked for another
+    // phase's routing (e.g. a tool_args-typed capability run).
+    const loopTask: TaskType = args.taskType ?? 'agent';
+    const llm = getActiveLLMClient(args.modelOverride, loopTask);
     // Renderer-facing emit gate. Silent child loops still persist to SQLite.
     const emit = (channel: string, data?: unknown): void => {
       if (!args.silent) this.emit(channel, data);
@@ -1317,7 +1327,7 @@ RULES — follow exactly, no exceptions:
     startCitationCollection(args.workflowId);
     setActiveCitationToken(args.workflowId);
 
-    recordStep(stepIdx++, 'system', { note: 'loop start', model: args.modelOverride ?? this.activeModelName() }, messages);
+    recordStep(stepIdx++, 'system', { note: 'loop start', model: resolveRunModel(args.modelOverride, loopTask) ?? this.activeModelName() }, messages);
 
     // ── Context gather + <think> phase ───────────────────────────────────────
     // Before the first tool call we (1) assemble a structured <context> block of
@@ -1852,7 +1862,10 @@ RULES — follow exactly, no exceptions:
         // confident the prose sounds. State that deterministically (the model's
         // text often reads like a completed task). Skipped when the model is
         // asking a genuine clarifying question.
-        if (mutations.length === 0 && detectsFileAction(args.goal) && !detectsWebAction(args.goal) && !rawContent.includes('?')) {
+        const fileGoalUnfulfilled =
+          detectsFileAction(args.goal) && !detectsWebAction(args.goal) &&
+          !mutations.some(m => m.success) && !rawContent.includes('?');
+        if (fileGoalUnfulfilled) {
           finalText = `${finalText}\n\n⚠️ Nothing was changed on disk in this run — no file was moved, copied, created or deleted. The task is NOT complete.`;
         }
 
@@ -1960,6 +1973,19 @@ RULES — follow exactly, no exceptions:
             toolCallsBlocked, mutationsTotal: mutations.length,
             mutationsFailed: mutations.filter(m => !m.success).length,
             errorDetail: 'email_not_sent',
+          });
+        } else if (fileGoalUnfulfilled) {
+          // The user asked for a change on disk and none happened (attempted
+          // mutations all failed, or none were attempted). Never record that as
+          // a success — the founder's completion doctrine: system-verified only.
+          db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+          db.prepare(`UPDATE agent_states SET status='failed' WHERE workflow_id=?`).run(args.workflowId);
+          terminalOutcome = 'failed';
+          persistRunFacts(db, args.runId, {
+            outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: 'file_action_not_performed',
           });
         } else {
         // `status='completed'` means ONLY that the executor finished. Whether
