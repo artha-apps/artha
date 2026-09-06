@@ -18,7 +18,7 @@ import { BrowserWindow } from 'electron';
 import * as os from 'os';
 import * as fs from 'fs';
 import { sendNotification } from '../notify';
-import { getActiveLLMClient, type StreamedMessage, type TaskType } from '../llm/client';
+import { getActiveLLMClient, resolveRunModel, type StreamedMessage, type TaskType } from '../llm/client';
 import { MCPRegistry, type ToolContext } from '../mcp/registry';
 import { SkillRegistry, toActive, type ActiveSkill } from '../skills/registry';
 import { resolveMentionBlock } from './mentionResolver';
@@ -49,7 +49,10 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
-import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
+import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, detectsFileAction, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
+import { dropEchoedGoal } from './historyDedupe';
+import { clampToolResult } from './toolResultBudget';
+import { resolveAgentRoute } from '../router/agentRouter';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
 import { evaluatePolicy } from '../bodhi/policy';
@@ -60,7 +63,7 @@ import {
   intersectToolScopes,
   MAX_CAPABILITY_DEPTH,
 } from '../bodhi/subcapability';
-import { filterToolsByAllowlist, parseSlashInvocation } from '../skills/util';
+import { filterToolsByAllowlist, parseSlashInvocation, effectiveAllowedTools } from '../skills/util';
 import { recordSkillRun, type SkillMatchedVia, type SkillRunStatus } from '../skills/metrics';
 
 const MAX_RETRIES = 3; // kept for future retry logic
@@ -347,7 +350,7 @@ export class AgentOrchestrator {
     }
     // ── End clarification ────────────────────────────────────────────────────
 
-    const history = this.getSessionHistory(sessionId);
+    const history = this.getSessionHistory(sessionId, enrichedGoal);
 
     const plan = await this.generatePlan(workflowId, sessionId, enrichedGoal, history, skill);
     plan.skill = skill;
@@ -401,7 +404,8 @@ export class AgentOrchestrator {
       const load = (id: string | null | undefined): ActiveSkill | null => {
         if (!id) return null;
         const row = this.skills.getById(id);
-        return row && row.is_enabled ? toActive(row) : null;
+        // Session defaults are advisory: they were not chosen for THIS message.
+        return row && row.is_enabled ? toActive(row, 'advise') : null;
       };
 
       const fromPack = load(getPackSkillId(sessionId));
@@ -979,7 +983,13 @@ Rules:
     // per-skill model breakdown and the run's audit row are honest. A stale
     // skill pin (model uninstalled) resolves to null and falls back.
     const pinnedModel = this.resolvePinnedModel(plan.skill?.pinnedModel);
-    const model = plan.modelOverride || pinnedModel || this.activeModelName();
+    const model = plan.modelOverride || pinnedModel
+      || resolveRunModel(undefined, opts.taskType ?? 'agent') || this.activeModelName();
+    // Tell the header chip which model is doing the work and why, so an
+    // automatic switch (e.g. 72B pick → 14B agent) is visible, never silent.
+    if (!opts.silent && !plan.modelOverride && !pinnedModel) {
+      try { this.emit('agent:modelRouted', resolveAgentRoute(db)); } catch { /* chip is informational */ }
+    }
     const planStartMs = Date.now();
 
     db.prepare(`UPDATE agent_states SET status='running' WHERE workflow_id=?`)
@@ -993,7 +1003,7 @@ Rules:
     // Silent runs (e.g. Delegate) must not drive the Chat surface's working UI.
     if (!opts.silent) this.emit('agent:workflowStart', plan.workflowId);
 
-    const history = this.getSessionHistory(plan.sessionId);
+    const history = this.getSessionHistory(plan.sessionId, plan.goal);
     const destHint = this.extractDestination(plan.goal, homeDir);
     const skill = plan.skill ?? null;
     const skillBlock = skill
@@ -1250,7 +1260,10 @@ RULES — follow exactly, no exceptions:
     parentWorkflowId?: string;
   }): Promise<void> {
     const db = getDb();
-    const llm = getActiveLLMClient(args.modelOverride, args.taskType);
+    // The act loop is the 'agent' role unless the caller asked for another
+    // phase's routing (e.g. a tool_args-typed capability run).
+    const loopTask: TaskType = args.taskType ?? 'agent';
+    const llm = getActiveLLMClient(args.modelOverride, loopTask);
     // Renderer-facing emit gate. Silent child loops still persist to SQLite.
     const emit = (channel: string, data?: unknown): void => {
       if (!args.silent) this.emit(channel, data);
@@ -1261,7 +1274,9 @@ RULES — follow exactly, no exceptions:
     // (empty allowlist = all tools). This is what enforces permission monotonicity
     // for composed sub-capabilities; a top-level run has no parent so it's just
     // the skill's own allowlist.
-    const ownAllowed = args.skill?.allowedTools ?? [];
+    // Advisory (auto-matched / default) skills contribute NO filter — see
+    // SkillToolScope. Only explicitly invoked skills restrict the tool set.
+    const ownAllowed = effectiveAllowedTools(args.skill);
     const effectiveAllowed = args.parentAllowedTools
       ? intersectToolScopes(args.parentAllowedTools, ownAllowed)
       : ownAllowed;
@@ -1312,7 +1327,7 @@ RULES — follow exactly, no exceptions:
     startCitationCollection(args.workflowId);
     setActiveCitationToken(args.workflowId);
 
-    recordStep(stepIdx++, 'system', { note: 'loop start', model: args.modelOverride ?? this.activeModelName() }, messages);
+    recordStep(stepIdx++, 'system', { note: 'loop start', model: resolveRunModel(args.modelOverride, loopTask) ?? this.activeModelName() }, messages);
 
     // ── Context gather + <think> phase ───────────────────────────────────────
     // Before the first tool call we (1) assemble a structured <context> block of
@@ -1406,6 +1421,9 @@ RULES — follow exactly, no exceptions:
     // inject one corrective turn and keep looping instead of accepting the
     // narration. Bounded by MAX_ACT_NUDGES so a genuinely-stuck model still ends.
     let browserToolCalls = 0;
+    // Same tally for the filesystem — a file goal that never called fs_* and
+    // never mutated is narration, not completion (see shouldNudgeToAct).
+    let fsToolCalls = 0;
     let actNudges = 0;
     const MAX_ACT_NUDGES = 2;
     // Send-completion guard: a "send an email" goal is only satisfied by a
@@ -1531,6 +1549,7 @@ RULES — follow exactly, no exceptions:
         if (streamedLive) emit('agent:streamReset');
         for (const toolCall of msg.tool_calls) {
           if (toolCall.function.name.startsWith('browser_')) browserToolCalls++;
+          if (toolCall.function.name.startsWith('fs_')) fsToolCalls++;
           if (toolCall.function.name === 'browser_read_dom') readDomCallIds.add(toolCall.id);
           emit('agent:toolCall', {
             type: 'tool_invoke',
@@ -1715,7 +1734,9 @@ RULES — follow exactly, no exceptions:
 
           messages.push({
             role: 'tool',
-            content: toolResult,
+            // Model-facing copy is budgeted (see toolResultBudget.ts); the audit
+            // log, receipts and the live UI above all keep the full result.
+            content: clampToolResult(toolResult),
             tool_call_id: toolCall.id,
           });
           recordStep(stepIdx++, 'tool_result', {
@@ -1750,6 +1771,7 @@ RULES — follow exactly, no exceptions:
         if (shouldNudgeToAct({
           goal: args.goal,
           browserToolCalls,
+          fsToolCalls,
           mutationCount: mutations.length,
           nudges: actNudges,
           maxNudges: MAX_ACT_NUDGES,
@@ -1757,14 +1779,21 @@ RULES — follow exactly, no exceptions:
         })) {
           if (streamedLive) emit('agent:streamReset');
           actNudges++;
+          const webNarrated = detectsWebAction(args.goal) && browserToolCalls === 0;
+          const fsNames = tools.map(t => t.function.name).filter(n => n.startsWith('fs_')).join(', ');
           messages.push({
             role: 'system',
-            content:
-              `You replied with words but did NOT call any browser tool, so nothing actually happened. ` +
-              `The user asked you to act on a website ("${args.goal.slice(0, 200)}"). ` +
-              `Do it now by calling tools — browser_navigate to the page, browser_read_dom to find the real ` +
-              `fields and buttons, browser_type to fill them, browser_click to submit — and verify the result. ` +
-              `Do not describe the steps; perform them. Only call browser_request_user if you hit a real login/captcha/2FA wall.`,
+            content: webNarrated
+              ? `You replied with words but did NOT call any browser tool, so nothing actually happened. ` +
+                `The user asked you to act on a website ("${args.goal.slice(0, 200)}"). ` +
+                `Do it now by calling tools — browser_navigate to the page, browser_read_dom to find the real ` +
+                `fields and buttons, browser_type to fill them, browser_click to submit — and verify the result. ` +
+                `Do not describe the steps; perform them. Only call browser_request_user if you hit a real login/captcha/2FA wall.`
+              : `You replied with words but did NOT call any filesystem tool, so nothing actually happened on disk. ` +
+                `The user asked you to act on their files ("${args.goal.slice(0, 200)}"). ` +
+                `Do it now by calling tools${fsNames ? ` — available: ${fsNames}` : ''}: list the source folder, ` +
+                `perform the move/copy/rename/delete, then list the destination to verify. ` +
+                `Do not describe the steps; perform them. Ask a question only if a path is genuinely ambiguous.`,
           });
           recordStep(stepIdx++, 'system', { note: 'act-nudge', nudge: actNudges });
           emptyCount = 0;
@@ -1828,6 +1857,16 @@ RULES — follow exactly, no exceptions:
         // deterministic caution derived from the tool tallies, not the model.
         if (mutations.length === 0 && toolCallsTotal > 0 && toolCallErrors === toolCallsTotal) {
           finalText = `${finalText}\n\n⚠️ Heads up: every tool call in this run failed (${toolCallErrors}/${toolCallsTotal}), so the answer above isn't grounded in real results. Treat it as unverified.`;
+        }
+        // A file-action goal that ends with NOTHING mutated is not done, however
+        // confident the prose sounds. State that deterministically (the model's
+        // text often reads like a completed task). Skipped when the model is
+        // asking a genuine clarifying question.
+        const fileGoalUnfulfilled =
+          detectsFileAction(args.goal) && !detectsWebAction(args.goal) &&
+          !mutations.some(m => m.success) && !rawContent.includes('?');
+        if (fileGoalUnfulfilled) {
+          finalText = `${finalText}\n\n⚠️ Nothing was changed on disk in this run — no file was moved, copied, created or deleted. The task is NOT complete.`;
         }
 
         // Send task: if no send was CONFIRMED (the model drafted, flailed on
@@ -1935,6 +1974,19 @@ RULES — follow exactly, no exceptions:
             mutationsFailed: mutations.filter(m => !m.success).length,
             errorDetail: 'email_not_sent',
           });
+        } else if (fileGoalUnfulfilled) {
+          // The user asked for a change on disk and none happened (attempted
+          // mutations all failed, or none were attempted). Never record that as
+          // a success — the founder's completion doctrine: system-verified only.
+          db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
+          db.prepare(`UPDATE agent_states SET status='failed' WHERE workflow_id=?`).run(args.workflowId);
+          terminalOutcome = 'failed';
+          persistRunFacts(db, args.runId, {
+            outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: 'file_action_not_performed',
+          });
         } else {
         // `status='completed'` means ONLY that the executor finished. Whether
         // the user's objective was achieved is decided later, from the facts
@@ -1962,6 +2014,24 @@ RULES — follow exactly, no exceptions:
 
       } else {
         emptyCount++;
+        if (emptyCount < 3) {
+          // Empty turn. On Ollama this almost always means the model called a
+          // tool that was not offered, so the runtime discarded the whole reply
+          // (`discarded`). Silently re-asking just reproduces it; name the cause
+          // and the real tool list so the next turn can succeed.
+          const available = tools.map(t => t.function.name).join(', ');
+          messages.push({
+            role: 'system',
+            content:
+              `Your last reply produced no usable output` +
+              (msg.discarded
+                ? ` — you generated a response but the runtime discarded it, which happens when a reply calls a tool that is NOT available in this run.`
+                : `.`) +
+              ` The ONLY tools available are: ${available}. Continue the task by calling one of these with valid arguments. ` +
+              `If none of them can do what is needed, say so plainly in one sentence.`,
+          });
+          recordStep(stepIdx++, 'system', { note: 'empty-reply-nudge', discarded: !!msg.discarded, empty: emptyCount });
+        }
         if (emptyCount >= 3) {
           recordStep(stepIdx++, 'final', { reason: 'stall' });
           db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
@@ -2051,6 +2121,8 @@ RULES — follow exactly, no exceptions:
       instructions: row.instructions, allowedTools,
       kind: row.kind === 'agent' ? 'agent' : 'skill',
       pinnedModel: row.pinned_model ?? null,
+      // Invoked by name by the parent run → its allowlist is a real boundary.
+      toolScope: 'restrict',
     };
 
     try {
@@ -2487,16 +2559,20 @@ Rules:
    *  DESC + reverse: grab the 20 MOST RECENT rows, then restore chronological
    *  order (plain ASC LIMIT would return the oldest 20 — the start of the chat,
    *  not its tail). */
-  private getSessionHistory(sessionId: string): OpenAI.ChatCompletionMessageParam[] {
+  /** Last 20 turns of the session, oldest first. When `currentGoal` is given,
+   *  the trailing copy of the user's current request (persisted before the run
+   *  started) is dropped so callers can append the goal once, not twice. */
+  private getSessionHistory(sessionId: string, currentGoal?: string): OpenAI.ChatCompletionMessageParam[] {
     const db = getDb();
     const rows = db.prepare(
       `SELECT sender_type, content FROM messages
        WHERE session_id=? ORDER BY timestamp DESC LIMIT 20`
     ).all(sessionId) as { sender_type: string; content: string }[];
-    return rows.reverse().map(r => ({
+    const history = rows.reverse().map(r => ({
       role: r.sender_type === 'user' ? 'user' : 'assistant',
       content: r.content,
     } as OpenAI.ChatCompletionMessageParam));
+    return dropEchoedGoal(history, currentGoal);
   }
 
   private emit(channel: string, data?: unknown): void {

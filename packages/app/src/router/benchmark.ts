@@ -15,7 +15,7 @@ import OpenAI from 'openai';
 import { getDb } from '../db/schema';
 
 /** Aligned with `model_profiles.task_type` and the LLM client's task hints. */
-export type TaskType = 'plan' | 'tool_args' | 'synthesis';
+export type TaskType = 'plan' | 'tool_args' | 'synthesis' | 'agent';
 
 /** A single benchmark probe: messages to send, plus a `validate()` that
  *  scores the response 0..1 on shape/correctness — not on aesthetic quality. */

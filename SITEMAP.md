@@ -45,6 +45,8 @@
 | `src/db/health.ts` | DB health heartbeat — `startHealthCheckpointing()` writes a `db_health.checkpointed_at` row + Sentry breadcrumb every 30 min (disaster-recovery forensics) |
 | **agent/** | |
 | `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory + @-mention + Context Pack + live-environment context injection (date/time/timezone/OS/user), session skill fallback chain (pack skill → project default), tool dispatch |
+| `src/agent/historyDedupe.ts` | `dropEchoedGoal()` — strips the trailing copy of the current user request from session history so the ReAct prompt carries the goal once, not twice (pure; `historyDedupe.test.ts`) |
+| `src/agent/toolResultBudget.ts` | `clampToolResult()` — caps the model-facing copy of a tool result (~12k chars) with an explicit truncation marker; audit/UI keep the full text (`toolResultBudget.test.ts`) |
 | `src/agent/folderTree.ts` | `buildShallowTree()` — renders a shallow, noise-filtered directory tree for the working-scope context block |
 | `src/agent/mentionResolver.ts` | `resolveMentionBlock()` — expands `@chat:"title"` / `@memory:"name"` composer tokens into a REFERENCED CONTEXT prompt block at send time (condensed transcript / memory content, NOTE line for unresolved refs) |
 | `src/agent/mentionResolver.test.ts` | Vitest — mention grammar, 3-ref cap, transcript reversal/clipping, unresolved-NOTE, DB-error degradation |
@@ -66,10 +68,12 @@
 | `src/bundles/bundle.ts` | Skill-bundle import/export — SHA-256 integrity checksum on the manifest (unkeyed: detects modification, does NOT prove authorship; keyed signing planned), golden-content hashing, `ENV:` secret stripping |
 | **router/** | |
 | `src/router/benchmark.ts` | Model capability probes (plan / tool-args / synthesis) that score local Ollama models for the model router; `benchmarkModel()` probes ONE model (post-install Model Fit fill-in), `runBenchmark()` sweeps the fleet |
+| `src/router/agentRouter.ts` | Agent-role router (founder decision 2026-09-05): picks the model for the tool-calling loop by RAM tier + tool-call eligibility; user pick honoured when it fits, cloud never auto-selected, pin = "use my pick anyway" (`agentRouter.test.ts`) |
 | **ipc/** | |
 | `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, lan, cloud, …) |
 | **llm/** | |
 | `src/llm/client.ts` | `getActiveLLMClient()` — returns an OpenAI-compat client for the active model; respects context_window |
+| `src/llm/numCtx.ts` | `pickNumCtx()` — sizes Ollama `num_ctx` from the actual request (prompt estimate + reply budget, stable buckets) so a big tool-using prompt is never silently truncated (`numCtx.test.ts`) |
 | `src/llm/ollamaRuntime.ts` | Ollama lifecycle — `ensureModelReady()` (auto-start the server if down + pre-warm the active model at matching num_ctx on launch, emitting `model:status`), `ensureEmbedModel()` (background-pulls `nomic-embed-text` when missing so semantic memory/RAG never silently degrade to keyword), `unloadActiveModel()` (keep_alive 0 on quit), `stopOllamaIfStarted()` (only a server WE spawned). Prefers the Artha-managed runtime binary when installed (`setManagedRuntimeRoot` injected by main.ts); `switchToManagedRuntime()` makes it the :11434 server — stopping an Ollama Artha did NOT start only with `allowStopExternal` (the consent click; durable via `settings_json.ollama_runtime_managed`, re-applied at launch); `getRuntimeReport()` feeds the engine card. Never instructs the user to run terminal commands |
 | `src/llm/streamMerge.ts` | Merges streamed tool-call deltas (id+name on first chunk, args appended after) into complete tool calls |
 | `src/llm/modelCatalog.ts` | Curated Browse-tab pull catalog — `getModelCatalog()` fetches `artha.space/model-catalog.json` (anonymous GET, 6h cache, strict entry validation) with `BUNDLED_CATALOG` as the offline/failure fallback, so new models ship without an app release. Fallback-path + validation unit-tested (`modelCatalog.test.ts`) |

@@ -9,8 +9,19 @@
  * so it's ready by the time the user sends — the status banner shows progress.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Cpu, Check, Search, Loader2 } from 'lucide-react';
+import { Cpu, Check, Search, Loader2, Zap } from 'lucide-react';
 import { activeModelFromStatus } from '../../lib/modelStatusLabel';
+
+/** Mirror of main's AgentRoute (router/agentRouter.ts): which model actually
+ *  runs the agent loop, and why. `source: 'auto'` means Artha overrode the
+ *  user's pick (too large / failed tool calls) — shown, never silent. */
+interface AgentRoute {
+  model: string | null;
+  source: 'pin' | 'user' | 'auto' | 'user-fallback' | 'none';
+  reason: string;
+  userPick: string | null;
+  capB: number;
+}
 
 export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
   const [open, setOpen] = useState(false);
@@ -18,7 +29,23 @@ export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
   const [models, setModels] = useState<string[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
+  const [route, setRoute] = useState<AgentRoute | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Agent-role routing: what will ACTUALLY run actions. Loaded on mount /
+  // refresh, and updated live when a run starts (agent:modelRouted).
+  const loadRoute = () => {
+    window.artha.router.getAgentRoute().then(setRoute).catch(() => setRoute(null));
+  };
+  useEffect(() => { loadRoute(); }, [refreshKey, active]);
+  useEffect(() => {
+    const off = window.artha.agent.onModelRouted((r) => setRoute(r));
+    return () => { off(); };
+  }, []);
+  const pinAgent = async (name: string | null) => {
+    try { setRoute(await window.artha.router.setAgentPin(name)); } catch { /* keep current */ }
+  };
+  const autoRouted = route?.source === 'auto' && route.model;
 
   // Load the active model (and refresh when the parent signals a change, e.g.
   // the Settings modal closing).
@@ -87,11 +114,16 @@ export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
     <div className="relative">
       <button
         onClick={() => setOpen(o => !o)}
-        title={active ? `Model: ${active} — click to switch` : 'Choose a model'}
+        title={autoRouted
+          ? `Actions run on ${route!.model} (automatic). ${route!.reason}`
+          : active ? `Model: ${active} — click to switch` : 'Choose a model'}
         className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-artha-border text-[11px] text-artha-muted hover:text-artha-text hover:border-artha-accent transition-colors"
       >
-        <Cpu size={10} className="text-artha-accent shrink-0" />
-        <span className="truncate max-w-[160px]">{active ?? 'No model'}</span>
+        {autoRouted
+          ? <Zap size={10} className="text-artha-accent shrink-0" />
+          : <Cpu size={10} className="text-artha-accent shrink-0" />}
+        <span className="truncate max-w-[160px]">{autoRouted ? route!.model : (active ?? 'No model')}</span>
+        {autoRouted && <span className="text-[9px] uppercase tracking-wide text-artha-accent">auto</span>}
       </button>
 
       {open && (
@@ -110,6 +142,24 @@ export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
                 className="flex-1 bg-transparent text-sm text-artha-text placeholder:text-artha-subtle focus:outline-none"
               />
             </div>
+            {/* Agent-routing note: why the chip may differ from the pick, with the
+                one-tap revert the founder asked for. Never shown when the pick
+                simply runs as-is. */}
+            {route && route.source !== 'user' && route.source !== 'none' && (
+              <div className="px-3 py-2 border-b border-artha-border text-[11px] text-artha-muted space-y-1.5">
+                <p className="leading-snug">{route.reason}</p>
+                {route.source === 'auto' && route.userPick && (
+                  <button onClick={() => pinAgent(route.userPick)} className="text-artha-accent hover:underline">
+                    Use {route.userPick} anyway
+                  </button>
+                )}
+                {route.source === 'pin' && (
+                  <button onClick={() => pinAgent(null)} className="text-artha-accent hover:underline">
+                    Back to automatic
+                  </button>
+                )}
+              </div>
+            )}
             <div className="max-h-72 overflow-y-auto py-1">
               {filtered.length === 0 ? (
                 <p className="px-3 py-3 text-xs text-artha-muted">No models match.</p>

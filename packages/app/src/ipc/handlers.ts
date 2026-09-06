@@ -33,6 +33,7 @@
  *   Shared memory  — toggle cross-teammate memory injection
  */
 import { ipcMain, BrowserWindow, dialog, shell, desktopCapturer } from 'electron';
+import { resolveAgentRoute, refreshInstalledModels, writeAgentPin } from '../router/agentRouter';
 import * as path from 'path';
 import * as http from 'http';
 import * as os from 'os';
@@ -2299,6 +2300,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('router:setOverride', (_e, taskType: string, ollamaName: string | null) =>
     setOverride(taskType, ollamaName)
   );
+  // Agent-role routing (router/agentRouter.ts): what will run the act loop and
+  // why. Refreshes installed tags first so a model the user just pulled counts.
+  ipcMain.handle('router:getAgentRoute', async () => {
+    await refreshInstalledModels().catch(() => undefined);
+    return resolveAgentRoute(getDb());
+  });
+  ipcMain.handle('router:setAgentPin', (_e, ollamaName: string | null) => {
+    writeAgentPin(getDb(), ollamaName);
+    return resolveAgentRoute(getDb());
+  });
 
   // ── Provenance ──────────────────────────────────────────────────────────
   ipcMain.handle('provenance:listDocs', () => {

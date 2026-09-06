@@ -327,15 +327,34 @@ function matchPattern(filename: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, 'i').test(filename);
 }
 
+/** Max entries a single listing/search returns to the model. A real Downloads
+ *  folder (500+ files) rendered as pretty JSON with a full path per entry was
+ *  ~95k chars ≈ 30k tokens — it overflowed a 32k local context and cost a 72B
+ *  model 5+ minutes of prompt evaluation before Node's fetch gave up. Listings
+ *  are for orientation; anything bigger should be narrowed with fs_search_files. */
+export const MAX_LISTING_ENTRIES = 150;
+
 async function listDirectoryImpl(dirPath: string, roots?: ScopeRoot[] | null): Promise<string> {
   const resolved = safePath(expandTilde(dirPath), roots);
   const entries = await fsp.readdir(resolved, { withFileTypes: true });
-  const result = entries.map(e => ({
-    name: e.name,
-    type: e.isDirectory() ? 'folder' : 'file',
-    path: path.join(resolved, e.name),
-  }));
-  return JSON.stringify({ directory: resolved, count: result.length, entries: result }, null, 2);
+  // Compact shape: the directory once, then bare names (folders marked with a
+  // trailing "/") — the model joins directory + name itself. Folders first,
+  // then files, case-insensitive, so a capped listing is still predictable.
+  const sorted = [...entries].sort((a, b) => {
+    const da = a.isDirectory() ? 0 : 1, dbb = b.isDirectory() ? 0 : 1;
+    return da - dbb || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+  const shown = sorted.slice(0, MAX_LISTING_ENTRIES).map(e => e.isDirectory() ? `${e.name}/` : e.name);
+  const omitted = sorted.length - shown.length;
+  return JSON.stringify({
+    directory: resolved,
+    count: sorted.length,
+    entries: shown,
+    ...(omitted > 0 ? {
+      truncated: omitted,
+      hint: `${omitted} more entries not shown. Use fs_search_files with a pattern (e.g. "*.xlsx", "Trinity*") to find specific files.`,
+    } : {}),
+  });
 }
 
 async function searchFilesImpl(directory: string, pattern: string, recursive = false, roots?: ScopeRoot[] | null): Promise<string> {
@@ -362,7 +381,12 @@ async function searchFilesImpl(directory: string, pattern: string, recursive = f
   }
 
   await walk(resolved);
-  return JSON.stringify({ pattern, directory: resolved, count: matches.length, files: matches }, null, 2);
+  const shown = matches.slice(0, MAX_LISTING_ENTRIES);
+  const omitted = matches.length - shown.length;
+  return JSON.stringify({
+    pattern, directory: resolved, count: matches.length, files: shown,
+    ...(omitted > 0 ? { truncated: omitted, hint: `${omitted} more matches not shown — use a narrower pattern.` } : {}),
+  });
 }
 
 async function createDirectoryImpl(dirPath: string, roots?: ScopeRoot[] | null): Promise<string> {
@@ -371,15 +395,80 @@ async function createDirectoryImpl(dirPath: string, roots?: ScopeRoot[] | null):
   return JSON.stringify({ created: resolved, success: true });
 }
 
-async function moveFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null): Promise<string> {
-  const src = safePath(expandTilde(source), roots);
-  const dst = safePath(expandTilde(destination), roots);
+// ── Model-independent path repair ────────────────────────────────────────────
+// Small local models (and the planner that feeds them) routinely (a) drop the
+// file extension the user never spoke aloud ("Trinity customer DB" for
+// "…DB.xlsx"), (b) name a destination folder without the filename, and (c)
+// invent a parent chain ("in noopurtrivedi" → ~/noopurtrivedi/Project). The
+// old code then mkdir'd the invented chain and failed the rename, leaving junk
+// folders on disk and an ENOENT the model rarely recovers from. These helpers
+// make the obvious repairs deterministically and refuse the dangerous one.
 
-  // Auto-create the destination directory so the LLM doesn't have to chain a
-  // separate mkdir call; matches the spirit of `mv` in interactive use.
-  await fsp.mkdir(path.dirname(dst), { recursive: true });
+/** If `src` does not exist, look in its parent for exactly one entry that is
+ *  the same name or that name plus an extension (case-insensitive). */
+export async function resolveExistingSource(src: string): Promise<{ path: string; repaired: boolean }> {
+  try { await fsp.access(src); return { path: src, repaired: false }; } catch { /* try repair */ }
+  const dir = path.dirname(src);
+  const base = path.basename(src).toLowerCase();
+  let names: string[] = [];
+  try { names = await fsp.readdir(dir); } catch { return { path: src, repaired: false }; }
+  const hits = names.filter(n => { const l = n.toLowerCase(); return l === base || l.startsWith(`${base}.`); });
+  if (hits.length === 1) return { path: path.join(dir, hits[0]), repaired: true };
+  if (hits.length > 1) {
+    throw new Error(`Ambiguous source "${path.basename(src)}" in ${dir}: matches ${hits.map(h => `"${h}"`).join(', ')}. Use the exact filename.`);
+  }
+  // Nothing close — surface near misses so the model can correct once.
+  const word = base.split(/[\s._-]+/)[0];
+  const near = word.length >= 3 ? names.filter(n => n.toLowerCase().includes(word)).slice(0, 5) : [];
+  throw new Error(`Source not found: ${src}${near.length ? `. Similar names in ${dir}: ${near.map(n => `"${n}"`).join(', ')}` : ''}`);
+}
+
+/** Folders a bare project/folder name is likely to live in, in probe order. */
+function likelyParents(): string[] {
+  const home = os.homedir();
+  return [home, path.join(home, 'Desktop'), path.join(home, 'Documents'), path.join(home, 'Downloads'), path.join(home, 'Projects')];
+}
+
+/** Resolve the destination for a move/copy of `src`:
+ *  - an existing directory → move INTO it (append the source filename);
+ *  - a path whose parent exists → use as-is (one new leaf folder is created);
+ *  - a path whose parent does NOT exist → refuse (never mkdir an invented chain),
+ *    suggesting a same-named folder that does exist under the usual roots. */
+export async function resolveDestination(src: string, dst: string): Promise<string> {
+  try {
+    const st = await fsp.stat(dst);
+    if (st.isDirectory()) return path.join(dst, path.basename(src));
+    return dst;
+  } catch { /* dst does not exist yet */ }
+  const parent = path.dirname(dst);
+  try { await fsp.access(parent); return dst; } catch { /* parent missing */ }
+  // One new leaf folder under an EXISTING grandparent is a legitimate "put it
+  // in a new subfolder" — allowed. Anything deeper is an invented chain.
+  try { await fsp.access(path.dirname(parent)); return dst; } catch { /* chain missing */ }
+  // Parent chain is missing. Is the intended folder actually somewhere obvious?
+  const wanted = [path.basename(parent), path.basename(dst)];
+  const found: string[] = [];
+  for (const root of likelyParents()) {
+    for (const w of wanted) {
+      const candidate = path.join(root, w);
+      try { if ((await fsp.stat(candidate)).isDirectory() && !found.includes(candidate)) found.push(candidate); } catch { /* no */ }
+    }
+  }
+  throw new Error(
+    `Destination folder does not exist: ${parent}. Artha does not create missing parent folders from a guessed path.` +
+    (found.length
+      ? ` A folder with that name exists at ${found.map(f => `"${f}"`).join(' or ')} — use that path (include the filename).`
+      : ` Check the path, or create the folder first with fs_create_directory.`),
+  );
+}
+
+async function moveFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null): Promise<string> {
+  const srcRaw = safePath(expandTilde(source), roots);
+  const { path: src, repaired } = await resolveExistingSource(srcRaw);
+  const dst = safePath(await resolveDestination(src, safePath(expandTilde(destination), roots)), roots);
+  await fsp.mkdir(path.dirname(dst), { recursive: true }); // parent verified to exist; creates at most one leaf
   await fsp.rename(src, dst);
-  return JSON.stringify({ moved: src, to: dst, success: true });
+  return JSON.stringify({ moved: src, to: dst, success: true, ...(repaired ? { note: `source resolved from "${path.basename(srcRaw)}"` } : {}) });
 }
 
 /** Move many files in one shot. Each move is independent: a failure on one
@@ -398,8 +487,8 @@ async function moveBatchImpl(
     const source = (m.source ?? m.src) as string;
     const destination = (m.destination ?? m.dst ?? m.dest) as string;
     try {
-      const src = safePath(expandTilde(source), roots);
-      const dst = safePath(expandTilde(destination), roots);
+      const { path: src } = await resolveExistingSource(safePath(expandTilde(source), roots));
+      const dst = safePath(await resolveDestination(src, safePath(expandTilde(destination), roots)), roots);
       await fsp.mkdir(path.dirname(dst), { recursive: true });
       await fsp.rename(src, dst);
       results.push({ source: src, to: dst, ok: true });
@@ -412,8 +501,8 @@ async function moveBatchImpl(
 }
 
 async function copyFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null): Promise<string> {
-  const src = safePath(expandTilde(source), roots);
-  const dst = safePath(expandTilde(destination), roots);
+  const { path: src } = await resolveExistingSource(safePath(expandTilde(source), roots));
+  const dst = safePath(await resolveDestination(src, safePath(expandTilde(destination), roots)), roots);
   await fsp.mkdir(path.dirname(dst), { recursive: true });
   await fsp.copyFile(src, dst);
   return JSON.stringify({ copied: src, to: dst, success: true });

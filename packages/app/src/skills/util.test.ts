@@ -101,3 +101,20 @@ describe('parseSkillImport', () => {
     expect(parseSkillImport(42)).toEqual([]);
   });
 });
+
+// ── Advisory vs restrictive skill tool scope ─────────────────────────────────
+import { effectiveAllowedTools } from './util';
+describe('effectiveAllowedTools', () => {
+  const crm = { allowedTools: ['crm_', 'kg_'] };
+  it('enforces the allowlist for explicitly chosen skills (default scope)', () => {
+    expect(effectiveAllowedTools({ ...crm, toolScope: 'restrict' })).toEqual(['crm_', 'kg_']);
+    expect(effectiveAllowedTools(crm)).toEqual(['crm_', 'kg_']);
+  });
+  it('applies NO filter for auto-matched / default skills so a mis-route cannot strip tools', () => {
+    expect(effectiveAllowedTools({ ...crm, toolScope: 'advise' })).toEqual([]);
+  });
+  it('is a no-op without a skill', () => {
+    expect(effectiveAllowedTools(null)).toEqual([]);
+    expect(effectiveAllowedTools(undefined)).toEqual([]);
+  });
+});

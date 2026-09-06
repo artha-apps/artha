@@ -17,7 +17,7 @@
 import OpenAI from 'openai';
 import { getDb } from '../db/schema';
 import { getActiveLLMClient } from '../llm/client';
-import { normaliseSlug, parseSlashInvocation, filterToolsByAllowlist, type SkillExportData } from './util';
+import { normaliseSlug, parseSlashInvocation, filterToolsByAllowlist, effectiveAllowedTools, type SkillExportData, type SkillToolScope } from './util';
 
 /** A row from the `skills` table, normalised for use in the main process. */
 export interface Skill {
@@ -52,6 +52,10 @@ export interface ActiveSkill {
   kind: string;
   /** Pinned model (ollama_name) to run this skill on, or null = auto-route. */
   pinnedModel: string | null;
+  /** Whether `allowedTools` restricts the run ('restrict' — chosen by a human)
+   *  or is only advisory ('advise' — auto-matched / session default). See
+   *  `SkillToolScope` in util.ts for why auto-matched skills must not cut tools. */
+  toolScope: SkillToolScope;
 }
 
 /** Result of resolving a user message against the skill set. `goal` is the
@@ -239,7 +243,9 @@ export class SkillRegistry {
     if (enabled.length === 0) return { skill: null, goal: message };
 
     const matched = await this.autoMatch(message, enabled);
-    return { skill: matched ? toActive(matched) : null, goal: message };
+    // Auto-matched → advisory scope: a cheap model guessed this skill, so its
+    // playbook is guidance, never a reason to withhold tools from the run.
+    return { skill: matched ? toActive(matched, 'advise') : null, goal: message };
   }
 
   /** Filter a list of OpenAI tool schemas down to those a skill permits.
@@ -248,7 +254,7 @@ export class SkillRegistry {
     tools: OpenAI.ChatCompletionTool[],
     skill: ActiveSkill | null
   ): OpenAI.ChatCompletionTool[] {
-    return filterToolsByAllowlist(tools, skill?.allowedTools ?? []);
+    return filterToolsByAllowlist(tools, effectiveAllowedTools(skill));
   }
 
   /** Ask a cheap model to pick the single best-matching skill, or none.
@@ -287,7 +293,7 @@ export class SkillRegistry {
  *  Silently treats a missing or malformed allowed_tools_json as "no filter".
  *  Exported for the orchestrator's project-default-skill path, which loads a
  *  row by id (outside SkillRegistry.resolve) and needs the same projection. */
-export function toActive(skill: Skill): ActiveSkill {
+export function toActive(skill: Skill, toolScope: SkillToolScope = 'restrict'): ActiveSkill {
   let allowedTools: string[] = [];
   try {
     const parsed = JSON.parse(skill.allowed_tools_json);
@@ -301,5 +307,6 @@ export function toActive(skill: Skill): ActiveSkill {
     allowedTools,
     kind: skill.kind === 'agent' ? 'agent' : 'skill',
     pinnedModel: skill.pinned_model ?? null,
+    toolScope,
   };
 }

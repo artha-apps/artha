@@ -48,5 +48,6 @@ export function buildOperatorSkill(
     instructions: OPERATOR_PLAYBOOK + extra,
     allowedTools: [], // full tool access — delegation acts on the user's behalf
     pinnedModel: null, // the operator follows the active model / router
+    toolScope: 'restrict', // empty allowlist under 'restrict' still means "all tools"
   };
 }

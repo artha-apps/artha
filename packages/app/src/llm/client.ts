@@ -6,6 +6,8 @@
  * No per-runtime code: one adapter, configured by base URL.
  */
 import OpenAI from 'openai';
+import http from 'http';
+import https from 'https';
 import { getDb } from '../db/schema';
 import {
   openSecretString,
@@ -21,12 +23,20 @@ import { getSessionKey } from '../security/sessionKeys';
 import { isOllamaManaged } from './providerKind';
 import { isUnsupported, markUnsupported } from './capabilities';
 import { applyToolCallDeltas, toToolCalls, type PartialToolCall } from './streamMerge';
+import { resolveAgentRoute } from '../router/agentRouter';
+import { pickNumCtx, estimateTokens } from './numCtx';
 
 /** Assembled result of a streamed completion — mirrors the bits of a
  *  ChatCompletionMessage the ReAct loop consumes. */
 export interface StreamedMessage {
   content: string | null;
   tool_calls?: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[];
+  /** True when the model GENERATED tokens but the runtime returned neither text
+   *  nor a tool call — Ollama does this when the model calls a tool that was
+   *  not in the offered `tools` list (it parses the call, finds no match, and
+   *  drops it). Lets the ReAct loop tell the model what went wrong instead of
+   *  treating the turn as a silent stall. Only known on the native Ollama path. */
+  discarded?: boolean;
 }
 
 export interface LLMConfig {
@@ -159,7 +169,12 @@ export class LLMClient {
       think: false,
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
-        num_ctx: this.config.contextWindow ?? 8192,
+        // Sized from THIS request (see numCtx.ts) — a static window truncates.
+        num_ctx: pickNumCtx(
+          this.config.contextWindow,
+          estimateTokens(JSON.stringify(messages) + JSON.stringify(tools ?? [])),
+          this.config.maxTokens ?? 4096,
+        ),
         num_predict: this.config.maxTokens ?? 4096,
         temperature: this.config.temperature ?? 0.3,
       },
@@ -293,6 +308,33 @@ export class LLMClient {
     return { content: content || null, tool_calls: tool_calls.length ? tool_calls : undefined };
   }
 
+  /** POST to Ollama's native /api/chat over node:http and hand back the raw
+   *  response stream. Exists because Node's global fetch enforces a 300 s
+   *  headers timeout that slow local models exceed in prompt evaluation (see
+   *  streamCompleteOllamaNative). Rejects on socket errors; HTTP status is the
+   *  caller's to check. */
+  private postOllamaStream(
+    body: unknown,
+    signal: AbortSignal,
+  ): Promise<{ status: number; statusText: string; body: NodeJS.ReadableStream }> {
+    return new Promise((resolve, reject) => {
+      const url = new URL(`${this.ollamaBase}/api/chat`);
+      const payload = JSON.stringify(body);
+      const mod = url.protocol === 'https:' ? https : http;
+      const req = mod.request(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+          signal,
+        },
+        (res) => resolve({ status: res.statusCode ?? 0, statusText: res.statusMessage ?? '', body: res }),
+      );
+      req.on('error', reject);
+      req.end(payload);
+    });
+  }
+
   /** Native Ollama /api/chat streaming with tool support. Lets us pass num_ctx
    *  + keep_alive (which the OpenAI-compat endpoint ignores). Translates to/from
    *  the OpenAI message/tool shapes the orchestrator uses. Tool results map by
@@ -318,7 +360,14 @@ export class LLMClient {
       ...(think ? { think: true } : {}),
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
-        num_ctx: this.config.contextWindow ?? 8192,
+        // Sized from THIS request (see numCtx.ts): the tool schemas + history
+        // decide the window, not a per-model row. Undersizing made Ollama drop
+        // the system prompt and the user's request for a routed 14B.
+        num_ctx: pickNumCtx(
+          this.config.contextWindow,
+          estimateTokens(JSON.stringify(oMessages) + JSON.stringify(tools ?? [])),
+          think ? 4096 : (this.config.maxTokens ?? 2048),
+        ),
         // When thinking is on, the reasoning tokens and the answer tokens share
         // one num_predict budget — a fixed cap (e.g. 2048) gets eaten by a long
         // chain-of-thought, truncating or emptying the actual answer
@@ -331,13 +380,18 @@ export class LLMClient {
     });
 
     const controller = new AbortController();
-    const post = (think: boolean) =>
-      fetch(`${this.ollamaBase}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildBody(think)),
-        signal: controller.signal,
-      });
+    // Transport is node:http, NOT the global fetch. Node's fetch (undici)
+    // fails with a bare "fetch failed" when no response HEADERS arrive within
+    // 300 s — and Ollama only sends headers once the first streamed chunk is
+    // ready, i.e. AFTER prompt evaluation. A 72B model on an M-series Mac reads
+    // ~55 tokens/s, so a 16k-token prompt sits in prompt-eval for ~5 minutes and
+    // hit that limit in real use (2026-09-05). http.request has no such default.
+    const post = (think: boolean) => this.postOllamaStream(buildBody(think), controller.signal);
+    const readAll = async (body: NodeJS.ReadableStream): Promise<string> => {
+      let s = '';
+      for await (const c of body) s += typeof c === 'string' ? c : (c as Buffer).toString('utf8');
+      return s;
+    };
 
     // Skip the thinking request entirely for models the capability registry
     // already knows can't think, so repeat turns don't pay the 400 + retry.
@@ -348,7 +402,7 @@ export class LLMClient {
     // work, and record the probe fact in the capability registry so every
     // consumer (router, UI chips, later turns) sees it.
     if (wantThink && res.status === 400) {
-      const errText = await res.text().catch(() => '');
+      const errText = await readAll(res.body).catch(() => '');
       if (/think/i.test(errText)) {
         markUnsupported('thinking', this.config.model);
         res = await post(false);
@@ -356,53 +410,71 @@ export class LLMClient {
         throw new Error(`Ollama /api/chat failed: 400 ${errText}`);
       }
     }
-    if (!res.ok || !res.body) {
-      throw new Error(`Ollama /api/chat failed: ${res.status} ${res.statusText}`);
+    if (res.status < 200 || res.status >= 300) {
+      const errText = await readAll(res.body).catch(() => '');
+      throw new Error(`Ollama /api/chat failed: ${res.status} ${res.statusText}${errText ? ` ${errText.slice(0, 200)}` : ''}`);
     }
 
-    const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let content = '';
+    // Tokens the model actually generated this turn (from the final chunk).
+    let evalCount = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const collected: any[] = [];
 
-    for (;;) {
-      if (shouldAbort?.()) { controller.abort(); break; }
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (!line) continue;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let evt: any;
-        try { evt = JSON.parse(line); } catch { continue; }
-        const think: string | undefined = evt?.message?.thinking;
-        if (think && onReasoning) onReasoning(think);
-        const tok: string | undefined = evt?.message?.content;
-        if (tok) { content += tok; onToken(tok); }
-        const tcs = evt?.message?.tool_calls;
-        if (Array.isArray(tcs)) {
-          for (const tc of tcs) {
-            collected.push({
-              id: `call_${collected.length}_${tc.function?.name ?? 'fn'}`,
-              type: 'function' as const,
-              function: {
-                name: tc.function?.name ?? '',
-                arguments: typeof tc.function?.arguments === 'string'
-                  ? tc.function.arguments
-                  : JSON.stringify(tc.function?.arguments ?? {}),
-              },
-            });
+    // Cancel must work DURING prompt evaluation too, when no chunks flow — poll
+    // shouldAbort on a timer rather than only between chunks.
+    const abortPoll = shouldAbort
+      ? setInterval(() => { if (shouldAbort()) controller.abort(); }, 250)
+      : undefined;
+    try {
+      for await (const chunk of res.body) {
+        if (controller.signal.aborted) break;
+        buffer += decoder.decode(chunk as Buffer, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let evt: any;
+          try { evt = JSON.parse(line); } catch { continue; }
+          if (evt?.done && typeof evt.eval_count === 'number') evalCount = evt.eval_count;
+          const think: string | undefined = evt?.message?.thinking;
+          if (think && onReasoning) onReasoning(think);
+          const tok: string | undefined = evt?.message?.content;
+          if (tok) { content += tok; onToken(tok); }
+          const tcs = evt?.message?.tool_calls;
+          if (Array.isArray(tcs)) {
+            for (const tc of tcs) {
+              collected.push({
+                id: `call_${collected.length}_${tc.function?.name ?? 'fn'}`,
+                type: 'function' as const,
+                function: {
+                  name: tc.function?.name ?? '',
+                  arguments: typeof tc.function?.arguments === 'string'
+                    ? tc.function.arguments
+                    : JSON.stringify(tc.function?.arguments ?? {}),
+                },
+              });
+            }
           }
         }
       }
+    } catch (err) {
+      // An abort we triggered is a clean cancel, not a transport failure.
+      if (!controller.signal.aborted) throw err;
+    } finally {
+      if (abortPoll) clearInterval(abortPoll);
     }
 
-    return { content: content || null, tool_calls: collected.length ? collected : undefined };
+    const discarded = !content && collected.length === 0 && evalCount > 0;
+    return {
+      content: content || null,
+      tool_calls: collected.length ? collected : undefined,
+      ...(discarded ? { discarded: true } : {}),
+    };
   }
 }
 
@@ -418,7 +490,9 @@ function safeParseArgs(s: unknown): Record<string, unknown> {
  * Canonical task types the router benchmarks and routes by. Must stay in sync
  * with `model_profiles.task_type` and the benchmark probe list in benchmark.ts.
  */
-export type TaskType = 'plan' | 'tool_args' | 'synthesis';
+/** 'agent' = the tool-calling act loop — routed by router/agentRouter.ts, never
+ *  simply "the picker" (founder decision 2026-09-05). */
+export type TaskType = 'plan' | 'tool_args' | 'synthesis' | 'agent';
 
 /** Parse parameter count (in billions) from an Ollama tag:
  *  `qwen2.5:7b` → 7, `…:72b` → 72, `llama3.2:3b-instruct-q4` → 3.
@@ -441,6 +515,11 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
   if (!taskType) return undefined;
 
   const db = getDb();
+  // The act loop: hardware-tier budget + tool-call eligibility, user pick
+  // honoured when it fits, cloud never auto-selected. See router/agentRouter.ts.
+  if (taskType === 'agent') {
+    try { return resolveAgentRoute(db).model ?? undefined; } catch { return undefined; }
+  }
   try {
     const pinned = db
       .prepare(`SELECT ollama_name FROM router_overrides WHERE task_type=?`)
@@ -463,7 +542,13 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
       // Cloud-active user with leftover local rows: don't steer aux phases to a
       // localhost server that provider-aware startup no longer auto-starts.
       if (active && !isOllamaManaged(active.provider, active.base_url)) return undefined;
-      const activeB = active?.ollama_name ? modelParamsB(active.ollama_name) : Infinity;
+      // Cap aux phases at the model that will actually run the AGENT loop (the
+      // routed one), not the raw picker value — otherwise a 72B pick routed to a
+      // 14B agent would still let a 70B "plan" through as ≤ active.
+      let agentName: string | undefined;
+      try { agentName = resolveAgentRoute(db).model ?? undefined; } catch { /* fall back to picker */ }
+      const sizeAnchor = agentName ?? active?.ollama_name;
+      const activeB = sizeAnchor ? modelParamsB(sizeAnchor) : Infinity;
 
       // Best benchmarked model that PASSED (quality > 0) and is no larger than
       // the active model, fastest first. Never a bigger model than the user
@@ -617,6 +702,13 @@ export function resolveTransport(db: any, modelOverride?: string, taskType?: Tas
     // aren't truncated + re-evaluated each turn; /v1 cloud path ignores it.
     contextWindow: Math.max((transport.context_window as number) ?? 8192, 8192),
   };
+}
+
+/** The model name a run with these parameters would actually execute on —
+ *  the single source of truth for audit rows and the header chip. Null when
+ *  nothing is configured. */
+export function resolveRunModel(modelOverride?: string, taskType: TaskType = 'agent'): string | null {
+  try { return resolveTransport(getDb(), modelOverride, taskType).model; } catch { return null; }
 }
 
 /** Returns an LLMClient configured from the active model in the DB.
