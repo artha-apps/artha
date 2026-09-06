@@ -67,6 +67,7 @@ function fakeDb() {
   };
 }
 
+import os from 'os';
 import { resolveTransport, NoModelConfiguredError, modelParamsB } from './client';
 import { LOCAL_API_KEY_PLACEHOLDER } from '../security/secretString';
 
@@ -78,6 +79,11 @@ const CLOUD_ACTIVE = {
 };
 
 beforeEach(() => {
+  // The agent router sizes its budget from machine RAM (router/agentRouter.ts).
+  // Pin it so these expectations do not depend on which CI runner runs them —
+  // a 14B "active" pick is eligible at 128 GB, auto-replaced at 16 GB, and a
+  // fallback at 7 GB, which produced three different answers across OSes.
+  vi.spyOn(os, 'totalmem').mockReturnValue(128 * 1024 ** 3);
   state.activeRow = undefined;
   state.savedRows = [];
   state.profileRows = {};
