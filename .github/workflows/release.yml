@@ -53,14 +53,48 @@ jobs:
       # get an Authenticode cert — Azure Trusted Signing (~$10/mo, CI-native) is
       # the cheapest modern option — then add a Windows-only signing step here.
       # Linux .deb needs no signing; macOS is already signed + notarized.
+      # macOS signing identity. We import the Developer ID .p12 into a temporary
+      # keychain OURSELVES (GitHub's documented recipe) instead of handing
+      # CSC_LINK to electron-builder: electron-builder 26.x passes the .p12
+      # password, not the keychain password, to `security set-key-partition-list`
+      # (electron-userland/electron-builder#10066), which fails with
+      # "SecKeychainUnlock: The user name or passphrase you entered is not
+      # correct" on the macos-26 runner image from 2026-08-28 onward (v0.4.26
+      # only shipped because its rerun landed on the older 2026-07-07 image).
+      # The backport (26.16.1) is unreleased as of 2026-09-06; once it ships,
+      # this step can go back to plain CSC_LINK/CSC_KEY_PASSWORD.
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/artha-signing.keychain-db"
+          KC_PASS="$(openssl rand -hex 24)"
+          P12="$RUNNER_TEMP/artha-signing.p12"
+          # CSC_LINK is the base64 .p12 (tolerate a data: URL prefix / wrapped lines).
+          printf '%s' "$CSC_LINK" | sed 's/^data:[^,]*,//' | tr -d '\n\r ' | base64 --decode > "$P12"
+          security create-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security import "$P12" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
+          # The password here is the KEYCHAIN's — the exact thing electron-builder gets wrong.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$P12"
+          echo "Identities available for signing:"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          # Tell electron-builder which keychain holds the identity (auto-discovery
+          # then finds the Developer ID Application cert; no CSC_LINK needed).
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Publish to GitHub Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing + notarization. Only consumed on the macOS runner;
-          # ignored (harmless) on Windows/Linux. electron-builder reads these
-          # automatically — CSC_* for the Developer ID cert, APPLE_* for notarytool.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # macOS: the identity comes from the keychain imported above
+          # (CSC_KEYCHAIN in $GITHUB_ENV); APPLE_* drive notarytool. All of this
+          # is ignored (harmless) on Windows/Linux.
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
