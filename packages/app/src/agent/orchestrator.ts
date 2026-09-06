@@ -52,7 +52,11 @@ import { gatherContext } from './contextGather';
 import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, detectsFileAction, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
 import { dropEchoedGoal } from './historyDedupe';
 import { clampToolResult } from './toolResultBudget';
-import { resolveAgentRoute } from '../router/agentRouter';
+import { resolveAgentRoute, agentRouteInput } from '../router/agentRouter';
+import { ensureAgentModel } from '../router/modelProvisioner';
+import { selectToolsForRun } from '../mcp/toolBudget';
+import { nextEscalation, escalationLadder } from './escalation';
+import { decideAutoApprove } from './autoApprove';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
 import { evaluatePolicy } from '../bodhi/policy';
@@ -113,6 +117,8 @@ export interface AgentPlan {
   goal: string;
   steps: WorkflowStep[];
   requiresApproval: boolean;
+  /** Set when the approval gate was passed automatically (reason shown to the user). */
+  autoApproved?: string;
   /** When true, the goal decomposes into independent sub-tasks the orchestrator
    *  should fan out via runParallel() instead of the sequential ReAct loop. */
   requiresParallel?: boolean;
@@ -383,10 +389,22 @@ export class AgentOrchestrator {
     }
 
     if (plan.requiresApproval) {
-      db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
-        .run(JSON.stringify(plan.steps), workflowId);
-      this.emit('agent:planReady', plan);
-      return;
+      // Reversible plans run without a modal (agent/autoApprove.ts); the user
+      // reviews the outcome with Undo instead of the intent with a click.
+      // Deletes and anything not provably reversible still ask.
+      const auto = decideAutoApprove({
+        autonomous: this.userSettings().autonomousActions as boolean | undefined,
+        blast: plan.blastRadius,
+      });
+      if (!auto.auto) {
+        db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
+          .run(JSON.stringify(plan.steps), workflowId);
+        this.emit('agent:planReady', plan);
+        return;
+      }
+      plan.autoApproved = auto.reason;
+      this.emit('agent:planAutoApproved', { workflowId, reason: auto.reason, summary: plan.blastRadius?.summary ?? '', steps: plan.steps.length });
+      this.emit('agent:status', auto.reason);
     }
 
     await this.executePlan(plan);
@@ -839,6 +857,18 @@ Rules:
   /** Whether the renderer should DISPLAY the reasoning disclosure. Default true.
    *  When false the <think> phase still runs (and is persisted) — only the UI is
    *  hidden, per the `show_reasoning` setting. */
+  /** The default user's settings_json, {} on any failure. */
+  private userSettings(): Record<string, unknown> {
+    try {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+      return JSON.parse(row?.settings_json ?? '{}');
+    } catch { return {}; }
+  }
+
+  /** MCP servers that produced a successful call in a session — the tool
+   *  budget keeps offering them for the rest of that chat. */
+  private mcpUsedBySession = new Map<string, Set<string>>();
+
   private showReasoningEnabled(): boolean {
     try {
       const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
@@ -899,7 +929,16 @@ Rules:
     skill?: ActiveSkill | null
   ): Promise<AgentPlan> {
     const llm = getActiveLLMClient(undefined, 'plan');
-    const tools = this.skills.filterTools(this.registry.getToolSchemas(), skill ?? null);
+    // Plan against the same budgeted tool set the executor will be offered
+    // (mcp/toolBudget.ts), so a plan never names a withheld MCP tool.
+    const budgeted = selectToolsForRun({
+      builtIn: this.registry.getBuiltInToolSchemas(),
+      servers: this.registry.getMcpServerTools(),
+      goal,
+      recentlyUsed: this.mcpUsedBySession.get(sessionId) ?? new Set<string>(),
+      allowlist: effectiveAllowedTools(skill),
+    }).tools;
+    const tools = this.skills.filterTools(budgeted, skill ?? null);
 
     const skillBlock = skill
       ? `\nActive skill — "${skill.name}". Follow its playbook when planning:\n${skill.instructions}\n`
@@ -988,7 +1027,16 @@ Rules:
     // Tell the header chip which model is doing the work and why, so an
     // automatic switch (e.g. 72B pick → 14B agent) is visible, never silent.
     if (!opts.silent && !plan.modelOverride && !pinnedModel) {
-      try { this.emit('agent:modelRouted', resolveAgentRoute(db)); } catch { /* chip is informational */ }
+      try {
+        const route = resolveAgentRoute(db);
+        this.emit('agent:modelRouted', route);
+        // Routing had to settle for a fallback or a weak stand-in: have the
+        // provisioner install the tier default in the background so the NEXT
+        // run is fast. This run proceeds on what is installed now.
+        if (route.source === 'user-fallback' || route.source === 'auto') {
+          void ensureAgentModel({ emit: (c, p) => this.emit(c, p), notify: sendNotification });
+        }
+      } catch { /* chip is informational */ }
     }
     const planStartMs = Date.now();
 
@@ -1263,7 +1311,9 @@ RULES — follow exactly, no exceptions:
     // The act loop is the 'agent' role unless the caller asked for another
     // phase's routing (e.g. a tool_args-typed capability run).
     const loopTask: TaskType = args.taskType ?? 'agent';
-    const llm = getActiveLLMClient(args.modelOverride, loopTask);
+    // `let`: escalation (agent/escalation.ts) may switch the model mid-run.
+    let llm = getActiveLLMClient(args.modelOverride, loopTask);
+    let loopModel = resolveRunModel(args.modelOverride, loopTask);
     // Renderer-facing emit gate. Silent child loops still persist to SQLite.
     const emit = (channel: string, data?: unknown): void => {
       if (!args.silent) this.emit(channel, data);
@@ -1287,8 +1337,20 @@ RULES — follow exactly, no exceptions:
     const mayDelegate =
       depth < MAX_CAPABILITY_DEPTH &&
       (effectiveAllowed.length === 0 || effectiveAllowed.includes('invoke_capability'));
-    const tools = [
-      ...filterToolsByAllowlist(this.registry.getToolSchemas(), effectiveAllowed),
+    // MCP tools are offered by relevance (mcp/toolBudget.ts): built-ins always,
+    // a server's tools when the goal names it / it already worked in this chat /
+    // the skill allowlists it. A discarded turn restores the full set (below).
+    const budget = selectToolsForRun({
+      builtIn: this.registry.getBuiltInToolSchemas(),
+      servers: this.registry.getMcpServerTools(),
+      goal: args.goal,
+      recentlyUsed: this.mcpUsedBySession.get(args.sessionId) ?? new Set<string>(),
+      allowlist: effectiveAllowed,
+    });
+    const toolsPruned = budget.withheld.some(w => w.reason === 'irrelevant');
+    let toolsRestored = false;
+    let modelEscalated = false;
+    const extraTools = [
       ...MEMORY_TOOL_SCHEMAS,
       // Desktop control (mouse/keyboard/screenshot) is opt-in and dangerous, so
       // it's only offered to the model when the user has enabled it in Settings.
@@ -1297,6 +1359,8 @@ RULES — follow exactly, no exceptions:
       // step to a trusted, pre-scoped capability (bounded by depth + scope).
       ...(mayDelegate ? getSubcapabilityToolSchemas() : []),
     ];
+    let tools = [...filterToolsByAllowlist(budget.tools, effectiveAllowed), ...extraTools];
+    const fullTools = [...filterToolsByAllowlist(budget.full, effectiveAllowed), ...extraTools];
 
     const messages = args.messages;
     const mutations: TrackedMutation[] = [];
@@ -1327,7 +1391,10 @@ RULES — follow exactly, no exceptions:
     startCitationCollection(args.workflowId);
     setActiveCitationToken(args.workflowId);
 
-    recordStep(stepIdx++, 'system', { note: 'loop start', model: resolveRunModel(args.modelOverride, loopTask) ?? this.activeModelName() }, messages);
+    recordStep(stepIdx++, 'system', {
+      note: 'loop start', model: loopModel ?? this.activeModelName(),
+      tools: tools.length, toolsWithheld: budget.withheld,
+    }, messages);
 
     // ── Context gather + <think> phase ───────────────────────────────────────
     // Before the first tool call we (1) assemble a structured <context> block of
@@ -1686,6 +1753,14 @@ RULES — follow exactly, no exceptions:
 
           toolCallsTotal++;
           if (isFailure(outcome)) toolCallErrors++;
+          if (outcome.status === 'succeeded') {
+            const owner = this.registry.serverForTool(toolCall.function.name);
+            if (owner) {
+              const used = this.mcpUsedBySession.get(args.sessionId) ?? new Set<string>();
+              used.add(owner.id);
+              this.mcpUsedBySession.set(args.sessionId, used);
+            }
+          }
           if (receiptStatus === 'blocked') toolCallsBlocked++;
 
           // Anti-hallucination: only count a mutation as having happened when
@@ -2013,6 +2088,58 @@ RULES — follow exactly, no exceptions:
         break;
 
       } else {
+        // Escalate before spending a strike on a plain re-ask: restore withheld
+        // MCP tools after a discarded turn, or step up one model size. Each
+        // remedy fires at most once per run (agent/escalation.ts).
+        let ladder: string[] = [];
+        if (!modelEscalated && !args.modelOverride && loopTask === 'agent') {
+          try {
+            const ri = agentRouteInput(db);
+            const capB = resolveAgentRoute(db).capB;
+            // A cloud pick runs on cloud by the user's choice; routing never
+            // moves it to or from local, and neither does escalation.
+            if (ri.userPick && !ri.userPick.isLocal) throw new Error('cloud pick: no escalation');
+            ladder = escalationLadder({
+              current: loopModel, candidates: ri.candidates, capB,
+              knownBadToolCalls: ri.knownBadToolCalls,
+              userLocalPick: ri.userPick?.isLocal ? ri.userPick.name : null,
+            });
+          } catch { /* no ladder — fall through to the nudge */ }
+        }
+        const step = nextEscalation({ discarded: !!msg.discarded, toolsPruned, toolsRestored, modelEscalated, ladder });
+        if (step?.kind === 'restore-tools') {
+          toolsRestored = true;
+          tools = fullTools;
+          const added = budget.withheld.filter(w => w.reason === 'irrelevant').map(w => w.server).join(', ');
+          messages.push({
+            role: 'system',
+            content: `Additional tools are now available for this task (from: ${added}). The full tool list is: ${tools.map(t => t.function.name).join(', ')}. Continue by calling one of them with valid arguments.`,
+          });
+          recordStep(stepIdx++, 'system', { note: 'escalate-tools', restored: added, tools: tools.length });
+          emit('agent:status', 'Offering more tools and retrying…');
+          continue;
+        }
+        if (step?.kind === 'switch-model') {
+          modelEscalated = true;
+          const from = loopModel;
+          try {
+            llm = getActiveLLMClient(step.model);
+            loopModel = step.model;
+            recordStep(stepIdx++, 'system', { note: 'escalate-model', from, to: step.model, discarded: !!msg.discarded });
+            emit('agent:status', `Switching to ${step.model} to finish this task…`);
+            emit('agent:modelRouted', {
+              model: step.model, source: 'auto', userPick: null, capB: 0,
+              reason: `${from ?? 'The routed model'} produced no usable output, so Artha stepped up to ${step.model} for the rest of this task.`,
+            });
+            messages.push({
+              role: 'system',
+              content: `The previous attempt produced no usable output. Continue the task now: call one of the available tools with valid arguments, or if no tool applies, answer plainly.`,
+            });
+            continue;
+          } catch (err) {
+            console.warn('[Artha] model escalation failed (continuing on current model):', err);
+          }
+        }
         emptyCount++;
         if (emptyCount < 3) {
           // Empty turn. On Ollama this almost always means the model called a

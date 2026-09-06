@@ -46,6 +46,16 @@ export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
     try { setRoute(await window.artha.router.setAgentPin(name)); } catch { /* keep current */ }
   };
   const autoRouted = route?.source === 'auto' && route.model;
+  // Background install of the agent model (router/modelProvisioner.ts): show
+  // it on the chip so a download is never invisible.
+  const [provision, setProvision] = useState<{ phase: string; tag?: string; percent?: number } | null>(null);
+  useEffect(() => {
+    const off = window.artha.agent.onModelProvision((e) => {
+      setProvision(e.phase === 'installing' || e.phase === 'probing' ? e : null);
+      if (e.phase === 'ready') loadRoute();
+    });
+    return () => { off(); };
+  }, []);
 
   // Load the active model (and refresh when the parent signals a change, e.g.
   // the Settings modal closing).
@@ -124,6 +134,12 @@ export default function ModelPicker({ refreshKey }: { refreshKey?: unknown }) {
           : <Cpu size={10} className="text-artha-accent shrink-0" />}
         <span className="truncate max-w-[160px]">{autoRouted ? route!.model : (active ?? 'No model')}</span>
         {autoRouted && <span className="text-[9px] uppercase tracking-wide text-artha-accent">auto</span>}
+        {provision && (
+          <span className="flex items-center gap-1 text-[9px] text-artha-accent" title={`Artha is installing ${provision.tag} to run actions faster`}>
+            <Loader2 size={9} className="animate-spin" />
+            {provision.phase === 'installing' ? `${provision.percent ?? 0}%` : 'checking'}
+          </span>
+        )}
       </button>
 
       {open && (

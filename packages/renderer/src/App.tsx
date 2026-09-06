@@ -13,6 +13,7 @@
  * the matching section, so old call-sites keep working without refactor.
  */
 import { useEffect, useState } from 'react';
+import { useToastStore } from './stores/toast';
 import { useChatStore, type Session } from './stores/chat';
 import Onboarding from './components/Onboarding/Onboarding';
 import ModelStatusBanner from './components/ModelStatusBanner';
@@ -153,6 +154,17 @@ export default function App() {
     // shown in the working pill so the plan phase reads as progress.
     const offStatus = window.artha.agent.onStatus((s) => setAgentStatus(s));
 
+    // A reversible plan started without the approval modal (agent/autoApprove.ts).
+    // Say so where the user is looking; UndoAfterRun offers the revert when it ends.
+    const offAutoApproved = window.artha.agent.onPlanAutoApproved((p) => {
+      useToastStore.getState().show({
+        kind: 'info',
+        title: 'Running without asking',
+        message: p.summary ? `${p.summary} · Undo available when it finishes` : p.reason,
+        duration: 8000,
+      });
+    });
+
     // Clarification request — orchestrator paused before planning; show modal.
     const offClarify = window.artha.agent.onClarifyRequest((req) => {
       setStreaming(false); // not streaming yet — waiting for user answers
@@ -182,7 +194,7 @@ export default function App() {
     window.artha.sessions.list().then(setSessions);
     window.artha.projects.list().then(setProjects).catch(() => { /* fresh DB */ });
 
-    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offStatus(); offClarify(); offToolApproval(); offTitle(); offAutoOpen(); };
+    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offStatus(); offAutoApproved(); offClarify(); offToolApproval(); offTitle(); offAutoOpen(); };
   }, []);
 
   // ── Always land on a ready chat ──────────────────────────────────────────

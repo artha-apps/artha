@@ -547,6 +547,12 @@ function resolveModelName(modelOverride?: string, taskType?: TaskType): string |
       // 14B agent would still let a 70B "plan" through as ≤ active.
       let agentName: string | undefined;
       try { agentName = resolveAgentRoute(db).model ?? undefined; } catch { /* fall back to picker */ }
+      // The PLAN is written for the model that will execute it. When a small
+      // "fastest passer" (mistral:7b) planned for a 14B agent, it wrote
+      // pseudo-syntax steps (`mkdir`, tuple args) the agent followed literally.
+      // The routed agent model is already budgeted for latency, so planning on
+      // it costs little and keeps plan and execution in one tool vocabulary.
+      if (taskType === 'plan' && agentName) return agentName;
       const sizeAnchor = agentName ?? active?.ollama_name;
       const activeB = sizeAnchor ? modelParamsB(sizeAnchor) : Infinity;
 

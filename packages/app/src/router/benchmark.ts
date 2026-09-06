@@ -3,7 +3,8 @@
  *
  * Probes all locally-installed Ollama models with three canonical tasks:
  *   plan        — short structured planning response
- *   tool_args   — JSON tool-call argument generation
+ *   tool_args   — a REAL structured tool call to an offered function (the
+ *                 thing agent routing depends on; prose/JSON-in-text scores 0)
  *   synthesis   — paragraph-length prose synthesis
  *
  * Records latency + a heuristic quality score in `model_profiles`. The LLM
@@ -22,7 +23,45 @@ export type TaskType = 'plan' | 'tool_args' | 'synthesis' | 'agent';
 interface ProbeTask {
   task: TaskType;
   messages: OpenAI.ChatCompletionMessageParam[];
-  validate: (text: string) => number; // 0..1 heuristic quality score
+  /** Offered to the model as real function tools. When present the probe is
+   *  scored on the structured `tool_calls` it returns, not on prose. */
+  tools?: OpenAI.ChatCompletionTool[];
+  validate: (reply: ProbeReply) => number; // 0..1 heuristic quality score
+}
+
+/** What a probe gets to score: the text and any structured tool calls. */
+export interface ProbeReply {
+  text: string;
+  toolCalls: { name: string; args: Record<string, unknown> }[];
+}
+
+/** The one tool offered in the tool-call probe. Deliberately shaped like the
+ *  agent's own fs_list_directory so the probe measures the thing routing
+ *  depends on: can this model emit a well-formed call to a listed tool. */
+const PROBE_TOOL: OpenAI.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'fs_list_directory',
+    description: 'List the files in a directory on this computer.',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Absolute path of the directory to list.' } },
+      required: ['path'],
+    },
+  },
+};
+
+/** Score a tool-call probe reply 0..1. Exported for tests. A model that
+ *  answers in prose or emits JSON-in-text instead of a structured call scores
+ *  0: on Ollama such a model's calls are silently dropped, which is exactly
+ *  the failure the router must route around. */
+export function scoreToolCallReply(reply: ProbeReply): number {
+  const call = reply.toolCalls.find(c => c.name === PROBE_TOOL.function.name);
+  if (!call) return 0;
+  const path = call.args.path;
+  if (typeof path !== 'string' || !path.trim()) return 0.25;
+  if (!path.startsWith('/') && !path.startsWith('~') && !/^[A-Za-z]:\\/.test(path)) return 0.5;
+  return /desktop/i.test(path) ? 1 : 0.75;
 }
 
 // The three canonical probes are designed to stress each capability in
@@ -36,7 +75,7 @@ const PROBES: ProbeTask[] = [
       { role: 'system', content: 'Respond with a JSON array of 3 short step descriptions to make tea. No explanation, JSON only.' },
       { role: 'user', content: 'Plan it.' },
     ],
-    validate: (text) => {
+    validate: ({ text }) => {
       try {
         const arr = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim()) as unknown;
         // Partial credit if the array exists but has too many/few items.
@@ -46,20 +85,14 @@ const PROBES: ProbeTask[] = [
   },
   {
     task: 'tool_args',
-    // Checks that the model can produce a correctly-shaped tool argument object.
+    // A REAL tool call, not JSON-in-prose: the model is offered one function
+    // and asked to use it. Scored on the structured call it returns.
     messages: [
-      { role: 'system', content: 'Respond with JSON only: {"path": "<absolute home subdirectory>"}.' },
-      { role: 'user', content: 'Give me args to list my Desktop folder.' },
+      { role: 'system', content: 'You are a desktop assistant with tools. Use the tools to act; do not describe what you would do.' },
+      { role: 'user', content: 'List the files on my Desktop.' },
     ],
-    validate: (text) => {
-      try {
-        const obj = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim()) as { path?: string };
-        if (typeof obj.path !== 'string') return 0;
-        // Partial credit if the model produces a path, full credit if it
-        // correctly includes "Desktop" in the value.
-        return /desktop/i.test(obj.path) ? 1 : 0.5;
-      } catch { return 0; }
-    },
+    tools: [PROBE_TOOL],
+    validate: scoreToolCallReply,
   },
   {
     task: 'synthesis',
@@ -68,7 +101,7 @@ const PROBES: ProbeTask[] = [
       { role: 'system', content: 'Write a concise, professional 2-sentence project status update.' },
       { role: 'user', content: 'Status: Q1 milestone met, two risks identified.' },
     ],
-    validate: (text) => {
+    validate: ({ text }) => {
       const trimmed = text.trim();
       if (trimmed.length < 40) return 0.2;
       const sentences = trimmed.match(/[.!?]+/g)?.length ?? 0;
@@ -99,13 +132,20 @@ async function probeModel(modelName: string, probe: ProbeTask): Promise<{ latenc
     const res = await client.chat.completions.create({
       model: modelName,
       messages: probe.messages,
+      ...(probe.tools ? { tools: probe.tools } : {}),
       max_tokens: 300,
       temperature: 0.2,
       stream: false,
     });
     const latency = Date.now() - start;
-    const text = res.choices[0]?.message?.content ?? '';
-    return { latency, quality: probe.validate(text) };
+    const msg = res.choices[0]?.message;
+    const toolCalls = (msg?.tool_calls ?? []).flatMap(tc => {
+      if (tc.type !== 'function') return [];
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(tc.function.arguments || '{}') as Record<string, unknown>; } catch { /* unparsable args score low */ }
+      return [{ name: tc.function.name, args }];
+    });
+    return { latency, quality: probe.validate({ text: msg?.content ?? '', toolCalls }) };
   } catch {
     return { latency: Date.now() - start, quality: 0 };
   }

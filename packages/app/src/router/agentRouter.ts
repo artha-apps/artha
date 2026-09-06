@@ -175,7 +175,10 @@ export function writeAgentPin(db: Db, pin: string | null): void {
  *  benchmark rows, and every local model Artha knows about. Synchronous (the
  *  LLM client resolves transports synchronously); kicks a background refresh
  *  of installed tags when the cache is older than a minute. */
-export function resolveAgentRoute(db: Db): AgentRoute {
+/** The live evidence the router decides from. Exported so the act loop's
+ *  escalation ladder (agent/escalation.ts) ranks the SAME candidates with the
+ *  SAME eligibility as the initial route. */
+export function agentRouteInput(db: Db): AgentRouteInput {
   if (Date.now() - installedAt > 60_000) void refreshInstalledModels();
   const active = db.prepare(`SELECT ollama_name, provider, base_url FROM llm_models WHERE is_active=1 LIMIT 1`).get() as
     { ollama_name?: string; provider?: string; base_url?: string } | undefined;
@@ -189,11 +192,15 @@ export function resolveAgentRoute(db: Db): AgentRoute {
     profiled = (db.prepare(`SELECT DISTINCT ollama_name FROM model_profiles`).all() as { ollama_name: string }[]).map(r => r.ollama_name);
     bad = new Set((db.prepare(`SELECT ollama_name FROM model_profiles WHERE task_type='tool_args' AND quality <= 0`).all() as { ollama_name: string }[]).map(r => r.ollama_name));
   } catch { /* benchmark tables are optional evidence */ }
-  return routeAgentModel({
+  return {
     ramGb: Math.round(os.totalmem() / 1024 ** 3),
     userPick,
     pin: readAgentPin(db),
     candidates: [...configured, ...profiled, ...installedTags],
     knownBadToolCalls: bad,
-  });
+  };
+}
+
+export function resolveAgentRoute(db: Db): AgentRoute {
+  return routeAgentModel(agentRouteInput(db));
 }

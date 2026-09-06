@@ -56,6 +56,9 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [hardware, setHardware] = useState<HardwareInfo | null>(null);
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [pulling, setPulling] = useState(false);
+  // Slice-2 consent, asked ONCE here: Artha may install/replace the model that
+  // runs actions (never the chat pick, never cloud). Persisted by finishWith.
+  const [autoModels, setAutoModels] = useState(true);
   const [progress, setProgress] = useState<{ percent?: number; status: string } | null>(null);
   const [error, setError] = useState('');
   // True only when Ollama isn't installed at all — the one case Artha can't fix
@@ -122,7 +125,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
    *  Bring-Your-Own-Memory step (instead of closing). */
   const finishWith = async (modelName: string) => {
     await window.artha.llm.setActiveModel(modelName);
-    await window.artha.settings.set({ persona: 'individual', onboardingComplete: true });
+    await window.artha.settings.set({ persona: 'individual', onboardingComplete: true, autoModelManagement: autoModels });
     setStep('byom');
   };
 
@@ -388,6 +391,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               <div className="flex items-center gap-2 text-xs text-artha-muted bg-artha-surface border border-artha-border rounded-lg px-3 py-2">
                 <Cpu size={13} className="text-artha-accent" /> {hardware.gbRam} GB RAM detected · {hardware.recommendation}
               </div>
+              <label className="flex items-start gap-2 text-xs text-artha-muted px-1 cursor-pointer">
+                <input type="checkbox" checked={autoModels} onChange={e => setAutoModels(e.target.checked)} className="mt-0.5 accent-artha-accent" />
+                <span>Let Artha keep a fast tool-calling model installed for actions and swap it as your hardware allows. Your chat model stays your choice. You can change this in Settings → Router.</span>
+              </label>
 
               {pulling ? (
                 <div className="bg-artha-surface border border-artha-border rounded-xl p-4">
