@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { planProvision, tierDefaultTag, estimatedDownloadGb, type ProvisionInput } from './modelProvisioner';
+import { vi } from 'vitest';
+import { planProvision, tierDefaultTag, estimatedDownloadGb, resetStaleToolEvidence, TOOL_PROBE_VERSION, type ProvisionInput } from './modelProvisioner';
+
+vi.mock('../db/schema', () => ({ getDb: () => { throw new Error('not used in pure tests'); } }));
+vi.mock('./benchmark', () => ({ benchmarkModel: async () => [] }));
 
 const GB = 1024 ** 3;
 const base = (o: Partial<ProvisionInput> = {}): ProvisionInput => ({
@@ -52,5 +56,30 @@ describe('planProvision', () => {
   it('estimates q4 download size from the tag', () => {
     expect(estimatedDownloadGb('qwen2.5:14b-instruct-q4_K_M')).toBeCloseTo(8.9);
     expect(estimatedDownloadGb('mystery:latest')).toBe(10);
+  });
+});
+
+describe('resetStaleToolEvidence', () => {
+  const fakeDb = () => {
+    const ran: string[] = [];
+    const db = {
+      ran,
+      prepare: (sql: string) => ({
+        run: (...args: unknown[]) => { ran.push(sql + ' ' + JSON.stringify(args)); },
+        get: () => ({ settings_json: JSON.stringify({}) }),
+      }),
+    };
+    return db;
+  };
+  it('drops old tool_args rows once and stamps the probe version', () => {
+    const db = fakeDb();
+    expect(resetStaleToolEvidence(db, {})).toBe(true);
+    expect(db.ran.some(r => r.includes("DELETE FROM model_profiles WHERE task_type='tool_args'"))).toBe(true);
+    expect(db.ran.some(r => r.includes('UPDATE users SET settings_json') && r.includes('toolProbeVersion') && r.includes(String(TOOL_PROBE_VERSION)))).toBe(true);
+  });
+  it('is a no-op once the current probe version is recorded', () => {
+    const db = fakeDb();
+    expect(resetStaleToolEvidence(db, { toolProbeVersion: TOOL_PROBE_VERSION })).toBe(false);
+    expect(db.ran).toEqual([]);
   });
 });

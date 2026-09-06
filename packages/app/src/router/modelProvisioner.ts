@@ -29,7 +29,7 @@ import fs from 'fs';
 import { getDb } from '../db/schema';
 import { pullOllamaModel, isModelInstalled } from '../llm/ollamaPull';
 import { benchmarkModel } from './benchmark';
-import { agentParamCapB, modelParamsB, refreshInstalledModels, resolveAgentRoute, tierDefaultPrefix, type AgentRoute } from './agentRouter';
+import { agentParamCapB, agentRouteInput, modelParamsB, refreshInstalledModels, resolveAgentRoute, tierDefaultPrefix, type AgentRoute } from './agentRouter';
 
 export interface ProvisionDecision {
   action: 'none' | 'install';
@@ -157,6 +157,26 @@ async function freeBytesForModels(): Promise<number | null> {
   } catch { return null; }
 }
 
+/** Bumped whenever the tool_args probe changes shape. v0.4.26 and earlier
+ *  scored "respond with JSON" prose, so a model that (correctly) emitted a
+ *  structured tool call could land at 0 and be barred from the agent role on
+ *  false evidence. On the first launch after a bump, stale tool_args rows are
+ *  dropped (absent evidence = eligible) and the models routing actually
+ *  depends on are re-probed with the real tool-call probe. */
+export const TOOL_PROBE_VERSION = 2;
+const PROBE_VERSION_KEY = 'toolProbeVersion';
+
+/** Drop tool_args evidence gathered by an older probe. Returns true when a
+ *  reset happened (caller re-probes what matters). Exported for tests. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function resetStaleToolEvidence(db: any, settings: Record<string, unknown>): boolean {
+  if (settings[PROBE_VERSION_KEY] === TOOL_PROBE_VERSION) return false;
+  try { db.prepare(`DELETE FROM model_profiles WHERE task_type='tool_args'`).run(); } catch { /* table optional */ }
+  writeSetting(db, PROBE_VERSION_KEY, TOOL_PROBE_VERSION);
+  console.log('[Artha] model provisioner: cleared tool_args evidence from an older probe; re-probing routed models');
+  return true;
+}
+
 let inFlight: Promise<ProvisionEvent> | null = null;
 
 /** Decide and, if warranted, install the tier-default agent model. Safe to
@@ -176,8 +196,25 @@ async function run(deps: ProvisionDeps): Promise<ProvisionEvent> {
 
   const settings = readSettings(db);
   const installed = await refreshInstalledModels(base);
-  const route = resolveAgentRoute(db);
   const ramGb = Math.round(os.totalmem() / 1024 ** 3);
+  if (resetStaleToolEvidence(db, settings)) {
+    // Re-probe only what routing decides from: the user's local pick and the
+    // tier default, and only when they fit the agent budget (loading a 70B to
+    // probe it would stall a chat in progress). Sequential — Ollama serialises.
+    const before = agentRouteInput(db);
+    const prefix = tierDefaultPrefix(ramGb);
+    const targets = new Set<string>();
+    if (before.userPick?.isLocal) targets.add(before.userPick.name);
+    const tier = installed.find(n => n.startsWith(prefix));
+    if (tier) targets.add(tier);
+    for (const name of targets) {
+      if (modelParamsB(name) > agentParamCapB(ramGb)) continue;
+      emitEvt({ phase: 'probing', tag: name, reason: `Checking ${name} can call tools…` });
+      try { await benchmarkModel(name); } catch (err) { console.warn('[Artha] model provisioner: re-probe failed:', err); }
+    }
+    try { deps.emit('agent:modelRouted', resolveAgentRoute(db)); } catch { /* informational */ }
+  }
+  const route = resolveAgentRoute(db);
   const tag = tierDefaultTag(ramGb);
   const prev = settings[SETTINGS_KEY] as ProvisionState | undefined;
   const decision = planProvision({
