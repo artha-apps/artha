@@ -67,6 +67,7 @@ function fakeDb() {
   };
 }
 
+import os from 'os';
 import { resolveTransport, NoModelConfiguredError, modelParamsB } from './client';
 import { LOCAL_API_KEY_PLACEHOLDER } from '../security/secretString';
 
@@ -78,6 +79,11 @@ const CLOUD_ACTIVE = {
 };
 
 beforeEach(() => {
+  // The agent router sizes its budget from machine RAM (router/agentRouter.ts).
+  // Pin it so these expectations do not depend on which CI runner runs them —
+  // a 14B "active" pick is eligible at 128 GB, auto-replaced at 16 GB, and a
+  // fallback at 7 GB, which produced three different answers across OSes.
+  vi.spyOn(os, 'totalmem').mockReturnValue(128 * 1024 ** 3);
   state.activeRow = undefined;
   state.savedRows = [];
   state.profileRows = {};
@@ -162,12 +168,25 @@ describe('aux phases are latency-capped at the active model size (Delegate slown
     expect(modelParamsB(t.model)).toBeLessThan(70);
   });
 
-  it('a passing model that is ≤ active is still used (quality preserved)', () => {
+  it('the PLAN phase runs on the model that will execute it, not a smaller passer', () => {
+    // A 7B that "passed" the plan probe used to write pseudo-syntax plans
+    // (`mkdir`, tuple args) that the 14B agent followed literally. Planning on
+    // the routed agent model keeps plan and execution in one tool vocabulary;
+    // the routed model is already latency-budgeted, so this costs little.
     state.activeRow = localActive('qwen2.5:14b-instruct-q4_K_M');
     state.profilePassers = { plan: [{ ollama_name: 'qwen2.5:7b', quality: 1.0, latency_ms: 408 }] };
     state.benchmarkedTasks = ['plan'];
     state.localRows = [{ ollama_name: 'qwen2.5:7b' }, { ollama_name: 'qwen2.5:14b-instruct-q4_K_M' }];
     const t = resolveTransport(fakeDb(), undefined, 'plan');
+    expect(t.model).toBe('qwen2.5:14b-instruct-q4_K_M');
+  });
+
+  it('a passing TOOL_ARGS model that is ≤ active is still used (quality preserved)', () => {
+    state.activeRow = localActive('qwen2.5:14b-instruct-q4_K_M');
+    state.profilePassers = { tool_args: [{ ollama_name: 'qwen2.5:7b', quality: 1.0, latency_ms: 408 }] };
+    state.benchmarkedTasks = ['tool_args'];
+    state.localRows = [{ ollama_name: 'qwen2.5:7b' }, { ollama_name: 'qwen2.5:14b-instruct-q4_K_M' }];
+    const t = resolveTransport(fakeDb(), undefined, 'tool_args');
     expect(t.model).toBe('qwen2.5:7b');
   });
 

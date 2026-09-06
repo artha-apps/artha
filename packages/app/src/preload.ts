@@ -182,6 +182,17 @@ const api = {
       ipcRenderer.on('agent:modelRouted', (_e, r) => cb(r));
       return () => ipcRenderer.removeAllListeners('agent:modelRouted');
     },
+    /** Background model provisioning (router/modelProvisioner.ts): Artha
+     *  installing the tier-default agent model on its own. */
+    onModelProvision: (cb: (e: { phase: 'checking' | 'installing' | 'probing' | 'ready' | 'skipped' | 'failed'; tag?: string; percent?: number; reason: string }) => void) => {
+      ipcRenderer.on('agent:modelProvision', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:modelProvision');
+    },
+    /** A reversible plan was started without the approval modal (agent/autoApprove.ts). */
+    onPlanAutoApproved: (cb: (p: { workflowId: string; reason: string; summary: string; steps: number }) => void) => {
+      ipcRenderer.on('agent:planAutoApproved', (_e, p) => cb(p));
+      return () => ipcRenderer.removeAllListeners('agent:planAutoApproved');
+    },
     onClarifyRequest: (cb: (payload: { workflowId: string; sessionId: string; goal: string; questions: string[] }) => void) => {
       ipcRenderer.on('agent:clarifyRequest', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:clarifyRequest');
@@ -826,6 +837,7 @@ const api = {
     /** "Use my pick anyway" (name) / "back to automatic" (null). */
     setAgentPin: (ollamaName: string | null) =>
       ipcRenderer.invoke('router:setAgentPin', ollamaName) as Promise<AgentRoute>,
+    ensureAgentModel: () => ipcRenderer.invoke('router:ensureAgentModel') as Promise<{ phase: string; tag?: string; percent?: number; reason: string }>,
     onBenchmarkProgress: (cb: (msg: string) => void) => {
       ipcRenderer.on('router:benchmarkProgress', (_e, m) => cb(m));
       return () => ipcRenderer.removeAllListeners('router:benchmarkProgress');

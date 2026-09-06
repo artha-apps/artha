@@ -6,7 +6,7 @@
 import { useEffect, useState } from 'react';
 import {
   Route, Zap, Play, RefreshCw, Trophy, Clock, Brain,
-  Wrench, Sparkles, Pin, PinOff,
+  Wrench, Sparkles, Pin, PinOff, Download, ShieldCheck,
 } from 'lucide-react';
 import { FeatureGuide } from '../ui/FeatureGuide';
 import { GUIDES } from './guides';
@@ -56,6 +56,32 @@ export default function RouterPanel() {
   const [benchmarking, setBenchmarking] = useState(false);
   // Progress messages stream in via IPC during the benchmark run.
   const [progress, setProgress] = useState<string>('');
+  // Autonomy switches (users.settings_json). Both default ON: Artha keeps a
+  // tool-capable model installed for actions, and runs reversible plans
+  // without an approval modal. See router/modelProvisioner.ts + agent/autoApprove.ts.
+  const [autoModels, setAutoModels] = useState(true);
+  const [autonomous, setAutonomous] = useState(true);
+  const [provision, setProvision] = useState<{ phase: string; tag?: string; percent?: number; reason: string } | null>(null);
+  useEffect(() => {
+    window.artha.settings.get().then((st: Record<string, unknown>) => {
+      setAutoModels(st.autoModelManagement !== false);
+      setAutonomous(st.autonomousActions !== false);
+    }).catch(() => {});
+    const off = window.artha.agent.onModelProvision(setProvision);
+    return () => { off(); };
+  }, []);
+  const toggleAutoModels = async () => {
+    const next = !autoModels; setAutoModels(next);
+    await window.artha.settings.set({ autoModelManagement: next });
+  };
+  const toggleAutonomous = async () => {
+    const next = !autonomous; setAutonomous(next);
+    await window.artha.settings.set({ autonomousActions: next });
+  };
+  const checkNow = async () => {
+    setProvision({ phase: 'checking', reason: 'Checking installed models against this machine…' });
+    try { setProvision(await window.artha.router.ensureAgentModel()); } catch (e) { setProvision({ phase: 'failed', reason: String(e) }); }
+  };
 
   // ── Effects ────────────────────────────────────────────────────────────────
   const load = async () => {
@@ -131,6 +157,42 @@ export default function RouterPanel() {
             {benchmarking ? 'Benchmarking…' : 'Run benchmark'}
           </button>
         </div>
+      </div>
+
+      {/* Autonomy — what Artha decides on its own */}
+      <div className="mb-6 rounded-xl border border-artha-border bg-artha-surface divide-y divide-artha-border">
+        <label className="flex items-start gap-3 px-4 py-3 cursor-pointer">
+          <input type="checkbox" checked={autoModels} onChange={toggleAutoModels} className="mt-0.5 accent-artha-accent" />
+          <span className="flex-1 min-w-0">
+            <span className="flex items-center gap-1.5 text-sm text-artha-text"><Download size={13} className="text-artha-accent" /> Artha manages action models</span>
+            <span className="block text-xs text-artha-muted mt-0.5">
+              Keeps a fast tool-calling model sized to this machine installed and checked, so actions never wait on a model that is too large or cannot call tools. Your chat model stays your choice; cloud models are never added.
+            </span>
+            {provision && provision.phase !== 'skipped' && (
+              <span className="block text-xs mt-1.5 text-artha-accent">
+                {provision.phase === 'installing' && `Installing ${provision.tag}… ${provision.percent ?? 0}%`}
+                {provision.phase === 'probing' && `Checking ${provision.tag} can call tools…`}
+                {provision.phase === 'ready' && `${provision.tag} installed and checked.`}
+                {provision.phase === 'checking' && provision.reason}
+                {provision.phase === 'failed' && <span className="text-artha-danger">{provision.reason}</span>}
+              </span>
+            )}
+            {provision?.phase === 'skipped' && <span className="block text-xs mt-1.5 text-artha-muted">{provision.reason}</span>}
+          </span>
+          <button type="button" onClick={(e) => { e.preventDefault(); void checkNow(); }} disabled={!autoModels || provision?.phase === 'installing'}
+            className="shrink-0 px-2.5 py-1 rounded-md border border-artha-border text-[11px] text-artha-muted hover:text-artha-text disabled:opacity-40">
+            Check now
+          </button>
+        </label>
+        <label className="flex items-start gap-3 px-4 py-3 cursor-pointer">
+          <input type="checkbox" checked={autonomous} onChange={toggleAutonomous} className="mt-0.5 accent-artha-accent" />
+          <span className="flex-1 min-w-0">
+            <span className="flex items-center gap-1.5 text-sm text-artha-text"><ShieldCheck size={13} className="text-artha-accent" /> Run reversible plans without asking</span>
+            <span className="block text-xs text-artha-muted mt-0.5">
+              Moves, copies and new files run immediately with Undo available afterwards. Anything that deletes, or that Artha cannot call reversible, still shows the approval card first.
+            </span>
+          </span>
+        </label>
       </div>
 
       {progress && (

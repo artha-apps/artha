@@ -23,6 +23,8 @@ import { SchedulerService } from './scheduler/scheduler';
 import { initSentry, withTransaction, captureException, setOllamaConnectedTag } from './sentry';
 import { startHealthCheckpointing, stopHealthCheckpointing } from './db/health';
 import { ensureModelReady, unloadActiveModel, stopOllamaIfStarted, setManagedRuntimeRoot } from './llm/ollamaRuntime';
+import { ensureAgentModel } from './router/modelProvisioner';
+import { sendNotification } from './notify';
 import { resolveQaProfile } from './system/qaProfile';
 
 /** Probe whether the local Ollama runtime is reachable. Best-effort with a
@@ -203,7 +205,17 @@ async function createWindow(): Promise<void> {
   ensureModelReady((status) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('model:status', status);
-    if (status.phase === 'ready') setOllamaConnectedTag(true);
+    if (status.phase === 'ready') {
+      setOllamaConnectedTag(true);
+      // Artha keeps a fast tool-calling model installed for the agent role
+      // (router/modelProvisioner.ts). Background, consent-gated, no-op when
+      // nothing is needed; progress streams to the Models panel + header chip.
+      const win = mainWindow;
+      void ensureAgentModel({
+        emit: (channel, payload) => { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); },
+        notify: sendNotification,
+      });
+    }
   }).catch(err => console.error('[Artha] ensureModelReady failed:', err));
 
   // Recover from renderer process crashes (e.g. memory pressure from a large

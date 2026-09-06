@@ -34,6 +34,7 @@
  */
 import { ipcMain, BrowserWindow, dialog, shell, desktopCapturer } from 'electron';
 import { resolveAgentRoute, refreshInstalledModels, writeAgentPin } from '../router/agentRouter';
+import { ensureAgentModel } from '../router/modelProvisioner';
 import * as path from 'path';
 import * as http from 'http';
 import * as os from 'os';
@@ -44,6 +45,7 @@ import { listUndoable, revert } from '../agent/undo';
 import { globalSearch } from '../search/global';
 import { getBriefing, markBriefingSeen } from '../briefing/briefing';
 import { spawnEnv } from '../system/nodePath';
+import { sendNotification } from '../notify';
 import { MCPRegistry, parseEnvTokens } from '../mcp/registry';
 import { sealCredentials, openCredentials, isAtRestEncryptionAvailable, type StoredCredentials } from '../security/secrets';
 import {
@@ -581,6 +583,12 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   };
 
   // Load all enabled MCP servers at startup
+  // A server that only ever fails is paused automatically (mcp/registry.ts);
+  // tell the user where its tools went instead of letting them vanish.
+  MCPRegistry.getInstance().onQuarantine = (srv) => {
+    sendNotification('An MCP server was paused', `${srv.name} failed ${srv.failures} calls in a row and none succeeded. Its tools are hidden until you fix its configuration and Retry in Settings → Tools.`);
+    safeSend('mcp:serverQuarantined', srv);
+  };
   MCPRegistry.getInstance().loadFromDatabase().catch(console.error);
 
   // Start the IDE MCP HTTP bridge so editor configs (.vscode/.cursor mcp.json
@@ -2310,6 +2318,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     writeAgentPin(getDb(), ollamaName);
     return resolveAgentRoute(getDb());
   });
+  // Run the provisioner on demand (Router panel "Check now"): decides from
+  // live evidence and installs the tier default only when routing needs it.
+  ipcMain.handle('router:ensureAgentModel', () =>
+    ensureAgentModel({ emit: safeSend, notify: sendNotification }));
 
   // ── Provenance ──────────────────────────────────────────────────────────
   ipcMain.handle('provenance:listDocs', () => {

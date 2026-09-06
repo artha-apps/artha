@@ -54,7 +54,19 @@ interface MCPServerConnection {
   name: string;
   client: Client;
   tools: OpenAI.ChatCompletionTool[];
+  /** Health since connect: calls that returned a result vs. errored/threw. A
+   *  server with failures and no successes at all is quarantined (below). */
+  successes: number;
+  failures: number;
+  /** Set when the server was auto-paused; its tools are no longer offered to
+   *  the agent until the user reconnects it (fresh counters). */
+  quarantined: boolean;
 }
+
+/** Consecutive-failure threshold before a never-succeeded server is paused.
+ *  Three is enough to rule out a one-off: a misconfigured server (the
+ *  reference filesystem server with no roots) fails every call identically. */
+export const MCP_QUARANTINE_AFTER = 3;
 
 /**
  * Singleton registry that manages the lifecycle of every MCP server process
@@ -167,7 +179,7 @@ export class MCPRegistry {
         },
       }));
 
-      this.connections.set(id, { id, name, client, tools: openaiTools });
+      this.connections.set(id, { id, name, client, tools: openaiTools, successes: 0, failures: 0, quarantined: false });
       this.recordStatus(id, 'connected', null);
       console.log(`[MCP] Connected: ${name} (${tools.length} tools)`);
 
@@ -211,16 +223,58 @@ export class MCPRegistry {
     }
   }
 
+  /** Built-in tool schemas only (no MCP). The act loop offers these
+   *  unconditionally and adds MCP servers by relevance (mcp/toolBudget.ts). */
+  getBuiltInToolSchemas(): OpenAI.ChatCompletionTool[] {
+    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...EMAIL_SEND_TOOL_SCHEMAS];
+  }
+
+  /** Live, non-quarantined MCP servers with their tool schemas, grouped so the
+   *  tool budget can include or withhold a server as a unit. */
+  getMcpServerTools(): { id: string; name: string; tools: OpenAI.ChatCompletionTool[] }[] {
+    return Array.from(this.connections.values())
+      .filter(c => !c.quarantined)
+      .map(c => ({ id: c.id, name: c.name, tools: c.tools }));
+  }
+
+  /** Which connected server owns `toolName` (undefined for built-ins). */
+  serverForTool(toolName: string): { id: string; name: string } | undefined {
+    for (const c of this.connections.values()) {
+      if (c.tools.some(t => t.function.name === toolName)) return { id: c.id, name: c.name };
+    }
+    return undefined;
+  }
+
+  /** Called on quarantine so the app can tell the user (OS notification +
+   *  Settings badge) instead of tools silently disappearing. */
+  onQuarantine: ((server: { id: string; name: string; failures: number }) => void) | null = null;
+
+  /** Track a call's outcome against its server. A server that has failed
+   *  MCP_QUARANTINE_AFTER times without ever succeeding is paused: its tools
+   *  stop being offered, its row shows the reason, and Retry in Settings
+   *  reconnects with fresh counters. Success on a healthy server resets the
+   *  failure streak so a flaky-but-working server is never paused. */
+  private recordOutcome(conn: MCPServerConnection, ok: boolean): void {
+    if (ok) { conn.successes++; conn.failures = 0; return; }
+    conn.failures++;
+    if (conn.quarantined || conn.successes > 0 || conn.failures < MCP_QUARANTINE_AFTER) return;
+    conn.quarantined = true;
+    const reason = `Paused automatically: ${conn.failures} calls failed and none succeeded. Check the server's configuration, then Retry.`;
+    console.warn(`[MCP] ${conn.name} quarantined — ${reason}`);
+    this.recordStatus(conn.id, 'error', reason);
+    try { this.onQuarantine?.({ id: conn.id, name: conn.name, failures: conn.failures }); } catch { /* best-effort */ }
+  }
+
   /** Get all tool schemas — built-in tools first, then any connected MCP servers. */
   getToolSchemas(): OpenAI.ChatCompletionTool[] {
-    const mcpTools = Array.from(this.connections.values()).flatMap(c => c.tools);
+    const mcpTools = this.getMcpServerTools().flatMap(c => c.tools);
     // NOTE: EMAIL_TOOL_SCHEMAS (email_compose, draft-only) is deliberately NOT
     // advertised to the agent. Small local models reliably confused it with
     // sending — calling email_compose (which only drafts) and then narrating a
     // successful "send". email_send is the single email action the agent sees;
     // it actually delivers (via the logged-in browser) and reports honestly.
     // The email_compose dispatch path below stays for any direct/back-compat use.
-    return [...FILESYSTEM_TOOL_SCHEMAS, ...WEB_TOOL_SCHEMAS, ...BROWSER_TOOL_SCHEMAS, ...DOCS_TOOL_SCHEMAS, ...RAG_TOOL_SCHEMAS, ...KG_TOOL_SCHEMAS, ...CRM_TOOL_SCHEMAS, ...EMAIL_SEND_TOOL_SCHEMAS, ...mcpTools];
+    return [...this.getBuiltInToolSchemas(), ...mcpTools];
   }
 
   /** Invoke a named tool — built-in tools first, then MCP servers.
@@ -257,15 +311,23 @@ export class MCPRegistry {
     for (const conn of this.connections.values()) {
       const hasTool = conn.tools.some(t => t.function.name === toolName);
       if (hasTool) {
-        const result = await conn.client.callTool({ name: toolName, arguments: args });
+        let result: Awaited<ReturnType<Client['callTool']>>;
+        try {
+          result = await conn.client.callTool({ name: toolName, arguments: args });
+        } catch (err) {
+          this.recordOutcome(conn, false);
+          throw err;
+        }
         // MCP signals failure with `isError: true` and NO exception and no
         // "Error:" prefix — so every MCP tool failure was being recorded as a
         // success, corrupting receipts, tallies and every evidence surface
         // downstream (audit C4). Surface it in the one shape the orchestrator
         // recognises as a failure.
         if ((result as { isError?: boolean }).isError) {
+          this.recordOutcome(conn, false);
           return `Error: ${toolName} failed — ${JSON.stringify(result.content)}`;
         }
+        this.recordOutcome(conn, true);
         return JSON.stringify(result.content);
       }
     }
