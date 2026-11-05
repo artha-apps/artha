@@ -63,10 +63,19 @@ describe('evaluateGoal', () => {
     expect(v.verdict).toBe('unknown');
   });
 
-  it('the final answer is citable as ANSWER only when one was given', async () => {
+  it('an ANSWER-only "met" never completes a goal (the answer is only the agent\'s claim)', async () => {
     const judge = async () => '{"verdict":"met","evidence_refs":["ANSWER"]}';
     expect((await evaluateGoal(input(), judge)).verdict).toBe('unknown');
-    expect((await evaluateGoal(input({ finalAnswer: 'Here is the summary…' }), judge)).verdict).toBe('met');
+    expect((await evaluateGoal(input({ finalAnswer: 'Done — I created q3.pdf.' }), judge)).verdict).toBe('unknown');
+    expect((await evaluateGoal(input({ evidence: [], finalAnswer: 'Done.' }), judge)).verdict).toBe('unknown');
+  });
+
+  it('a "met" citing only failed tool results is unknown', async () => {
+    const v = await evaluateGoal(
+      input({ evidence: [{ id: 'E1', kind: 'tool_result', status: 'failed', summary: 'fs_write: EACCES' }] }),
+      async () => '{"verdict":"met","evidence_refs":["E1"]}',
+    );
+    expect(v.verdict).toBe('unknown');
   });
 
   it('uses its own judge prompt and no tools', () => {

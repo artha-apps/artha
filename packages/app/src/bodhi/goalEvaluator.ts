@@ -200,6 +200,20 @@ export async function evaluateGoal(input: EvaluatorInput, judge: JudgeFn | null)
   } catch {
     return { verdict: 'unknown', gaps: ['The independent check could not run.'], evidence_refs: [], source: 'judge' };
   }
+  // "met" must rest on at least one SUCCEEDED tool result. The final answer is
+  // the agent's own claim and failed results prove nothing, so an ANSWER-only
+  // or failed-only citation is not enough to complete a goal.
+  if (verdict.verdict === 'met') {
+    const succeeded = new Set(input.evidence.filter(e => e.status === 'succeeded').map(e => e.id));
+    if (!verdict.evidence_refs.some(r => succeeded.has(r))) {
+      return {
+        verdict: 'unknown',
+        gaps: ['The independent check said "met" but cited no successful action — only the answer\'s own claim or failed steps.'],
+        evidence_refs: verdict.evidence_refs,
+        source: 'judge',
+      };
+    }
+  }
   // A check we could not complete (permissions/IO) means we cannot call it met.
   if (verdict.verdict === 'met' && required.some(c => c.outcome === 'indeterminate')) {
     return {

@@ -12,7 +12,7 @@
  *     model-facing `goal_update` tool can never reach it.
  *   - `terminated` is the user's Stop. The model cannot terminate a goal
  *     either — otherwise it could dodge evaluation by abandoning the goal.
- *   - the model may only mark its goal `blocked` or `paused`, with a reason.
+ *   - the model may only mark its goal `blocked`, with a reason (pausing is user-only).
  *
  * Pure with respect to an injected, better-sqlite3-shaped db so every rule is
  * unit-testable (node:sqlite satisfies the same surface in tests).
@@ -22,7 +22,9 @@
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'completed' | 'terminated';
 
 /** Statuses the model (via `goal_update`) is allowed to request. */
-export const MODEL_SETTABLE_STATUSES = ['blocked', 'paused'] as const;
+// Only `blocked`: a model-set `paused` would make the stop gate skip the
+// evaluator (the gate does not judge paused goals), so pausing is user-only.
+export const MODEL_SETTABLE_STATUSES = ['blocked'] as const;
 export type ModelSettableStatus = (typeof MODEL_SETTABLE_STATUSES)[number];
 
 /** Statuses the user may set from the UI (Pause / Resume / Stop). Note that
@@ -195,7 +197,7 @@ function writeTransition(
 }
 
 /**
- * The model-facing transition (`goal_update` tool). Only `blocked` / `paused`,
+ * The model-facing transition (`goal_update` tool). Only `blocked`,
  * always with a reason. Any attempt at `completed` or `terminated` is rejected
  * with an error that tells the model how completion actually happens.
  */
@@ -216,7 +218,7 @@ export function modelUpdateGoal(
     throw new GoalError('You cannot terminate a goal; only the user can stop it. Use "blocked" with a reason if you cannot proceed.');
   }
   if (!(MODEL_SETTABLE_STATUSES as readonly string[]).includes(status)) {
-    throw new GoalError('goal_update "status" must be "blocked" or "paused".');
+    throw new GoalError('goal_update "status" must be "blocked" (only the user can pause a goal).');
   }
   const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
   if (!reason) throw new GoalError('goal_update needs a "reason" explaining what is in the way.');
@@ -340,12 +342,12 @@ export const GOAL_TOOL_SCHEMAS = [
     function: {
       name: 'goal_update',
       description:
-        'Mark the current goal "blocked" (you cannot proceed without the user) or "paused", with a reason. ' +
+        'Mark the current goal "blocked" (you cannot proceed without the user), with a reason. ' +
         'You cannot mark a goal completed — completion is checked independently.',
       parameters: {
         type: 'object',
         properties: {
-          status: { type: 'string', enum: ['blocked', 'paused'] },
+          status: { type: 'string', enum: ['blocked'] },
           reason: { type: 'string', description: 'What is in the way, in one sentence.' },
         },
         required: ['status', 'reason'],
