@@ -19,6 +19,7 @@ import { resealRawCredentialBlobs } from '../security/secrets';
 import { normalizeProviderIds } from '../llm/providerKind';
 import { ensureDefaultProfile } from '../llm/profiles';
 import type { SqlDb } from './sqlLike';
+import { INTERACTIONS_TABLE_SQL } from './interactionsTable';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
 let db: Database.Database | null = null;
@@ -851,6 +852,10 @@ export async function initDatabase(): Promise<void> {
     WHERE NOT EXISTS (SELECT 1 FROM tool_policies);
   `);
 
+  // Unified human-in-the-loop frame (agent/interactions.ts). DDL lives in its
+  // own module so tests run the identical CREATE TABLE IF NOT EXISTS.
+  db.exec(INTERACTIONS_TABLE_SQL);
+
   console.log('[Artha] Database schema ready at', dbPath);
 }
 
@@ -1313,6 +1318,19 @@ export function runMigrations(): void {
     applyDurabilitySchema(db as unknown as SqlDb);
   } catch (err) {
     console.warn('[Artha] durability schema migration skipped:', err);
+  }
+
+  // An interaction left 'pending' by an app quit has no live waiter any more
+  // (the paused run died with the main process), so it can never be answered.
+  // Mark it expired so the UI does not re-show a question nobody is awaiting.
+  // A renderer-only reload does NOT run this — pending rows survive it.
+  try {
+    const r = db.prepare(
+      `UPDATE interactions SET status='expired', answered_at=unixepoch() WHERE status='pending'`
+    ).run();
+    if (r.changes > 0) console.log(`[Artha] expired ${r.changes} orphaned interaction(s).`);
+  } catch (err) {
+    console.warn('[Artha] interaction reconciliation skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

@@ -106,6 +106,8 @@ import { getRawLicenseKey, currentEntitlements } from '../license/current';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
+import { getInteractionHub, type Interaction } from '../agent/interactions';
+import type { PlanReview } from '../agent/planReview';
 import { createRateLimiter } from '../net/rateLimiter';
 import {
   parseMemoryExport, refineMemoryExport, importMemories, exportMemories,
@@ -604,6 +606,11 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     try { wc.send(channel, payload); } catch { /* torn down mid-send */ }
   };
 
+  // Unified human-in-the-loop frame (agent/interactions.ts): every pause
+  // (ask_user, plan, handoff, confirm) is pushed on `interaction:pending` /
+  // `interaction:resolved`.
+  getInteractionHub().setEmitter((channel, payload) => safeSend(channel, payload));
+
   // Load all enabled MCP servers at startup
   // A server that only ever fails is paused automatically (mcp/registry.ts);
   // tell the user where its tools went instead of letting them vanish.
@@ -782,6 +789,20 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('agent:approvePlan', async (_e, workflowId: string, approved: boolean) => {
     await orchestrator.approvePlan(workflowId, approved);
+  });
+
+  // Structured plan review: Accept / Accept with comments / Reject (reason).
+  ipcMain.handle('agent:reviewPlan', async (_e, workflowId: string, review: PlanReview) => {
+    await orchestrator.reviewPlan(workflowId, review);
+  });
+
+  // Unified interaction frame. listPending lets the renderer re-show pending
+  // pauses after a reload; respond answers/declines any of them by id (each
+  // flow routes it to its own legacy resolver, so behaviour is identical).
+  ipcMain.handle('interactions:listPending', (): Interaction[] => getInteractionHub().listPending());
+  ipcMain.handle('interactions:respond', (_e, id: string, status: 'answered' | 'declined', answer?: unknown): boolean => {
+    if (status !== 'answered' && status !== 'declined') return false;
+    return getInteractionHub().respond(id, status, answer);
   });
 
   ipcMain.handle('agent:clarifyRespond', (_e, workflowId: string, answers: string[] | null) => {

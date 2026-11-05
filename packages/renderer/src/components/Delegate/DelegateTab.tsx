@@ -22,6 +22,7 @@ import DelegatePlanView from './DelegatePlanView';
 import DelegateResultView from './DelegateResultView';
 import DelegateModeSelector from './DelegateModeSelector';
 import GoalChip from './GoalChip';
+import AskUserCards from '../Chat/AskUserCard';
 
 export default function DelegateTab() {
   const {
@@ -146,6 +147,9 @@ export default function DelegateTab() {
         {plan && (
           <DelegatePlanView plan={plan} status={status} onConfirm={confirm} onCancel={cancel} />
         )}
+
+        {/* ask_user — a delegated run paused on a question for the user. */}
+        <AskUserCards />
 
         {/* Result — shown for a verified completion AND for a finished-but-
             unverified run (needs_review); the view itself renders the honest

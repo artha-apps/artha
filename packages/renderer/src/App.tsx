@@ -14,6 +14,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useToastStore } from './stores/toast';
+import { useInteractionsStore } from './stores/interactions';
 import { useChatStore, type Session } from './stores/chat';
 import { applyRunEvent, loadRunCursor, saveRunCursor } from './lib/runResume';
 import Onboarding from './components/Onboarding/Onboarding';
@@ -179,6 +180,28 @@ export default function App() {
       setPendingToolApproval(req);
     });
 
+    // Unified human-in-the-loop frame. ask_user questions render as inline
+    // cards; on load every still-pending pause is re-shown (asks as cards, a
+    // plan or tool confirm in its existing modal) so a reload never strands
+    // a run that is waiting on the user.
+    const offInteraction = window.artha.agent.onInteractionPending((i) => {
+      if (i.kind === 'ask') useInteractionsStore.getState().addAsk(i);
+    });
+    const offInteractionResolved = window.artha.agent.onInteractionResolved(({ id }) => {
+      useInteractionsStore.getState().removeInteraction(id);
+      // A confirm settled elsewhere (timeout, Stop) must not leave its modal up;
+      // the confirm interaction's id is the tool approvalId.
+      if (useChatStore.getState().pendingToolApproval?.approvalId === id) setPendingToolApproval(null);
+    });
+    window.artha.agent.listPendingInteractions().then((list) => {
+      for (const i of list) {
+        if (i.kind === 'ask') useInteractionsStore.getState().addAsk(i);
+        else if (i.kind === 'plan') setPendingPlan(i.payload as never);
+        else if (i.kind === 'confirm') setPendingToolApproval(i.payload as never);
+        // handoff: the browser pane re-reads controller state (awaitingHandoff).
+      }
+    }).catch(() => { /* older main process / no pending rows */ });
+
     // Live session title updates — main auto-titles a session from its first
     // user message; this keeps the sidebar in sync without a manual reload.
     const offTitle = window.artha.sessions.onTitleUpdated(({ sessionId, title }) => {
@@ -196,7 +219,7 @@ export default function App() {
     window.artha.sessions.list().then(setSessions);
     window.artha.projects.list().then(setProjects).catch(() => { /* fresh DB */ });
 
-    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offStatus(); offAutoApproved(); offClarify(); offToolApproval(); offTitle(); offAutoOpen(); };
+    return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offStatus(); offAutoApproved(); offClarify(); offToolApproval(); offInteraction(); offInteractionResolved(); offTitle(); offAutoOpen(); };
   }, []);
 
   // ── Run event log resume ─────────────────────────────────────────────────

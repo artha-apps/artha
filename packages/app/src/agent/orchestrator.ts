@@ -64,6 +64,9 @@ import { resolveAgentRoute, agentRouteInput } from '../router/agentRouter';
 import { ensureAgentModel } from '../router/modelProvisioner';
 import { selectToolsForRun } from '../mcp/toolBudget';
 import { nextEscalation, escalationLadder } from './escalation';
+import { getInteractionHub } from './interactions';
+import { ASK_USER_TOOL_NAME, ASK_USER_TOOL_SCHEMA, runAskUser } from './askUser';
+import { decidePlanReview, type PlanReview } from './planReview';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { trackRun, wasStoppedByUser, getKillSwitch } from '../desktop/runtime';
 import { gateDesktopAction } from '../desktop/desktopGate';
@@ -156,6 +159,15 @@ export interface AgentPlan {
    *  writes/web/reversibility/token cost). Shown in the approval card so the user
    *  approves with the consequences in view, not on faith. */
   blastRadius?: BlastRadius;
+  /** How many comment-driven planner revisions this plan has had (planReview.ts
+   *  caps it at one). */
+  revisions?: number;
+  /** Step comments the user approved the plan with; injected into the
+   *  executor's system prompt so they are honoured while running. */
+  reviewNotes?: string | null;
+  /** The unified-frame interaction (agent/interactions.ts) this plan's
+   *  approval is pending on, when it paused for review. */
+  interactionId?: string;
 }
 
 /** A per-tool-call approval the orchestrator paused on because a policy assigned
@@ -437,9 +449,7 @@ export class AgentOrchestrator {
       // default comes from autonomousActions, so this is today's behaviour.
       const auto = decidePlanGate(planMode, plan.blastRadius);
       if (!auto.auto) {
-        db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
-          .run(JSON.stringify(plan.steps), workflowId);
-        this.emit('agent:planReady', plan);
+        this.pausePlanForReview(plan);
         return;
       }
       plan.autoApproved = auto.reason;
@@ -674,14 +684,15 @@ ${envBlock}`,
    *  answers (or a safety timeout denies it). Used when a policy assigns a tool
    *  call the `confirm` tier. Defaults to DENY on timeout — a governance gate
    *  must fail closed. */
-  private requestToolApproval(req: {
+  private async requestToolApproval(req: {
     workflowId: string;
     sessionId: string;
     toolName: string;
     args: Record<string, unknown>;
     note: string;
     /** When set, the request and the answer are recorded as `interaction`
-     *  run events (the stall watchdog pauses while one is pending). */
+     *  run events (the stall watchdog pauses while one is pending), and the
+     *  run id is stored on the unified interaction row. */
     runId?: string;
     /** Offer "Always allow (30 days)". Never for the always-confirm floor. */
     allowAlways?: boolean;
@@ -695,7 +706,7 @@ ${envBlock}`,
     // generic tool grant from this path.
     const allowAlways = !!req.allowAlways && !req.appGrant && !isAlwaysConfirmTool(req.toolName);
     if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'request', approvalId, toolName: req.toolName, note: req.note });
-    this.emit('agent:toolApprovalRequest', {
+    const request: ToolApprovalRequest = {
       approvalId,
       workflowId: req.workflowId,
       sessionId: req.sessionId,
@@ -704,7 +715,21 @@ ${envBlock}`,
       note: req.note,
       allowAlways,
       ...(req.appGrant ? { appGrant: req.appGrant } : {}),
-    } satisfies ToolApprovalRequest);
+    };
+    this.emit('agent:toolApprovalRequest', request);
+    // Unified frame (additive): record the confirm as an interaction so it
+    // survives a renderer reload. The legacy resolver below stays the single
+    // source of truth for the decision; a generic UI response is routed to it.
+    // Only an explicit `approved: true` approves — anything else denies. The
+    // generic channel never carries a scope, so it can never create a grant.
+    const hub = getInteractionHub();
+    hub.open(
+      { id: approvalId, runId: req.runId ?? req.workflowId, workflowId: req.workflowId, kind: 'confirm', payload: { ...request } },
+      (status, answer) => this.respondToolApproval(
+        approvalId, status === 'answered' && (answer as { approved?: unknown } | null)?.approved === true,
+      ),
+    );
+    let timedOut = false;
     return Promise.race([
       new Promise<boolean>(resolve => {
         this.toolApprovalResolvers.set(approvalId, {
@@ -717,8 +742,9 @@ ${envBlock}`,
           },
         });
       }),
-      new Promise<boolean>(resolve => setTimeout(() => resolve(false), 120_000)),
+      new Promise<boolean>(resolve => setTimeout(() => { timedOut = true; resolve(false); }, 120_000)),
     ]).then(approved => {
+      hub.settle(approvalId, timedOut ? 'expired' : approved ? 'answered' : 'declined', { approved });
       // Logging only — the decision itself (including fail-closed timeout) is unchanged.
       if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'response', approvalId, approved });
       return approved;
@@ -859,22 +885,107 @@ or
 
   /** Called when user approves or rejects a plan in Planning Mode. */
   async approvePlan(workflowId: string, approved: boolean): Promise<void> {
+    // Legacy boolean API — expressed as a review so both paths share one
+    // implementation (and Reject is always recorded as cancelled-by-user).
+    await this.reviewPlan(workflowId, { decision: approved ? 'accept' : 'reject' });
+  }
+
+  /** Persist + emit a plan that needs the user's review, and open its unified
+   *  interaction. A UI response on the generic channel routes to reviewPlan(). */
+  private pausePlanForReview(plan: AgentPlan): void {
+    const db = getDb();
+    db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
+      .run(JSON.stringify(plan.steps), plan.workflowId);
+    const { interaction } = getInteractionHub().open(
+      {
+        runId: plan.workflowId,
+        workflowId: plan.workflowId,
+        kind: 'plan',
+        payload: {
+          workflowId: plan.workflowId, sessionId: plan.sessionId, goal: plan.goal,
+          steps: plan.steps, requiresApproval: plan.requiresApproval,
+          blastRadius: plan.blastRadius, revisions: plan.revisions ?? 0,
+        },
+      },
+      (status, answer) => {
+        const review: PlanReview = status === 'answered' && answer && typeof answer === 'object'
+          ? answer as PlanReview
+          : { decision: 'reject', reason: 'dismissed' };
+        void this.reviewPlan(plan.workflowId, review).catch(err => console.error('[Artha] plan review failed:', err));
+      },
+    );
+    plan.interactionId = interaction.id;
+    this.emit('agent:planReady', plan);
+  }
+
+  /** Apply the user's plan review: Accept runs it; Accept with comments sends
+   *  the step comments to the planner for ONE revision and asks again (later
+   *  comments ride along into execution); Reject ends the run as
+   *  cancelled-by-user — never completed. Decision logic: agent/planReview.ts. */
+  async reviewPlan(workflowId: string, review: PlanReview): Promise<void> {
     const plan = this.activePlans.get(workflowId);
     if (!plan) return;
-    if (!approved) {
+    const hub = getInteractionHub();
+    const action = decidePlanReview(review, { goal: plan.goal, steps: plan.steps, revisions: plan.revisions ?? 0 });
+    if (plan.interactionId) {
+      hub.settle(plan.interactionId, action.kind === 'cancel' ? 'declined' : 'answered', review);
+      plan.interactionId = undefined;
+    }
+
+    if (action.kind === 'cancel') {
       this.activePlans.delete(workflowId);
-      this.emit('agent:token', '\n\n_Plan cancelled by user._');
+      // Honest terminal state: the user stopped this run. No agent_runs row
+      // exists yet (execution never started), so agent_states carries it.
+      try {
+        getDb().prepare(`UPDATE agent_states SET status=?, context_json=json_set(COALESCE(context_json,'{}'), '$.cancelReason', ?) WHERE workflow_id=?`)
+          .run(action.status, action.reason || 'rejected by user', workflowId);
+      } catch (err) {
+        console.warn('[Artha] recording plan rejection failed:', err);
+      }
+      this.emit('agent:token', `\n\n_Plan cancelled by user${action.reason ? `: ${action.reason}` : '.'}_`);
       this.emit('agent:streamEnd');
       return;
     }
+
+    if (action.kind === 'revise') {
+      this.emit('agent:status', 'Revising the plan with your comments…');
+      let revised: AgentPlan;
+      try {
+        const history = this.getSessionHistory(plan.sessionId, plan.goal);
+        revised = await this.generatePlan(workflowId, plan.sessionId, action.revisionPrompt, history, plan.skill);
+      } catch (err) {
+        // Planner failed: do not silently run the un-revised plan — ask again
+        // with the original steps so the user decides.
+        console.warn('[Artha] plan revision failed:', err);
+        revised = { ...plan };
+      }
+      const next: AgentPlan = {
+        ...plan,
+        steps: revised.steps.length ? revised.steps : plan.steps,
+        blastRadius: revised.steps.length ? revised.blastRadius : plan.blastRadius,
+        // Keep the user's own goal (not the revision instruction) for execution.
+        goal: plan.goal,
+        requiresApproval: true,
+        revisions: (plan.revisions ?? 0) + 1,
+        interactionId: undefined,
+      };
+      this.activePlans.set(workflowId, next);
+      this.pausePlanForReview(next);
+      return;
+    }
+
     // The user approved THIS plan — plan mode unlocks changes for it.
     this.userApprovedWorkflows.add(workflowId);
+    plan.reviewNotes = action.reviewNotes;
     await this.executePlan(plan);
   }
 
   /** Called when user hits the Stop button in the UI. */
   cancelWorkflow(workflowId: string): void {
     this.cancelledWorkflows.add(workflowId);
+    // Unified frame: decline any pending ask_user card (and any other pending
+    // interaction) of this workflow so the awaiting call unblocks now.
+    getInteractionHub().declineForWorkflow(workflowId);
     // If the user is mid-decision on a tool-approval modal for this workflow,
     // deny it immediately so the loop unblocks now instead of after the 120s
     // timeout — otherwise Stop feels broken while an approval is pending.
@@ -1197,6 +1308,8 @@ Rules:
     const mentionBlock = resolveMentionBlock(plan.goal, plan.sessionId);
     // Context Pack pinned memories (by-reference; '' when no pack).
     const packBlock = getPackContextBlock(plan.sessionId);
+    // Step comments the user approved the plan with (agent/planReview.ts).
+    const reviewBlock = plan.reviewNotes ? `${plan.reviewNotes}\n\n` : '';
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
@@ -1209,7 +1322,7 @@ The SAME act-don't-describe rule governs the browser. When the user asks you to 
 
 Only write a plain-English reply once the task is COMPLETE (or you are genuinely blocked and must ask one specific question).
 
-${mentionBlock}${memoryBlock}${packBlock}${skillBlock}${projectBlock}
+${mentionBlock}${memoryBlock}${packBlock}${skillBlock}${reviewBlock}${projectBlock}
 
 ${envBlock}
 
@@ -1529,6 +1642,9 @@ RULES — follow exactly, no exceptions:
     let modelEscalated = false;
     const extraTools = [
       ...MEMORY_TOOL_SCHEMAS,
+      // Structured mid-run questions (agent/askUser.ts). Offered everywhere —
+      // unattended runs get an immediate fail-closed "unanswered" result.
+      ASK_USER_TOOL_SCHEMA,
       // Desktop control (mouse/keyboard/screenshot) is opt-in and dangerous, so
       // it's only offered to the model when the user has enabled it in Settings.
       ...(this.desktopControlEnabled() ? DESKTOP_TOOL_SCHEMAS : []),
@@ -1906,7 +2022,15 @@ RULES — follow exactly, no exceptions:
 
           if (!policyHandled) {
           try {
-            if (isMemoryTool(toolCall.function.name)) {
+            if (toolCall.function.name === ASK_USER_TOOL_NAME) {
+              // Resolves THIS tool call with the user's answers (no new turn).
+              const rcAsk = getRunContext();
+              toolResult = await runAskUser(parsedArgs, {
+                unattended: !!rcAsk?.lan || !!rcAsk?.unattended,
+                runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId,
+                hub: getInteractionHub(),
+              });
+            } else if (isMemoryTool(toolCall.function.name)) {
               toolResult = invokeMemoryTool(toolCall.function.name, parsedArgs, args.sessionId);
             } else if (isDesktopTool(toolCall.function.name)) {
               // Per-app grant: resolve the app this action lands in and make
