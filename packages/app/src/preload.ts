@@ -5,6 +5,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AgentRoute } from './router/agentRouter';
 import type { SkillMetric, SkillModelStats, SkillToolUsage, SkillFailure } from './skills/metrics';
+import type { Goal } from './bodhi/goals';
+
+/** A persistent goal as the renderer sees it: the row plus elapsed active time. */
+export type GoalView = Goal & { elapsedMs: number };
 
 /**
  * The full type of `window.artha` as seen by the renderer. Inferred from the
@@ -290,6 +294,11 @@ const api = {
       evidence: { kind: string; status: string; summary: string }[];
       empty: boolean;
     }>,
+    /** The task's persistent goal (most recent, any status) — null if none. */
+    goal: (sessionId: string) => ipcRenderer.invoke('delegate:goal', sessionId) as Promise<GoalView | null>,
+    /** Pause / Resume / Stop the goal. Completion is never user- or model-set. */
+    goalSetStatus: (goalId: string, status: 'active' | 'paused' | 'terminated') =>
+      ipcRenderer.invoke('delegate:goalSetStatus', goalId, status) as Promise<{ ok: boolean; goal?: GoalView; error?: string }>,
     /** The task's conversation so far (user + agent messages, one thread). */
     thread: (sessionId: string) => ipcRenderer.invoke('delegate:thread', sessionId) as Promise<
       { sender_type: string; content: string; created_at: number }[]

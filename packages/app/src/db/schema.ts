@@ -707,6 +707,26 @@ export async function initDatabase(): Promise<void> {
       PRIMARY KEY (run_id, seq)
     );
 
+    -- Persistent goals (bodhi/goals.ts): a session-scoped objective plus a
+    -- checkable condition, judged at every run's stop gate by the independent
+    -- evaluator (bodhi/goalEvaluator.ts). ONLY the evaluator path may write
+    -- status='completed'; only the user may write 'terminated'. Timestamps are
+    -- epoch MILLISECONDS so active_ms (accumulated active time) is exact.
+    CREATE TABLE IF NOT EXISTS goals (
+      goal_id           TEXT PRIMARY KEY,
+      session_id        TEXT NOT NULL,
+      objective         TEXT NOT NULL,
+      condition         TEXT NOT NULL,
+      status            TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active','paused','blocked','completed','terminated')),
+      blocked_reason    TEXT,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      active_ms         INTEGER NOT NULL DEFAULT 0,
+      last_verdict_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_goals_session ON goals(session_id, status);
+
     CREATE INDEX IF NOT EXISTS idx_tasks_source ON agent_tasks(source_type, source_id);
     CREATE INDEX IF NOT EXISTS idx_criteria_task ON task_acceptance_criteria(task_id);
     CREATE INDEX IF NOT EXISTS idx_evidence_task ON task_evidence(task_id);

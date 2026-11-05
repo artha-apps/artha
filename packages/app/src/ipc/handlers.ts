@@ -67,6 +67,7 @@ import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { deriveDelegateOutcome } from '../bodhi/delegateOutcome';
 import { recordAcceptance } from '../bodhi/acceptance';
 import { readRunEvidence } from '../bodhi/evidence';
+import { getLatestGoal, userSetGoalStatus, goalElapsedMs, GoalError } from '../bodhi/goals';
 import { parseSkillImport } from '../skills/util';
 import { getSkillMetrics, getSkillModelStats, getSkillToolUsage, getSkillFailures } from '../skills/metrics';
 import { getDefaultRagIndexer, setDefaultEmbeddingResolver } from '../rag/indexer';
@@ -965,6 +966,26 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // were checked (and passed/failed) and the evidence behind them. Lets the user
   // see WHY a task is or isn't verified, instead of trusting a bare label.
   ipcMain.handle('delegate:evidence', (_e, runId: string) => readRunEvidence(getDb(), runId));
+
+  // Persistent goal for a Delegate task (bodhi/goals.ts). `goal` returns the
+  // session's most recent goal (any status) plus its elapsed active time; the
+  // renderer polls it for the header chip.
+  ipcMain.handle('delegate:goal', (_e, sessionId: string) => {
+    try {
+      const g = typeof sessionId === 'string' ? getLatestGoal(getDb(), sessionId) : null;
+      return g ? { ...g, elapsedMs: goalElapsedMs(g) } : null;
+    } catch { return null; }
+  });
+  // User Pause / Resume / Stop. The user path accepts only active | paused |
+  // terminated — not even the UI can declare a goal completed.
+  ipcMain.handle('delegate:goalSetStatus', (_e, goalId: string, status: string) => {
+    try {
+      const g = userSetGoalStatus(getDb(), String(goalId), status);
+      return { ok: true, goal: { ...g, elapsedMs: goalElapsedMs(g) } };
+    } catch (err) {
+      return { ok: false, error: err instanceof GoalError ? err.message : 'Could not update the goal.' };
+    }
+  });
 
   // Continue an existing Delegate task IN ITS OWN session, so follow-ups keep
   // the task's context, plan and history instead of silently starting an
