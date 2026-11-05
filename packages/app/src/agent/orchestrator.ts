@@ -3191,6 +3191,10 @@ Rules:
     recordStep: (idx: number, kind: string, payload: unknown) => void,
     stepIdx: number,
   ): Promise<{ sent: boolean; to: string | null; reason?: string }> {
+    // Unattended (scheduled / trigger) and LAN runs never prompt and never
+    // send: the main loop's floor already blocked email_send, so this
+    // fallback must not raise a send approval on the desktop user's screen.
+    if (confirmTierMustFailClosed(getRunContext())) return { sent: false, to: null, reason: 'unattended' };
     // Deterministic first (no model): parse the fields straight from the goal.
     // Only fall back to an LLM for genuinely free-form phrasing — so a structured
     // "email X, subject "Y", body "Z"" works identically on ANY model, or none.
