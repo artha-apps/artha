@@ -47,6 +47,8 @@ import { startFolderTrigger, type FolderWatcher } from './folderTrigger';
 const HEALTH_MONITOR_SLUG = 'artha-daily-health';
 /** Delay before startup catch-up runs (lets the local model runtime start). */
 const STARTUP_CATCHUP_DELAY_MS = 60_000;
+/** A timer firing this long after its slot is reported as "ran late". */
+const LATE_THRESHOLD_SECONDS = 5 * 60;
 
 /** Shape of a row from the scheduled_tasks table (v2 columns included). */
 export type ScheduledTask = AutomationTask;
@@ -202,8 +204,13 @@ export class SchedulerService {
    */
   async handleWake(): Promise<void> {
     if (!this.runTask) return;
-    await this.engine.catchUp(this.enabledTasks(), id => this.cancelJob(id));
-    for (const t of this.enabledTasks()) this.scheduleTask(t);
+    // Snapshot first (catch-up needs the slot armed before sleep), then re-arm
+    // timers right away so a long sequential catch-up can't delay other tasks.
+    // Folder watchers keep running — restarting them would re-snapshot and
+    // silently swallow files that arrived during sleep.
+    const snapshot = this.enabledTasks();
+    for (const t of snapshot) { this.cancelJob(t.task_id); this.armTimer(t); }
+    await this.engine.catchUp(snapshot);
   }
 
   private enabledTasks(): ScheduledTask[] {
@@ -287,7 +294,13 @@ export class SchedulerService {
   scheduleTask(task: ScheduledTask): void {
     this.cancelTask(task.task_id);
     if (!task.is_enabled || !this.runTask) return;
+    this.armTimer(task);
+    if (task.watch_folder) this.startWatcher(task);
+  }
 
+  /** Arm the time-based part of a task (cron slot or one-shot), if any. */
+  private armTimer(task: ScheduledTask): void {
+    if (!task.is_enabled || !this.runTask) return;
     if (task.cron) {
       const check = validateSchedule(task.cron);
       if (!check.ok) {
@@ -306,8 +319,6 @@ export class SchedulerService {
       }
       // A past fire_at is handled by catch-up (runs once, late), not skipped.
     }
-
-    if (task.watch_folder) this.startWatcher(task);
   }
 
   /** Arm the next cron slot (±90 s jitter) and persist it as next_due_at. */
@@ -325,7 +336,11 @@ export class SchedulerService {
       const t = this.store.get(taskId);
       // Already covered by a catch-up (wake raced the stale timer) → skip.
       const covered = t?.last_catchup_slot != null && t.last_catchup_slot >= slotSec;
-      const run = covered ? Promise.resolve(null) : this.engine.fire(taskId, { trigger: 'schedule' });
+      // A timer that fired well past its slot (machine slept through it, then
+      // resumed before the wake handler) still gets the honest "ran late" note.
+      const late = Date.now() / 1000 - slotSec > LATE_THRESHOLD_SECONDS;
+      const run = covered ? Promise.resolve(null)
+        : this.engine.fire(taskId, { trigger: 'schedule', ...(late ? { lateSlot: slotSec } : {}) });
       void run.finally(() => {
         const fresh = this.store.get(taskId);
         if (fresh?.is_enabled && fresh.cron && !this.jobs.has(taskId)) this.armNextCronSlot(taskId, fresh.cron);
@@ -458,10 +473,14 @@ export class SchedulerService {
     const task = this.store.get(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
     if (folder) {
-      if (!isFolderWithinScopes(folder, attachedScopeFolders())) {
+      if (!fs.existsSync(folder)) throw new Error(`Folder not found: ${folder}`);
+      // Check the literal AND symlink-resolved paths so a link inside a scope
+      // can't point the trigger (and its scoped run) at a folder outside it.
+      const scopes = attachedScopeFolders();
+      const realScopes = scopes.map(p => { try { return fs.realpathSync(p); } catch { return p; } });
+      if (!isFolderWithinScopes(folder, scopes) || !isFolderWithinScopes(fs.realpathSync(folder), realScopes)) {
         throw new Error(`"${folder}" is not inside a folder you've attached to Artha. Attach it to a chat first.`);
       }
-      if (!fs.existsSync(folder)) throw new Error(`Folder not found: ${folder}`);
     }
     this.store.patch(taskId, { watch_folder: folder || null, on_hold: 0, hold_reason: null });
     const updated = this.store.get(taskId)!;
