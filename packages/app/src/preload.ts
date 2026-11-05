@@ -201,12 +201,13 @@ const api = {
       ipcRenderer.invoke('agent:clarifyRespond', workflowId, answers),
     // Per-tool-call approval (policy `confirm` tier). The orchestrator pauses a
     // specific function call until the user approves or denies it here.
-    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string }) => void) => {
+    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string; appGrant?: { appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean } }) => void) => {
       ipcRenderer.on('agent:toolApprovalRequest', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:toolApprovalRequest');
     },
-    respondToolApproval: (approvalId: string, approved: boolean) =>
-      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved),
+    // `scope` answers a per-app desktop grant prompt: 'once' | 'always'.
+    respondToolApproval: (approvalId: string, approved: boolean, scope?: 'once' | 'always') =>
+      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved, scope),
     // Decompose a goal into sub-tasks and run them concurrently.
     runParallel: (sessionId: string, goal: string, subTasks: string[]) =>
       ipcRenderer.invoke('agent:runParallel', { sessionId, goal, subTasks }) as Promise<string[]>,
@@ -621,6 +622,9 @@ const api = {
     // Desktop-control master switch (default off).
     getDesktopControl: () => ipcRenderer.invoke('settings:getDesktopControl') as Promise<boolean>,
     setDesktopControl: (enabled: boolean) => ipcRenderer.invoke('settings:setDesktopControl', enabled) as Promise<boolean>,
+    // Global stop shortcut for desktop control (Electron accelerator string; '' = default).
+    getDesktopStopShortcut: () => ipcRenderer.invoke('settings:getDesktopStopShortcut') as Promise<string>,
+    setDesktopStopShortcut: (accelerator: string) => ipcRenderer.invoke('settings:setDesktopStopShortcut', accelerator) as Promise<string>,
     // Sentry crash reporting (opt-out, default ON). `getSentry` also reports
     // whether the one-time first-launch disclosure has been acknowledged.
     getSentry: () => ipcRenderer.invoke('settings:getSentry') as Promise<{ enabled: boolean; disclosureAck: boolean }>,

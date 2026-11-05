@@ -13,7 +13,7 @@
  * The single-instance lock at the bottom ensures only one Artha window can run
  * at a time; a second launch attempt brings the existing window to focus.
  */
-import { app, BrowserWindow, shell, dialog } from 'electron';
+import { app, BrowserWindow, shell, dialog, globalShortcut } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
 import { registerIpcHandlers } from './ipc/handlers';
@@ -26,6 +26,10 @@ import { ensureModelReady, unloadActiveModel, stopOllamaIfStarted, setManagedRun
 import { ensureAgentModel } from './router/modelProvisioner';
 import { sendNotification } from './notify';
 import { resolveQaProfile } from './system/qaProfile';
+import { installKillSwitch } from './desktop/runtime';
+import { desktopActionQueue } from './desktop/actionQueue';
+import { hideControlOverlay } from './controlOverlay';
+import { recordReceipt } from './bodhi/receipts';
 
 /** Probe whether the local Ollama runtime is reachable. Best-effort with a
  *  short timeout so a missing Ollama can't stall startup. Drives the
@@ -158,6 +162,40 @@ async function createWindow(): Promise<void> {
 
   // Register all IPC handlers (agent, LLM, MCP, docs, RAG, web, browser, scheduler)
   registerIpcHandlers(mainWindow);
+
+  // Global kill switch: a system-wide stop shortcut, held only while a run is
+  // active. A press cancels every run (never "completed"), rejects queued
+  // desktop actions, hides the control overlay and hands the browser back.
+  installKillSwitch({
+    register: (acc, onPress) => globalShortcut.register(acc, onPress),
+    unregister: (acc) => globalShortcut.unregister(acc),
+    rejectDesktopActions: () => desktopActionQueue.stopAll(),
+    hideOverlay: hideControlOverlay,
+    setBrowserDrivingToUser: () => {
+      const b = BrowserController.getInstance();
+      b.cancelHandoff();
+      b.setDrivingMode('user');
+    },
+    recordStopReceipt: (run, info) => recordReceipt({
+      runId: run.runId, sessionId: run.sessionId, workflowId: run.workflowId,
+      // Sorts after the run's real tool calls in the receipt list.
+      idx: 1_000_000,
+      toolName: 'stop_shortcut',
+      args: { reason: 'stopped_by_user', desktopActionsRejected: info.actionsRejected },
+      result: 'stopped_by_user',
+      status: 'blocked',
+      tier: 'auto',
+      isMutation: false,
+      durationMs: 0,
+      effect: `stopped_by_user — run cancelled from the global stop shortcut${info.actionsRejected ? `; ${info.actionsRejected} desktop action(s) rejected` : ''}.`,
+    }),
+  }, (() => {
+    try {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json?: string } | undefined;
+      const v = JSON.parse(row?.settings_json ?? '{}').desktop_stop_shortcut;
+      return typeof v === 'string' && v ? v : undefined;
+    } catch { return undefined; }
+  })());
 
   // Initialise the scheduler after IPC handlers are ready (orchestrator is live).
   // The runner creates a fresh session per task so scheduled runs are isolated.
@@ -336,6 +374,9 @@ if (!gotSingleInstanceLock) {
   // started it — we never stop a server the user was already running).
   // preventDefault + app.exit lets the best-effort unload finish first.
   let quitting = false;
+  // Never leave a global shortcut registered after Artha exits.
+  app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* ignore */ } });
+
   app.on('before-quit', (e) => {
     if (quitting) return;
     e.preventDefault();

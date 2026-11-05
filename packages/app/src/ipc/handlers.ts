@@ -105,6 +105,8 @@ import {
   type ParsedEntry,
 } from '../tools/memoryImport';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
+import { getKillSwitch, triggerStop } from '../desktop/runtime';
+import { DEFAULT_STOP_ACCELERATOR } from '../desktop/killSwitch';
 
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
 // IPC channel shares the same ReAct loop and in-flight workflow map.
@@ -768,8 +770,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   // Per-tool-call approval (policy `confirm` tier). The renderer answers the
   // `agent:toolApprovalRequest` event with the user's decision.
-  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean) => {
-    orchestrator.respondToolApproval(approvalId, approved);
+  // `scope` is only sent for per-app desktop grant prompts ('once' | 'always').
+  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean, scope?: string) => {
+    orchestrator.respondToolApproval(approvalId, approved, scope === 'always' ? 'always' : scope === 'once' ? 'once' : undefined);
   });
 
   // ── Tool-call policies (governance for function calling) ─────────────────
@@ -2891,6 +2894,20 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     writeSetting('desktop_control_enabled', !!enabled);
     return true;
   });
+  // Global stop shortcut (desktop/killSwitch.ts). Empty string = default.
+  // Applied to the live kill switch immediately; also re-read at each run start.
+  ipcMain.handle('settings:getDesktopStopShortcut', () => {
+    const v = readSettings().desktop_stop_shortcut;
+    return typeof v === 'string' && v ? v : (getKillSwitch()?.currentAccelerator ?? DEFAULT_STOP_ACCELERATOR);
+  });
+  ipcMain.handle('settings:setDesktopStopShortcut', (_e, accelerator: string) => {
+    const next = typeof accelerator === 'string' ? accelerator.trim().slice(0, 64) : '';
+    writeSetting('desktop_stop_shortcut', next);
+    getKillSwitch()?.setAccelerator(next || DEFAULT_STOP_ACCELERATOR);
+    return getKillSwitch()?.currentAccelerator ?? (next || DEFAULT_STOP_ACCELERATOR);
+  });
+  // Same effect as pressing the global stop shortcut (e.g. from a UI button).
+  ipcMain.handle('desktop:stopAll', () => triggerStop());
 
   // ── Crash reporting (Sentry) ─────────────────────────────────────────────
   // Opt-out telemetry. These three channels back the Settings toggle and the

@@ -14,13 +14,21 @@
  * without flicker).
  */
 import { BrowserWindow, screen } from 'electron';
+import { getKillSwitch } from './desktop/runtime';
+import { acceleratorHint, DEFAULT_STOP_ACCELERATOR } from './desktop/killSwitch';
 
 let overlay: BrowserWindow | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 /** How long after the last desktop action the overlay lingers before hiding. */
 const HIDE_DELAY_MS = 2500;
 
-const OVERLAY_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
+/** Escape text for safe interpolation into the overlay's HTML. */
+function escapeHtml(t: string): string {
+  return t.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+/** Overlay page; `stopHint` is the global stop shortcut, e.g. "⌃⌥⇧.". */
+const overlayHtml = (stopHint: string): string => `<!doctype html><html><head><meta charset="utf-8"><style>
   html,body{margin:0;height:100%;background:transparent;overflow:hidden;
     -webkit-user-select:none;cursor:default;}
   /* Glowing frame hugging the screen edges. */
@@ -36,10 +44,22 @@ const OVERLAY_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
     box-shadow:0 6px 24px rgba(0,0,0,.35);white-space:nowrap;}
   .dot{width:8px;height:8px;border-radius:50%;background:#0035ED;
     box-shadow:0 0 8px 2px rgba(0,53,237,.8);animation:pulse 1.2s ease-in-out infinite;}
+  .kbd{padding:2px 7px;border-radius:6px;background:rgba(255,255,255,.14);
+    font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;}
+  .stop{opacity:.85;font-weight:500;}
 </style></head><body>
   <div class="frame"></div>
-  <div class="pill"><span class="dot"></span>🤖 Artha is in control — performing actions on your screen</div>
+  <div class="pill"><span class="dot"></span>🤖 Artha is in control — performing actions on your screen
+    <span class="stop">· Press <span class="kbd">${escapeHtml(stopHint)}</span> to stop</span></div>
 </body></html>`;
+
+/** The hint currently painted, so the page is reloaded only when it changes. */
+let paintedHint = '';
+
+/** Current stop-shortcut hint from the live kill switch (or the default). */
+function currentStopHint(): string {
+  return acceleratorHint(getKillSwitch()?.currentAccelerator ?? DEFAULT_STOP_ACCELERATOR);
+}
 
 function ensureOverlay(): BrowserWindow {
   if (overlay && !overlay.isDestroyed()) return overlay;
@@ -65,7 +85,8 @@ function ensureOverlay(): BrowserWindow {
   // Sit above normal app windows (incl. full-screen apps) while Artha drives.
   overlay.setAlwaysOnTop(true, 'screen-saver');
   overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  overlay.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(OVERLAY_HTML));
+  paintedHint = currentStopHint();
+  overlay.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(overlayHtml(paintedHint)));
   overlay.on('closed', () => { overlay = null; });
   return overlay;
 }
@@ -75,6 +96,12 @@ function ensureOverlay(): BrowserWindow {
 export function noteDesktopControlActive(): void {
   try {
     const win = ensureOverlay();
+    // The stop shortcut is configurable — repaint if it changed since creation.
+    const hint = currentStopHint();
+    if (hint !== paintedHint) {
+      paintedHint = hint;
+      void win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(overlayHtml(hint)));
+    }
     // Re-fit to the current primary display in case it changed.
     const { bounds } = screen.getPrimaryDisplay();
     win.setBounds(bounds);
