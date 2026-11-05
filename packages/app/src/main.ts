@@ -19,6 +19,8 @@ import * as path from 'path';
 import { registerIpcHandlers, getOrchestrator } from './ipc/handlers';
 import { createScheduledRunner } from './scheduler/scheduledRunner';
 import { runWithContext } from './agent/runContext';
+import { pruneRunEvents } from './agent/runEventRetention';
+import { listActiveRuns } from './agent/runEvents';
 import { initDatabase, runMigrations, getDb } from './db/schema';
 import { BrowserController } from './browser/controller';
 import { SchedulerService } from './scheduler/scheduler';
@@ -139,6 +141,19 @@ async function createWindow(): Promise<void> {
     captureException(err);
   }
   startHealthCheckpointing();
+
+  // run_events retention (agent/runEventRetention.ts): keep the last 30 days
+  // or the last 200 runs, whichever is larger. Runs once at launch and then
+  // daily; every prune logs what it removed, and a failure never blocks launch.
+  const pruneRunEventLog = (): void => {
+    try {
+      pruneRunEvents(getDb(), { activeRunIds: listActiveRuns().map(r => r.runId) });
+    } catch (err) {
+      console.warn('[Artha] run_events retention could not start:', err);
+    }
+  };
+  pruneRunEventLog();
+  setInterval(pruneRunEventLog, 24 * 60 * 60 * 1000).unref();
 
   // Durability: persistent undo, pre-mutation file checkpoints, keep-awake.
   // Each is independent and best-effort — a failure here must not block launch.
