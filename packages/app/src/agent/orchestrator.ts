@@ -26,6 +26,7 @@ import { getPackContextBlock, getPackSkillId } from './contextPacks';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
+import { noteRunStarted, noteRunEnded } from '../system/keepAwake';
 import { getRunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
 import { recordAcceptanceCriteria, deriveCriteriaFromMutations, evaluateCriterion, ensureRunTask } from '../bodhi/criteria';
@@ -1350,20 +1351,25 @@ RULES — follow exactly, no exceptions:
    *  final response. */
   /** Run-event-log wrapper around the ReAct loop body: registers the run as
    *  active, runs the 10 s heartbeat / 60 s stall watchdog for its lifetime,
-   *  and records an `error` event if the body throws. Only bookkeeping — the
-   *  loop's own status / verification logic lives untouched in the body. */
+   *  records an `error` event if the body throws, and holds the keep-awake
+   *  blocker (when the user enabled it). Everything is released in `finally`,
+   *  so a throw, cancel or timeout can never leave the machine pinned awake or
+   *  the run marked active. Only bookkeeping — the loop's own status /
+   *  verification logic lives untouched in the body. */
   private async runReactLoop(args: Parameters<AgentOrchestrator['runReactLoopBody']>[0]): Promise<void> {
     markRunActive({ runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId });
     // Tell the renderer which run backs this workflow so it can resubscribe
     // to the run's event log from its last seq after a reload.
     if (!args.silent) this.emit('run:started', { runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId });
     const stopMonitor = startRunMonitor(args.runId);
+    const awake = noteRunStarted(args.runId);
     try {
       await this.runReactLoopBody(args);
     } catch (err) {
       recordRunEvent(args.runId, 'error', { message: err instanceof Error ? err.message : String(err) });
       throw err;
     } finally {
+      noteRunEnded(awake);
       stopMonitor();
       markRunInactive(args.runId);
     }
@@ -1490,9 +1496,11 @@ RULES — follow exactly, no exceptions:
     const persistStep = this.makeStepRecorder(args.runId);
     // Every agent_steps row also lands in the run event log as a lightweight
     // `step` marker (tool calls/results carry their own detailed events).
+    // Returns the persisted step_id (used for file checkpoints / rewind).
     const recordStep: typeof persistStep = (idx, kind, payload, snapshot) => {
-      persistStep(idx, kind, payload, snapshot);
-      recordRunEvent(args.runId, 'step', { idx, kind });
+      const stepId = persistStep(idx, kind, payload, snapshot);
+      recordRunEvent(args.runId, 'step', { idx, kind, stepId });
+      return stepId;
     };
     let stepIdx = 0;
 
@@ -1748,7 +1756,8 @@ RULES — follow exactly, no exceptions:
             name: toolCall.function.name,
             args: toolCall.function.arguments,
           });
-          recordStep(stepIdx++, 'tool_call', {
+          const toolStepIdx = stepIdx++;
+          const toolStepId = recordStep(toolStepIdx, 'tool_call', {
             name: toolCall.function.name,
             args: toolCall.function.arguments,
             id: toolCall.id,
@@ -1847,7 +1856,11 @@ RULES — follow exactly, no exceptions:
                 depth,
               });
             } else {
-              toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs, fsCtx);
+              // Per-call identity: durable undo + file checkpoints are
+              // attributed to this exact step so a rewind can target it.
+              toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs, {
+                ...fsCtx, sessionId: args.sessionId, stepId: toolStepId, stepIdx: toolStepIdx,
+              });
             }
 
             // Self-correction: small models often pass a bare folder name
@@ -2763,15 +2776,18 @@ Rules:
       `INSERT INTO agent_steps (step_id, run_id, idx, kind, payload, messages_snapshot)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
+    // Returns the new step_id so a tool call can attribute its undo entry
+    // and file checkpoints to the exact step (rewindRunToStep target).
     return (
       idx: number,
       kind: string,
       payload: unknown,
       snapshot?: OpenAI.ChatCompletionMessageParam[]
-    ): void => {
+    ): string => {
+      const stepId = crypto.randomUUID();
       try {
         insert.run(
-          crypto.randomUUID(),
+          stepId,
           runId,
           idx,
           kind,
@@ -2781,6 +2797,7 @@ Rules:
       } catch (err) {
         console.warn('[Artha] step record failed:', err);
       }
+      return stepId;
     };
   }
 

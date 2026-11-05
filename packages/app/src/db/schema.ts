@@ -18,6 +18,7 @@ import { sealPlaintextApiKeys, sealPlaintextColumns } from '../security/secretSt
 import { resealRawCredentialBlobs } from '../security/secrets';
 import { normalizeProviderIds } from '../llm/providerKind';
 import { ensureDefaultProfile } from '../llm/profiles';
+import type { SqlDb } from './sqlLike';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
 let db: Database.Database | null = null;
@@ -1295,5 +1296,70 @@ export function runMigrations(): void {
     console.warn('[Artha] chat_sessions permission_mode migration skipped:', err);
   }
 
+  // Durable undo, file checkpoints and resume bookkeeping (additive).
+  try {
+    applyDurabilitySchema(db as unknown as SqlDb);
+  } catch (err) {
+    console.warn('[Artha] durability schema migration skipped:', err);
+  }
+
   console.log('[Artha] Database migrations applied.');
+}
+
+/**
+ * Durability tables + columns: persistent undo, file checkpoints, and the
+ * interrupted-run resume offer. Additive and idempotent — safe to run on every
+ * launch. Exported (and driver-agnostic via SqlDb) so tests can apply the
+ * exact production DDL to an in-memory `node:sqlite` database.
+ */
+export function applyDurabilitySchema(db: SqlDb): void {
+  db.exec(`
+    -- Reversible filesystem actions the agent performed. Previously held in
+    -- memory and lost on restart; persisted so "Undo" survives an app quit.
+    -- created_at is epoch MILLISECONDS (ordering within one second matters).
+    -- Capped at 50 rows per session (pruned on insert, see agent/undo.ts).
+    CREATE TABLE IF NOT EXISTS undo_entries (
+      id           TEXT PRIMARY KEY,
+      run_id       TEXT,
+      session_id   TEXT,
+      step_id      TEXT,
+      op           TEXT NOT NULL,          -- move|move_batch|copy|create_dir|trash
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at   INTEGER NOT NULL,
+      undone_at    INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_undo_session ON undo_entries(session_id, created_at);
+
+    -- Pre-mutation file snapshots. Content lives in the content-addressed
+    -- store userData/checkpoints/<sha256>; a row records what a path looked
+    -- like immediately BEFORE a step overwrote/moved/deleted it.
+    --   existed=0      → the path did not exist (rewind removes it)
+    --   skipped_reason → no snapshot was taken (too_large|directory|unreadable)
+    --   evicted_at     → snapshot evicted by the store cap (never silent)
+    CREATE TABLE IF NOT EXISTS checkpoint_files (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id         TEXT NOT NULL,
+      step_id        TEXT,
+      step_idx       INTEGER,
+      path           TEXT NOT NULL,
+      sha256         TEXT,
+      existed        INTEGER NOT NULL,
+      size           INTEGER,
+      skipped_reason TEXT,
+      evicted_at     INTEGER,
+      created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_checkpoint_run ON checkpoint_files(run_id, id);
+    CREATE INDEX IF NOT EXISTS idx_checkpoint_sha ON checkpoint_files(sha256);
+  `);
+
+  // agent_runs: resume-offer state for runs reconciled as 'interrupted'.
+  // NULL = still offered; 'dismissed' | 'resumed' = handled by the user.
+  const runCols = db.prepare(`PRAGMA table_info(agent_runs)`).all() as { name: string }[];
+  const add = (col: string, decl: string) => {
+    if (runCols.length && !runCols.some(c => c.name === col)) {
+      db.exec(`ALTER TABLE agent_runs ADD COLUMN ${col} ${decl}`);
+    }
+  };
+  add('resume_state', 'TEXT');
 }

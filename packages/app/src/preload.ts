@@ -666,6 +666,11 @@ const api = {
     // Desktop-control master switch (default off).
     getDesktopControl: () => ipcRenderer.invoke('settings:getDesktopControl') as Promise<boolean>,
     setDesktopControl: (enabled: boolean) => ipcRenderer.invoke('settings:setDesktopControl', enabled) as Promise<boolean>,
+    // Keep the machine awake while an agent run is active (default off), and
+    // whether that also applies on battery (default off).
+    getKeepAwake: () => ipcRenderer.invoke('settings:getKeepAwake') as Promise<{ keepAwakeWhileRunning: boolean; keepAwakeOnBattery: boolean }>,
+    setKeepAwake: (patch: { keepAwakeWhileRunning?: boolean; keepAwakeOnBattery?: boolean }) =>
+      ipcRenderer.invoke('settings:setKeepAwake', patch) as Promise<{ keepAwakeWhileRunning: boolean; keepAwakeOnBattery: boolean }>,
     // Sentry crash reporting (opt-out, default ON). `getSentry` also reports
     // whether the one-time first-launch disclosure has been acknowledged.
     getSentry: () => ipcRenderer.invoke('settings:getSentry') as Promise<{ enabled: boolean; disclosureAck: boolean }>,
@@ -742,11 +747,21 @@ const api = {
   },
 
   // ── Undo ───────────────────────────────────────────────────────────────────
-  // Reverse a reversible filesystem action the agent performed. In-memory,
-  // process-lifetime (see agent/undo.ts).
+  // Reverse a reversible filesystem action the agent performed. Persisted, so
+  // it survives a restart (see agent/undo.ts).
   undo: {
     list: () => ipcRenderer.invoke('undo:list') as Promise<{ id: string; kind: string; label: string; ts: number }[]>,
     revert: (id: string) => ipcRenderer.invoke('undo:revert', id) as Promise<{ ok: boolean; error?: string; label?: string }>,
+  },
+
+  // ── File checkpoints ───────────────────────────────────────────────────────
+  // Restore every file a run touched to its state before a given step.
+  checkpoints: {
+    rewind: (runId: string, stepId: string) => ipcRenderer.invoke('checkpoints:rewind', runId, stepId) as Promise<{
+      ok: boolean; runId: string; stepId: string; restored: string[]; removed: string[];
+      skipped: { path: string; reason: string }[];
+      externalActions: { actionId: string; tool: string; state: string }[]; error?: string;
+    }>,
   },
 
   // ── Global search ────────────────────────────────────────────────────────
@@ -958,6 +973,15 @@ const api = {
       parent_run_id: string | null; created_at: number;
       session_title: string; session_origin: string; calls: number; mutations: number;
     }[]>,
+    // Runs the app interrupted (quit/crash) are offered for Resume / Dismiss;
+    // nothing resumes automatically (see agent/resume.ts).
+    listInterrupted: () => ipcRenderer.invoke('runs:listInterrupted') as Promise<{
+      runId: string; sessionId: string; goal: string; createdAt: number; lastStepIdx: number;
+      unattended: boolean; confirmedActions: { actionId: string; tool: string; state: string }[];
+    }[]>,
+    resumeInterrupted: (runId: string) =>
+      ipcRenderer.invoke('runs:resumeInterrupted', runId) as Promise<{ ok: boolean; error?: string; sessionId?: string }>,
+    dismissInterrupted: (runId: string) => ipcRenderer.invoke('runs:dismissInterrupted', runId) as Promise<boolean>,
   },
 
   // ── Time travel ──────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Monitor, AlertTriangle, Camera, Loader } from 'lucide-react';
+import KeepAwakeSettings from './KeepAwakeSettings';
 
 // Reference list of tools exposed when desktop control is enabled — shown at the
 // bottom of the panel so users know exactly what they’re granting the agent access to.
@@ -114,6 +115,9 @@ export default function DesktopControlPanel() {
             <img src={shot} alt="Screen capture" className="mt-3 rounded-xl border border-artha-border max-w-full" />
           )}
         </div>
+
+        {/* Power: keep the machine awake while a task runs (independent of desktop control). */}
+        <KeepAwakeSettings />
 
         {/* Tool list */}
         <h3 className="text-sm font-semibold text-artha-muted mb-3">Available tools</h3>
