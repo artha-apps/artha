@@ -943,6 +943,10 @@ const api = {
     setFolderTrigger: (taskId: string, folder: string | null) =>
       ipcRenderer.invoke('scheduler:setFolderTrigger', taskId, folder),
     pickFolder: () => ipcRenderer.invoke('scheduler:pickFolder') as Promise<string | null>,
+    /** Save a task as a Markdown task file; resolves to the path or null if cancelled. */
+    exportFile: (taskId: string) => ipcRenderer.invoke('scheduler:exportFile', taskId) as Promise<string | null>,
+    /** Pick a Markdown task file and create a task from it (null if cancelled). */
+    importFile: () => ipcRenderer.invoke('scheduler:importFile'),
     /** Enable (mints a token, shown once) or disable the local webhook. */
     setWebhook: (taskId: string, enabled: boolean) =>
       ipcRenderer.invoke('scheduler:setWebhook', taskId, enabled) as Promise<{ token: string | null; path: string; url: string | null; lanRunning: boolean }>,

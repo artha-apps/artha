@@ -3,9 +3,15 @@
  *
  * Supports both repeating (cron) and one-shot (fire_at) schedules.
  * Each task runs the agent with its stored prompt in a new session.
+ *
+ * Automations v2 adds: the Scheduler inbox (run history), Run now, visible
+ * pause/hold reasons, a per-task notify policy, and two triggers — a watched
+ * folder (must be inside an attached scope) and a local webhook (off by
+ * default; token shown once when enabled).
  */
 import { useEffect, useState } from 'react';
-import { Clock, Plus, Trash2, Play, Pause, RefreshCw, Calendar, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Clock, Plus, Trash2, Play, Pause, RefreshCw, Calendar, AlertCircle, CheckCircle2, Zap, FolderOpen, Webhook, PauseCircle } from 'lucide-react';
+import SchedulerInbox from '../Workflows/SchedulerInbox';
 import { useDraftStore } from '../../stores/draft';
 
 interface ScheduledTask {
@@ -19,7 +25,24 @@ interface ScheduledTask {
   last_status: string | null;
   run_count: number;
   created_at: number;
+  // ── v2 ──
+  pause_reason: string | null;
+  on_hold: number;
+  hold_reason: string | null;
+  notify: NotifyPolicy;
+  watch_folder: string | null;
+  webhook_enabled: number;
+  has_webhook_token: boolean;
+  last_detail?: string | null;
 }
+
+/** When a finished run triggers a desktop notification. */
+type NotifyPolicy = 'always' | 'on_change' | 'on_failure';
+const NOTIFY_LABELS: Record<NotifyPolicy, string> = {
+  always: 'Notify every run',
+  on_change: 'Notify when the result changes',
+  on_failure: 'Notify only on problems',
+};
 
 // Pre-built cron expressions shown as clickable pills. The empty `value` for
 // "Custom…" triggers the free-text cron input below the grid.
@@ -39,6 +62,12 @@ function timeAgo(ts: number | null): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
+}
+
+/** Strip Electron's "Error invoking remote method …: Error:" prefix from IPC errors. */
+function errorText(err: unknown): string {
+  const m = err instanceof Error ? err.message : String(err);
+  return m.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 }
 
 function fireAtLocal(ts: number): string {
@@ -62,6 +91,11 @@ export default function SchedulerPanel() {
   // `cronCustom` is only used when the user selects "Custom…" from the preset grid.
   const [cronCustom, setCronCustom] = useState('');
   const [fireAtInput, setFireAtInput] = useState('');
+  const [notify, setNotify] = useState<NotifyPolicy>('always');
+  /** Bumped after actions so the inbox reloads. */
+  const [inboxKey, setInboxKey] = useState(0);
+  /** Token shown once after enabling a webhook: { taskId, token, url }. */
+  const [hookReveal, setHookReveal] = useState<{ taskId: string; token: string; url: string | null; lanRunning: boolean } | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -91,6 +125,7 @@ export default function SchedulerPanel() {
     setScheduleType('cron');
     setCronPreset(CRON_PRESETS[0].value);
     setCronCustom(''); setFireAtInput('');
+    setNotify('always');
     setShowForm(false);
   };
 
@@ -105,16 +140,68 @@ export default function SchedulerPanel() {
         ? Math.floor(new Date(fireAtInput).getTime() / 1000)
         : undefined;
       if (!cron && !fire_at) { alert('Please set a schedule.'); return; }
-      await (window as any).artha.scheduler.create({ name: name.trim(), prompt: prompt.trim(), cron, fire_at });
+      await (window as any).artha.scheduler.create({ name: name.trim(), prompt: prompt.trim(), cron, fire_at, notify });
       resetForm();
       await load();
+    } catch (err) {
+      // e.g. a schedule tighter than every 15 minutes — show the main-process reason.
+      alert(errorText(err));
     } finally {
       setSaving(false);
     }
   };
 
   const handleToggle = async (task: ScheduledTask) => {
-    await (window as any).artha.scheduler.toggle(task.task_id, !task.is_enabled);
+    try {
+      await (window as any).artha.scheduler.toggle(task.task_id, !task.is_enabled);
+    } catch (err) { alert(errorText(err)); }
+    await load();
+  };
+
+  /** Fire now through the same unattended path as a scheduled run. */
+  const handleRunNow = async (task: ScheduledTask) => {
+    try {
+      const r = await (window as any).artha.scheduler.runNow(task.task_id) as { started: boolean; reason?: string };
+      if (!r.started) alert(r.reason ?? 'Could not start the task.');
+    } catch (err) { alert(errorText(err)); }
+    setTimeout(() => { setInboxKey(k => k + 1); void load(); }, 1500);
+  };
+
+  const handleNotify = async (task: ScheduledTask, policy: NotifyPolicy) => {
+    await (window as any).artha.scheduler.setNotify(task.task_id, policy);
+    await load();
+  };
+
+  /** Pick (or clear) the watched folder; main rejects folders outside attached scopes. */
+  const handleFolder = async (task: ScheduledTask) => {
+    try {
+      if (task.watch_folder) {
+        await (window as any).artha.scheduler.setFolderTrigger(task.task_id, null);
+      } else {
+        const folder = await (window as any).artha.scheduler.pickFolder() as string | null;
+        if (!folder) return;
+        await (window as any).artha.scheduler.setFolderTrigger(task.task_id, folder);
+      }
+    } catch (err) { alert(errorText(err)); }
+    await load();
+  };
+
+  /** Create a task from a Markdown task file (same validation as the form). */
+  const handleImport = async () => {
+    try { await (window as any).artha.scheduler.importFile(); } catch (err) { alert(errorText(err)); }
+    await load();
+  };
+
+  /** Save a task as a Markdown task file (name, schedule, prompt, notify). */
+  const handleExport = async (task: ScheduledTask) => {
+    try { await (window as any).artha.scheduler.exportFile(task.task_id); } catch (err) { alert(errorText(err)); }
+  };
+
+  /** Toggle the local webhook. Enabling mints a token that is shown once. */
+  const handleWebhook = async (task: ScheduledTask) => {
+    const enable = !task.webhook_enabled;
+    const r = await (window as any).artha.scheduler.setWebhook(task.task_id, enable) as { token: string | null; url: string | null; path: string; lanRunning: boolean };
+    setHookReveal(enable && r.token ? { taskId: task.task_id, token: r.token, url: r.url ?? r.path, lanRunning: r.lanRunning } : null);
     await load();
   };
 
@@ -135,13 +222,25 @@ export default function SchedulerPanel() {
             <p className="text-sm text-artha-muted">Run the agent automatically on a schedule or at a specific time.</p>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+        <button
+          onClick={() => void handleImport()}
+          title="Import a Markdown task file"
+          className="px-3 py-1.5 rounded-lg bg-artha-text/5 hover:bg-artha-text/8 text-artha-muted text-sm transition-colors"
+        >
+          Import
+        </button>
         <button
           onClick={() => setShowForm(v => !v)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-artha-accent/10 hover:bg-artha-accent/20 text-artha-accent text-sm font-medium transition-colors"
         >
           <Plus size={15} /> New Task
         </button>
+        </div>
       </div>
+
+      {/* Run history */}
+      <SchedulerInbox refreshKey={inboxKey} />
 
       {/* Create form */}
       {showForm && (
@@ -220,6 +319,18 @@ export default function SchedulerPanel() {
             </div>
           )}
 
+          <div className="space-y-1">
+            <label className="text-xs text-artha-muted">Notifications</label>
+            <select
+              value={notify}
+              onChange={e => setNotify(e.target.value as NotifyPolicy)}
+              className="bg-black/30 border border-artha-border rounded-lg px-3 py-2 text-sm text-artha-text focus:outline-none"
+            >
+              {(Object.keys(NOTIFY_LABELS) as NotifyPolicy[]).map(p => <option key={p} value={p}>{NOTIFY_LABELS[p]}</option>)}
+            </select>
+            <p className="text-[11px] text-artha-muted">Schedules can run at most every 15 minutes.</p>
+          </div>
+
           <div className="flex gap-2 justify-end">
             <button onClick={resetForm} className="px-3 py-1.5 rounded-lg bg-artha-text/5 hover:bg-artha-text/8 text-artha-muted text-sm transition-colors">Cancel</button>
             <button
@@ -265,9 +376,49 @@ export default function SchedulerPanel() {
                     ) : null}
                     <span>Last run: {timeAgo(task.last_run_at)}</span>
                     <span>Runs: {task.run_count}</span>
+                    {task.watch_folder && <span className="flex items-center gap-1 truncate" title={task.watch_folder}><FolderOpen size={10} /> watching</span>}
+                    {!!task.webhook_enabled && <span className="flex items-center gap-1"><Webhook size={10} /> webhook</span>}
                   </div>
+                  {task.pause_reason && (
+                    <p className="mt-2 flex items-center gap-1 text-xs text-artha-danger"><PauseCircle size={11} /> {task.pause_reason}</p>
+                  )}
+                  {!!task.on_hold && task.hold_reason && (
+                    <p className="mt-2 flex items-center gap-1 text-xs text-orange-400"><AlertCircle size={11} /> On hold — {task.hold_reason}</p>
+                  )}
+                  <div className="mt-2 flex items-center gap-2">
+                    <select
+                      value={task.notify ?? 'always'}
+                      onChange={e => void handleNotify(task, e.target.value as NotifyPolicy)}
+                      className="bg-black/20 border border-artha-border rounded-md px-2 py-1 text-[11px] text-artha-muted focus:outline-none"
+                    >
+                      {(Object.keys(NOTIFY_LABELS) as NotifyPolicy[]).map(p => <option key={p} value={p}>{NOTIFY_LABELS[p]}</option>)}
+                    </select>
+                    <button onClick={() => void handleFolder(task)} className="px-2 py-1 rounded-md border border-artha-border text-[11px] text-artha-muted hover:text-artha-text">
+                      {task.watch_folder ? 'Stop watching folder' : 'Run on new file…'}
+                    </button>
+                    <button onClick={() => void handleExport(task)} className="px-2 py-1 rounded-md border border-artha-border text-[11px] text-artha-muted hover:text-artha-text">
+                      Export
+                    </button>
+                    <button onClick={() => void handleWebhook(task)} className="px-2 py-1 rounded-md border border-artha-border text-[11px] text-artha-muted hover:text-artha-text">
+                      {task.webhook_enabled ? 'Disable webhook' : 'Enable webhook'}
+                    </button>
+                  </div>
+                  {hookReveal?.taskId === task.task_id && (
+                    <div className="mt-2 rounded-md bg-black/30 border border-artha-border p-2 text-[11px] text-artha-muted space-y-1">
+                      <p>POST <span className="font-mono text-artha-text break-all">{hookReveal.url}</span></p>
+                      <p>Header <span className="font-mono">X-Artha-Task-Token: </span><span className="font-mono text-artha-text break-all">{hookReveal.token}</span></p>
+                      <p>Copy this token now; it won't be shown again.{!hookReveal.lanRunning && ' The webhook only listens while the LAN server is running.'}</p>
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => void handleRunNow(task)}
+                    title="Run now"
+                    className="p-1.5 rounded-lg hover:bg-artha-text/8 text-artha-muted hover:text-artha-text transition-colors"
+                  >
+                    <Zap size={14} />
+                  </button>
                   <button
                     onClick={() => handleToggle(task)}
                     title={task.is_enabled ? 'Pause' : 'Resume'}
