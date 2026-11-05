@@ -96,6 +96,9 @@ export interface ToolApprovalRequest {
   note: string;
   /** True when the modal may offer "Always allow (30 days)" (never for email_send). */
   allowAlways?: boolean;
+  /** Set for a per-app desktop-control prompt: the modal then offers
+   *  Once / Always for this project (30 days) / Deny. */
+  appGrant?: { appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean };
 }
 
 /** A run-level failure surfaced inline in the thread (and as a toast). `retry`

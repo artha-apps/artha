@@ -208,13 +208,15 @@ const api = {
       ipcRenderer.invoke('agent:clarifyRespond', workflowId, answers),
     // Per-tool-call approval (policy `confirm` tier). The orchestrator pauses a
     // specific function call until the user approves or denies it here.
-    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string; allowAlways?: boolean }) => void) => {
+    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string; allowAlways?: boolean; appGrant?: { appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean } }) => void) => {
       ipcRenderer.on('agent:toolApprovalRequest', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:toolApprovalRequest');
     },
-    // `always` records an "Always allow (30 days)" grant when the modal offered it.
-    respondToolApproval: (approvalId: string, approved: boolean, always?: boolean) =>
-      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved, always === true),
+    // `scope` answers the prompt's durable option: 'always' = "Always allow
+    // (30 days)" on a tool prompt (recorded only when offered) or "Always for
+    // this project" on a per-app desktop grant prompt; 'once' = app-grant Once.
+    respondToolApproval: (approvalId: string, approved: boolean, scope?: 'once' | 'always') =>
+      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved, scope),
     // Decompose a goal into sub-tasks and run them concurrently.
     runParallel: (sessionId: string, goal: string, subTasks: string[]) =>
       ipcRenderer.invoke('agent:runParallel', { sessionId, goal, subTasks }) as Promise<string[]>,
@@ -671,6 +673,9 @@ const api = {
     getKeepAwake: () => ipcRenderer.invoke('settings:getKeepAwake') as Promise<{ keepAwakeWhileRunning: boolean; keepAwakeOnBattery: boolean }>,
     setKeepAwake: (patch: { keepAwakeWhileRunning?: boolean; keepAwakeOnBattery?: boolean }) =>
       ipcRenderer.invoke('settings:setKeepAwake', patch) as Promise<{ keepAwakeWhileRunning: boolean; keepAwakeOnBattery: boolean }>,
+    // Global stop shortcut for desktop control (Electron accelerator string; '' = default).
+    getDesktopStopShortcut: () => ipcRenderer.invoke('settings:getDesktopStopShortcut') as Promise<string>,
+    setDesktopStopShortcut: (accelerator: string) => ipcRenderer.invoke('settings:setDesktopStopShortcut', accelerator) as Promise<string>,
     // Sentry crash reporting (opt-out, default ON). `getSentry` also reports
     // whether the one-time first-launch disclosure has been acknowledged.
     getSentry: () => ipcRenderer.invoke('settings:getSentry') as Promise<{ enabled: boolean; disclosureAck: boolean }>,

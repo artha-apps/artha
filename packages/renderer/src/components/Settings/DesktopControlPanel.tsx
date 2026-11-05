@@ -33,12 +33,27 @@ export default function DesktopControlPanel() {
   const [shot, setShot] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Global stop shortcut (Electron accelerator). `shortcutDraft` is the
+  // editable field; `shortcutSaved` is what the main process actually bound.
+  const [shortcutDraft, setShortcutDraft] = useState('');
+  const [shortcutSaved, setShortcutSaved] = useState('');
 
   // ── Effects ────────────────────────────────────────────────────────────────
   useEffect(() => {
     // Read the persisted toggle state via `settings:getDesktopControl`.
     window.artha.settings.getDesktopControl().then(setEnabled).catch(() => {});
+    window.artha.settings.getDesktopStopShortcut()
+      .then((s) => { setShortcutDraft(s); setShortcutSaved(s); })
+      .catch(() => {});
   }, []);
+
+  /** Persist the stop shortcut; an empty field restores the default. The main
+   *  process echoes the accelerator it will actually use. */
+  const saveShortcut = async () => {
+    const bound = await window.artha.settings.setDesktopStopShortcut(shortcutDraft.trim());
+    setShortcutDraft(bound);
+    setShortcutSaved(bound);
+  };
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -96,6 +111,37 @@ export default function DesktopControlPanel() {
           >
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${enabled ? 'translate-x-5' : ''}`} />
           </button>
+        </div>
+
+        {/* Stop shortcut + per-app grants explainer */}
+        <div className="px-4 py-4 mb-6 rounded-xl bg-artha-s2 border border-artha-border space-y-3">
+          <div>
+            <p className="text-sm font-semibold text-artha-text">Stop shortcut</p>
+            <p className="text-xs text-artha-muted mt-0.5">
+              Works from any app while Artha is running a task: stops every run and any queued mouse or keyboard
+              action. A stopped task is never marked complete. Leave blank for the default (Ctrl+Option+Shift+Period).
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={shortcutDraft}
+              onChange={(e) => setShortcutDraft(e.target.value)}
+              placeholder="Control+Alt+Shift+."
+              className="flex-1 px-3 py-2 rounded-lg bg-artha-bg border border-artha-border text-sm font-mono text-artha-text"
+            />
+            <button
+              onClick={saveShortcut}
+              disabled={shortcutDraft.trim() === shortcutSaved}
+              className="px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover disabled:opacity-40 disabled:cursor-not-allowed text-artha-on-accent text-sm font-medium transition-colors"
+            >
+              Save
+            </button>
+          </div>
+          <p className="text-xs text-artha-muted">
+            Artha also asks before controlling each app (Once, or Always for this project for 30 days). Terminal,
+            iTerm, System Settings, Keychain Access and password managers always ask. Scheduled tasks skip apps you
+            haven’t approved.
+          </p>
         </div>
 
         {/* Test screenshot */}

@@ -114,6 +114,8 @@ import {
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 import { listActiveRuns, listRunEvents } from '../agent/runEvents';
 import { createRunSubscriptions } from '../agent/runEventIpc';
+import { getKillSwitch, triggerStop } from '../desktop/runtime';
+import { DEFAULT_STOP_ACCELERATOR } from '../desktop/killSwitch';
 
 /** Process-wide run:subscribe registry, keyed by webContents id + run id. */
 const runSubscriptions = createRunSubscriptions();
@@ -788,10 +790,13 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   // Per-tool-call approval (policy `confirm` tier). The renderer answers the
   // `agent:toolApprovalRequest` event with the user's decision.
-  // `always` = the user picked "Always allow (30 days)"; the orchestrator
-  // records a tool grant only when the modal offered it.
-  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean, always?: boolean) => {
-    orchestrator.respondToolApproval(approvalId, approved, always === true);
+  // `scope` = 'always' when the user picked "Always allow (30 days)" (tool
+  // grant, recorded only when the modal offered it) or "Always for this
+  // project" on a per-app desktop grant prompt; 'once' = app-grant Once.
+  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean, scope?: unknown) => {
+    // Back-compat: a bare `true` from an older renderer means "always".
+    const s = scope === 'always' || scope === true ? 'always' : scope === 'once' ? 'once' : undefined;
+    orchestrator.respondToolApproval(approvalId, approved, s);
   });
 
   // ── Standing grants ("Always allow") ─────────────────────────────────────
@@ -3032,6 +3037,20 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     writeSetting('desktop_control_enabled', !!enabled);
     return true;
   });
+  // Global stop shortcut (desktop/killSwitch.ts). Empty string = default.
+  // Applied to the live kill switch immediately; also re-read at each run start.
+  ipcMain.handle('settings:getDesktopStopShortcut', () => {
+    const v = readSettings().desktop_stop_shortcut;
+    return typeof v === 'string' && v ? v : (getKillSwitch()?.currentAccelerator ?? DEFAULT_STOP_ACCELERATOR);
+  });
+  ipcMain.handle('settings:setDesktopStopShortcut', (_e, accelerator: string) => {
+    const next = typeof accelerator === 'string' ? accelerator.trim().slice(0, 64) : '';
+    writeSetting('desktop_stop_shortcut', next);
+    getKillSwitch()?.setAccelerator(next || DEFAULT_STOP_ACCELERATOR);
+    return getKillSwitch()?.currentAccelerator ?? (next || DEFAULT_STOP_ACCELERATOR);
+  });
+  // Same effect as pressing the global stop shortcut (e.g. from a UI button).
+  ipcMain.handle('desktop:stopAll', () => triggerStop());
 
   // ── Crash reporting (Sentry) ─────────────────────────────────────────────
   // Opt-out telemetry. These three channels back the Settings toggle and the
