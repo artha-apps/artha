@@ -26,7 +26,7 @@ import { getPackContextBlock, getPackSkillId } from './contextPacks';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
-import { getRunContext } from './runContext';
+import { getRunContext, confirmTierMustFailClosed } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
 import { recordAcceptanceCriteria } from '../bodhi/criteria';
 import { classifyToolResult, isFailure, countsAsCompletedMutation } from './toolOutcome';
@@ -1658,8 +1658,7 @@ RULES — follow exactly, no exceptions:
             // streaming) but a desktop user IS watching and can approve via the
             // app-level ToolApprovalModal. Treating silent as unattended blocked
             // email_send in Delegate — the exact "it won't send" bug.
-            const rc = getRunContext();
-            const unattended = !!rc?.lan || !!rc?.unattended;
+            const unattended = confirmTierMustFailClosed(getRunContext());
             if (unattended) {
               toolResult = `Error: ${toolCall.function.name} needs interactive approval (policy rule "${decision.matchedPattern}") but this run is unattended, so it was blocked.`;
               toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;

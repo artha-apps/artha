@@ -1,46 +1,58 @@
 /**
- * Scheduler Service — cron-based and one-shot task runner.
+ * Scheduler Service — cron, one-shot and trigger-based task runner (automations v2).
  *
- * Each scheduled_task row stores either a `cron` expression (repeating) or a
- * `fire_at` unix timestamp (one-shot). On each fire the scheduler opens a new
- * chat session and calls the agent orchestrator with the task's prompt, exactly
- * as if the user had typed it. All processing stays local.
+ * Each scheduled_task row stores a `cron` expression (repeating), a `fire_at`
+ * unix timestamp (one-shot), and/or a trigger (watched folder, local webhook).
+ * Every fire goes through ONE path — `AutomationEngine.fire()` — which opens a
+ * new chat session and runs the task's prompt UNATTENDED (confirm-tier tools
+ * fail closed; see main.ts), records a task_executions row with the honest
+ * outcome, applies the notify policy and the auto-pause rule.
+ *
+ * Ops hygiene (rules in automationPolicy.ts):
+ *   - cron fires are jittered ±90 s and re-armed one slot at a time; the armed
+ *     slot is persisted as `next_due_at` so a slot missed while the app was off
+ *     or asleep runs ONCE on startup/wake with a "ran late" note,
+ *   - schedules tighter than every 15 minutes are rejected (create/update) or
+ *     auto-paused with a visible `pause_reason` (pre-existing rows),
+ *   - 3 consecutive failures auto-pause,
+ *   - hold states (needs re-auth / folder missing / model unavailable) stop a
+ *     run before it starts and are shown as `on_hold` + `hold_reason`.
  *
  * Lifecycle:
- *   init()           — called once on app launch; loads all enabled tasks and
- *                      schedules them with node-schedule.
- *   scheduleTask()   — idempotent upsert; safe to call after create/update.
- *   cancelTask()     — cancels the in-memory job without deleting the DB row.
- *   shutdown()       — cancels all jobs (called on app quit).
+ *   init()           — called once on app launch; arms all enabled tasks and
+ *                      runs any missed-slot catch-ups.
+ *   handleWake()     — called on system resume; catch-up + re-arm.
+ *   scheduleTask()   — idempotent (re-)arm; safe to call after create/update.
+ *   cancelTask()     — cancels in-memory jobs/watchers without deleting the row.
+ *   shutdown()       — cancels everything (called on app quit).
  */
 import * as schedule from 'node-schedule';
+import * as fs from 'fs';
 import { app } from 'electron';
 import { getDb } from '../db/schema';
 import { userFacingOutcome, legacyStatusToOutcome, type RunOutcome } from '../bodhi/taskModel';
 import { sendNotification } from '../notify';
 import { startCheckIn, finishCheckIn, addBreadcrumb, captureException } from '../sentry';
+import {
+  applyJitter, authorizeWebhook, generateWebhookToken, isFolderWithinScopes, nextCronFire,
+  normalizeNotifyPolicy, promptNeedsGoogle, validateSchedule,
+  type ExecStatus, type FireTrigger, type NotifyPolicy,
+} from './automationPolicy';
+import {
+  AutomationEngine, type AutomationTask, type ExecutionFinish, type FireOptions, type RunResult, type TaskStore,
+} from './engine';
+import { startFolderTrigger, type FolderWatcher } from './folderTrigger';
 
 /** Sentry cron-monitor slug for the daily health check. */
 const HEALTH_MONITOR_SLUG = 'artha-daily-health';
+/** Delay before startup catch-up runs (lets the local model runtime start). */
+const STARTUP_CATCHUP_DELAY_MS = 60_000;
 
-/** Shape of a row from the scheduled_tasks table. */
-export interface ScheduledTask {
-  task_id: string;
-  name: string;
-  /** The verbatim prompt sent to the agent when this task fires. */
-  prompt: string;
-  /** Standard cron expression (null for one-shot tasks). */
-  cron: string | null;
-  /** Unix timestamp (seconds) — set only for one-shot tasks. */
-  fire_at: number | null;
-  /** SQLite boolean: 1 = active, 0 = disabled / already fired (one-shot). */
-  is_enabled: number;
-  last_run_at: number | null;
-  /** 'running' | 'ok' | 'error' — persisted for display in the UI. */
-  last_status: string | null;
-  run_count: number;
-  created_at: number;
-}
+/** Shape of a row from the scheduled_tasks table (v2 columns included). */
+export type ScheduledTask = AutomationTask;
+
+/** A task as sent to the renderer — the webhook secret is never listed. */
+export type PublicTask = Omit<ScheduledTask, 'webhook_token'> & { has_webhook_token: boolean };
 
 /** Input for creating / updating a scheduled task. */
 export interface TaskInput {
@@ -50,21 +62,102 @@ export interface TaskInput {
   cron?: string;
   /** Unix timestamp (seconds) for a one-shot task. Mutually exclusive with cron. */
   fire_at?: number;
+  /** Notification policy; defaults to 'always'. */
+  notify?: NotifyPolicy;
+}
+
+/** One row of the Scheduler inbox (task_executions joined with the task name). */
+export interface TaskExecution {
+  exec_id: string;
+  task_id: string;
+  task_name: string | null;
+  status: ExecStatus;
+  trigger_kind: FireTrigger;
+  started_at: number;
+  ended_at: number | null;
+  run_id: string | null;
+  summary: string | null;
+  is_read: number;
+  fail_reason: string | null;
+}
+
+/** Runner injected by main.ts: runs `prompt` unattended in a fresh session. */
+export type TaskRunner = (prompt: string, opts?: { scopeFolder?: string }) => Promise<{ sessionId: string } | void>;
+
+/** Pre-run hold probes injected by main.ts (they touch the LLM / OAuth layers). */
+export interface HoldProbes {
+  /** Null when a model is usable; otherwise a short reason. */
+  modelUnavailable?: () => Promise<string | null>;
+  /** True when a Google account with a refresh token is connected. */
+  googleConnected?: () => boolean;
+}
+
+/** Folder paths of every attached folder scope — the folder-trigger boundary. */
+export function attachedScopeFolders(): string[] {
+  try {
+    return (getDb().prepare(`SELECT DISTINCT path FROM session_scopes WHERE kind='folder'`).all() as { path: string }[])
+      .map(r => r.path);
+  } catch { return []; }
+}
+
+/** SQLite-backed TaskStore for the engine. */
+class SqlTaskStore implements TaskStore {
+  get(taskId: string): AutomationTask | undefined {
+    return getDb().prepare(`SELECT * FROM scheduled_tasks WHERE task_id=?`).get(taskId) as AutomationTask | undefined;
+  }
+  patch(taskId: string, fields: Record<string, unknown>): void {
+    const keys = Object.keys(fields).filter(k => /^[a-z_]+$/.test(k));
+    if (!keys.length) return;
+    getDb().prepare(`UPDATE scheduled_tasks SET ${keys.map(k => `${k}=?`).join(', ')} WHERE task_id=?`)
+      .run(...keys.map(k => fields[k] as never), taskId);
+  }
+  markRunning(taskId: string, nowSec: number): void {
+    getDb().prepare(`UPDATE scheduled_tasks SET last_run_at=?, last_status='running', run_count=run_count+1 WHERE task_id=?`)
+      .run(nowSec, taskId);
+  }
+  startExecution(taskId: string, trigger: FireTrigger, nowSec: number): string {
+    const id = crypto.randomUUID();
+    getDb().prepare(`INSERT INTO task_executions (exec_id, task_id, status, trigger_kind, started_at) VALUES (?, ?, 'running', ?, ?)`)
+      .run(id, taskId, trigger, nowSec);
+    return id;
+  }
+  finishExecution(execId: string, f: ExecutionFinish, nowSec: number): void {
+    getDb().prepare(
+      `UPDATE task_executions SET status=?, run_id=?, summary=?, summary_hash=?, fail_reason=?, ended_at=? WHERE exec_id=?`
+    ).run(f.status, f.runId, f.summary, f.summaryHash, f.failReason, nowSec, execId);
+  }
+  previousSummaryHash(taskId: string, excludeExecId: string): string | null {
+    const row = getDb().prepare(
+      `SELECT summary_hash FROM task_executions
+        WHERE task_id=? AND exec_id<>? AND status<>'running'
+        ORDER BY started_at DESC, rowid DESC LIMIT 1`
+    ).get(taskId, excludeExecId) as { summary_hash: string | null } | undefined;
+    return row?.summary_hash ?? null;
+  }
 }
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 export class SchedulerService {
   private static instance: SchedulerService;
-  /** In-memory map of task_id → node-schedule Job. */
+  /** In-memory map of task_id → armed node-schedule Job (next cron slot or one-shot). */
   private jobs = new Map<string, schedule.Job>();
+  /** task_id → active folder watcher. */
+  private watchers = new Map<string, FolderWatcher>();
   /** The daily 03:00 health-check job (distinct from user tasks). */
   private healthJob: schedule.Job | null = null;
   /** Injected by init() — avoids circular import with the orchestrator. */
-  private runTask: ((prompt: string) => Promise<{ sessionId: string } | void>) | null = null;
-  /** Task ids with a run in flight — prevents a slow hourly job from
-   *  overlapping itself and racing its own last_status writes. */
-  private inFlight = new Set<string>();
+  private runTask: TaskRunner | null = null;
+  private probes: HoldProbes = {};
+  private store = new SqlTaskStore();
+  /** The shared fire path (see engine.ts). */
+  readonly engine = new AutomationEngine({
+    store: this.store,
+    run: (task, opts) => this.executeRun(task, opts),
+    notify: (title, body) => sendNotification(title, body),
+    holdCheck: task => this.holdCheck(task),
+    onDisabled: id => this.cancelTask(id),
+  });
 
   static getInstance(): SchedulerService {
     if (!SchedulerService.instance) SchedulerService.instance = new SchedulerService();
@@ -72,31 +165,49 @@ export class SchedulerService {
   }
 
   /**
-   * Load all enabled tasks from SQLite and schedule them. Must be called after
-   * the DB is initialised and the orchestrator is ready.
-   *
-   * @param runner  A function that accepts a prompt string and runs the agent
-   *                (typically `orchestrator.handleMessage(sessionId, prompt)`
-   *                wrapped to create a fresh session).
+   * Load all enabled tasks from SQLite, arm them, and run missed-slot
+   * catch-ups. Must be called after the DB is initialised and the orchestrator
+   * is ready.
    */
-  async init(runner: (prompt: string) => Promise<{ sessionId: string } | void>): Promise<void> {
+  async init(runner: TaskRunner, probes: HoldProbes = {}): Promise<void> {
     this.runTask = runner;
-    const db = getDb();
-    const tasks = db
-      .prepare(`SELECT * FROM scheduled_tasks WHERE is_enabled=1`)
-      .all() as ScheduledTask[];
-
-    for (const task of tasks) {
-      this.scheduleTask(task);
-    }
+    this.probes = probes;
+    const tasks = this.enabledTasks();
+    // `tasks` is the pre-arming snapshot: catch-up must read the slot each task
+    // was armed for LAST session, and arming below overwrites next_due_at.
+    for (const task of tasks) this.scheduleTask(task);
 
     // Business-continuity heartbeat: a daily health check at 03:00 local time
     // that emits a Sentry monitor check-in. This gives a per-install heartbeat
     // so a bad release that silently breaks Ollama/SQLite for non-reporting
     // users still shows up as "missed check-ins" in cron monitoring.
     this.scheduleHealthCheck();
-
     console.log(`[Artha] Scheduler initialised — ${tasks.length} task(s) loaded.`);
+
+    // Startup catch-up waits briefly so the local model runtime (started in
+    // parallel by ensureModelReady) is up — otherwise every late run would be
+    // put on hold as "model unavailable" on a cold start.
+    const t = setTimeout(() => {
+      void this.engine.catchUp(tasks).then(fired => {
+        if (fired.length) console.log(`[Artha] Caught up ${fired.length} missed scheduled task(s).`);
+      }).catch(err => console.error('[Artha] Scheduler catch-up failed:', err));
+    }, STARTUP_CATCHUP_DELAY_MS);
+    t.unref?.();
+  }
+
+  /**
+   * System resumed from sleep: node-schedule timers may have slipped past
+   * their slot. Cancel the stale timer for any task whose slot passed, run it
+   * once late, then re-arm everything from "now".
+   */
+  async handleWake(): Promise<void> {
+    if (!this.runTask) return;
+    await this.engine.catchUp(this.enabledTasks(), id => this.cancelJob(id));
+    for (const t of this.enabledTasks()) this.scheduleTask(t);
+  }
+
+  private enabledTasks(): ScheduledTask[] {
+    return getDb().prepare(`SELECT * FROM scheduled_tasks WHERE is_enabled=1`).all() as ScheduledTask[];
   }
 
   /** Register the daily 03:00 health check. Idempotent. */
@@ -167,82 +278,134 @@ export class SchedulerService {
     return { ollama, integrityOk, freeDiskGb };
   }
 
-  /** (Re-)schedule a single task from its DB row. Safe to call after upsert. */
+  /**
+   * (Re-)arm a single task from its DB row. Cron tasks are armed one jittered
+   * slot at a time (re-armed after each fire); one-shots at their exact time;
+   * a watched folder gets a debounced watcher. Too-frequent legacy schedules
+   * are auto-paused here with a visible reason instead of being armed.
+   */
   scheduleTask(task: ScheduledTask): void {
-    // Cancel any existing job for this id before rescheduling.
     this.cancelTask(task.task_id);
-
     if (!task.is_enabled || !this.runTask) return;
 
-    const run = this.makeRunner(task.task_id, task.prompt);
-
     if (task.cron) {
-      const job = schedule.scheduleJob(task.task_id, task.cron, run);
-      if (job) {
-        this.jobs.set(task.task_id, job);
-        console.log(`[Artha] Scheduled cron task "${task.name}" (${task.cron})`);
-      } else {
-        console.warn(`[Artha] Invalid cron expression for task "${task.name}": ${task.cron}`);
-      }
-    } else if (task.fire_at) {
-      const fireDate = new Date(task.fire_at * 1000);
-      if (fireDate <= new Date()) {
-        console.warn(`[Artha] One-shot task "${task.name}" fire_at is in the past; skipping.`);
+      const check = validateSchedule(task.cron);
+      if (!check.ok) {
+        this.store.patch(task.task_id, { is_enabled: 0, pause_reason: check.reason });
+        console.warn(`[Artha] Task "${task.name}" auto-paused: ${check.reason}`);
         return;
       }
-      const job = schedule.scheduleJob(task.task_id, fireDate, run);
-      if (job) {
-        this.jobs.set(task.task_id, job);
-        console.log(`[Artha] Scheduled one-shot task "${task.name}" at ${fireDate.toISOString()}`);
+      this.armNextCronSlot(task.task_id, task.cron);
+    } else if (task.fire_at) {
+      const fireDate = new Date(task.fire_at * 1000);
+      if (fireDate > new Date()) {
+        const job = schedule.scheduleJob(`${task.task_id}`, fireDate, () => {
+          void this.engine.fire(task.task_id, { trigger: 'schedule' });
+        });
+        if (job) this.jobs.set(task.task_id, job);
       }
+      // A past fire_at is handled by catch-up (runs once, late), not skipped.
     }
+
+    if (task.watch_folder) this.startWatcher(task);
   }
 
-  /** Cancel the in-memory job for a task (does not delete the DB row). */
-  cancelTask(taskId: string): void {
-    const existing = this.jobs.get(taskId);
-    if (existing) {
-      existing.cancel();
-      this.jobs.delete(taskId);
+  /** Arm the next cron slot (±90 s jitter) and persist it as next_due_at. */
+  private armNextCronSlot(taskId: string, cron: string): void {
+    const now = new Date();
+    const slot = nextCronFire(cron, now);
+    if (!slot) {
+      console.warn(`[Artha] Invalid cron expression for task ${taskId}: ${cron}`);
+      return;
     }
+    const slotSec = Math.floor(slot.getTime() / 1000);
+    this.store.patch(taskId, { next_due_at: slotSec });
+    const job = schedule.scheduleJob(applyJitter(slot, now), () => {
+      this.jobs.delete(taskId);
+      const t = this.store.get(taskId);
+      // Already covered by a catch-up (wake raced the stale timer) → skip.
+      const covered = t?.last_catchup_slot != null && t.last_catchup_slot >= slotSec;
+      const run = covered ? Promise.resolve(null) : this.engine.fire(taskId, { trigger: 'schedule' });
+      void run.finally(() => {
+        const fresh = this.store.get(taskId);
+        if (fresh?.is_enabled && fresh.cron && !this.jobs.has(taskId)) this.armNextCronSlot(taskId, fresh.cron);
+      });
+    });
+    if (job) this.jobs.set(taskId, job);
+  }
+
+  /** Start the folder watcher; a folder outside scopes or missing puts the task on hold. */
+  private startWatcher(task: ScheduledTask): void {
+    const folder = task.watch_folder!;
+    const res = startFolderTrigger(folder, attachedScopeFolders(), files => {
+      const list = files.slice(0, 20).join(', ');
+      void this.engine.fire(task.task_id, {
+        trigger: 'folder',
+        context: `Triggered because new file(s) appeared in ${folder}: ${list}${files.length > 20 ? ', …' : ''}`,
+      });
+    });
+    if (typeof res === 'string') {
+      this.store.patch(task.task_id, { on_hold: 1, hold_reason: res });
+      console.warn(`[Artha] Folder trigger for "${task.name}" not started: ${res}`);
+      return;
+    }
+    this.watchers.set(task.task_id, res);
+  }
+
+  /** Cancel only the armed timer (keeps a folder watcher running). */
+  private cancelJob(taskId: string): void {
+    const existing = this.jobs.get(taskId);
+    if (existing) { existing.cancel(); this.jobs.delete(taskId); }
+  }
+
+  /** Cancel the in-memory job + watcher for a task (does not delete the DB row). */
+  cancelTask(taskId: string): void {
+    this.cancelJob(taskId);
+    const w = this.watchers.get(taskId);
+    if (w) { w.stop(); this.watchers.delete(taskId); }
   }
 
   /** Cancel all scheduled jobs — called on app quit. */
   shutdown(): void {
-    for (const [id, job] of this.jobs) {
-      job.cancel();
-      this.jobs.delete(id);
-    }
+    for (const id of [...this.jobs.keys(), ...this.watchers.keys()]) this.cancelTask(id);
     if (this.healthJob) { this.healthJob.cancel(); this.healthJob = null; }
     console.log('[Artha] Scheduler shut down.');
   }
 
   // ── CRUD helpers (used by IPC handlers) ──────────────────────────────────
 
-  /** Return all tasks ordered newest-first (both enabled and disabled). */
-  list(): ScheduledTask[] {
-    return getDb().prepare(`SELECT * FROM scheduled_tasks ORDER BY created_at DESC`).all() as ScheduledTask[];
+  /** Strip the webhook secret before a row leaves the main process. */
+  private toPublic(t: ScheduledTask): PublicTask {
+    const { webhook_token, ...rest } = t;
+    return { ...rest, has_webhook_token: !!webhook_token };
   }
 
-  /** Persist a new task row and immediately schedule it. */
-  create(input: TaskInput): ScheduledTask {
+  /** Return all tasks ordered newest-first (both enabled and disabled). */
+  list(): PublicTask[] {
+    return (getDb().prepare(`SELECT * FROM scheduled_tasks ORDER BY created_at DESC`).all() as ScheduledTask[])
+      .map(t => this.toPublic(t));
+  }
+
+  /** Persist a new task row and immediately schedule it. Rejects too-frequent schedules. */
+  create(input: TaskInput): PublicTask {
+    const check = validateSchedule(input.cron);
+    if (!check.ok) throw new Error(check.reason);
     const db = getDb();
     const id = crypto.randomUUID();
     db.prepare(`
-      INSERT INTO scheduled_tasks (task_id, name, prompt, cron, fire_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, input.name, input.prompt, input.cron ?? null, input.fire_at ?? null);
-    const task = db.prepare(`SELECT * FROM scheduled_tasks WHERE task_id=?`).get(id) as ScheduledTask;
+      INSERT INTO scheduled_tasks (task_id, name, prompt, cron, fire_at, notify)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, input.name, input.prompt, input.cron ?? null, input.fire_at ?? null, normalizeNotifyPolicy(input.notify));
+    const task = this.store.get(id)!;
     this.scheduleTask(task);
-    return task;
+    return this.toPublic(task);
   }
 
   /** Merge a partial patch over an existing task row and re-schedule it if
    *  still enabled. `is_enabled` can be passed directly (int 0/1) for internal
-   *  toggle/disable-after-fire use. */
-  update(taskId: string, patch: Partial<TaskInput> & { is_enabled?: number }): ScheduledTask {
-    const db = getDb();
-    const existing = db.prepare(`SELECT * FROM scheduled_tasks WHERE task_id=?`).get(taskId) as ScheduledTask | undefined;
+   *  toggle use. Re-enabling clears pause/hold state and the failure streak. */
+  update(taskId: string, patch: Partial<TaskInput> & { is_enabled?: number }): PublicTask {
+    const existing = this.store.get(taskId);
     if (!existing) throw new Error(`Task ${taskId} not found`);
 
     const merged = {
@@ -251,31 +414,169 @@ export class SchedulerService {
       cron: patch.cron !== undefined ? patch.cron : existing.cron,
       fire_at: patch.fire_at !== undefined ? patch.fire_at : existing.fire_at,
       is_enabled: patch.is_enabled !== undefined ? patch.is_enabled : existing.is_enabled,
+      notify: patch.notify !== undefined ? normalizeNotifyPolicy(patch.notify) : existing.notify,
     };
-    db.prepare(`
-      UPDATE scheduled_tasks SET name=?, prompt=?, cron=?, fire_at=?, is_enabled=? WHERE task_id=?
-    `).run(merged.name, merged.prompt, merged.cron, merged.fire_at, merged.is_enabled, taskId);
+    if (merged.is_enabled) {
+      const check = validateSchedule(merged.cron);
+      if (!check.ok) throw new Error(check.reason);
+    }
+    const resuming = merged.is_enabled === 1 && !existing.is_enabled;
+    this.store.patch(taskId, {
+      ...merged,
+      ...(resuming ? { pause_reason: null, consecutive_failures: 0, on_hold: 0, hold_reason: null } : {}),
+    });
 
-    const updated = db.prepare(`SELECT * FROM scheduled_tasks WHERE task_id=?`).get(taskId) as ScheduledTask;
+    const updated = this.store.get(taskId)!;
     this.cancelTask(taskId);
     if (updated.is_enabled) this.scheduleTask(updated);
-    return updated;
+    return this.toPublic(updated);
   }
 
-  /** Cancel the in-memory job and delete the DB row permanently. */
+  /** Cancel the in-memory job and delete the DB row (and its history) permanently. */
   remove(taskId: string): void {
     this.cancelTask(taskId);
     getDb().prepare(`DELETE FROM scheduled_tasks WHERE task_id=?`).run(taskId);
+    getDb().prepare(`DELETE FROM task_executions WHERE task_id=?`).run(taskId);
   }
 
   /** Convenience wrapper: enable or disable a task by boolean. */
-  toggle(taskId: string, enabled: boolean): ScheduledTask {
+  toggle(taskId: string, enabled: boolean): PublicTask {
     return this.update(taskId, { is_enabled: enabled ? 1 : 0 });
+  }
+
+  /** "Run now" from the inbox — same unattended path as a scheduled fire. */
+  async runNow(taskId: string): Promise<{ started: boolean; reason?: string }> {
+    if (!this.runTask) return { started: false, reason: 'Scheduler is not ready yet.' };
+    if (!this.store.get(taskId)) return { started: false, reason: 'Unknown task.' };
+    if (this.engine.isRunning(taskId)) return { started: false, reason: 'A run is already in progress.' };
+    void this.engine.fire(taskId, { trigger: 'manual' });
+    return { started: true };
+  }
+
+  /** Set or clear the watched folder. The folder must exist and be inside an attached scope. */
+  setFolderTrigger(taskId: string, folder: string | null): PublicTask {
+    const task = this.store.get(taskId);
+    if (!task) throw new Error(`Task ${taskId} not found`);
+    if (folder) {
+      if (!isFolderWithinScopes(folder, attachedScopeFolders())) {
+        throw new Error(`"${folder}" is not inside a folder you've attached to Artha. Attach it to a chat first.`);
+      }
+      if (!fs.existsSync(folder)) throw new Error(`Folder not found: ${folder}`);
+    }
+    this.store.patch(taskId, { watch_folder: folder || null, on_hold: 0, hold_reason: null });
+    const updated = this.store.get(taskId)!;
+    this.cancelTask(taskId);
+    if (updated.is_enabled) this.scheduleTask(updated);
+    return this.toPublic(updated);
+  }
+
+  /**
+   * Turn the local webhook on (mints a fresh per-task token, returned ONCE so
+   * the user can copy it) or off (token destroyed — later POSTs are rejected).
+   */
+  setWebhook(taskId: string, enabled: boolean): { task: PublicTask; token: string | null; path: string } {
+    if (!this.store.get(taskId)) throw new Error(`Task ${taskId} not found`);
+    const token = enabled ? generateWebhookToken() : null;
+    this.store.patch(taskId, { webhook_enabled: enabled ? 1 : 0, webhook_token: token });
+    return { task: this.toPublic(this.store.get(taskId)!), token, path: `/hooks/tasks/${taskId}` };
+  }
+
+  /**
+   * Entry point for the LAN server's POST /hooks/tasks/:id route. Fails closed:
+   * no task / webhook off / no token / bad token → rejected and nothing runs.
+   */
+  handleWebhook(taskId: string, presentedToken: string | null | undefined): { status: number; body: Record<string, unknown> } {
+    const auth = authorizeWebhook(this.store.get(taskId), presentedToken);
+    if (!auth.ok) return { status: auth.status, body: { error: auth.reason } };
+    if (!this.runTask) return { status: 503, body: { error: 'Scheduler is not ready.' } };
+    if (this.engine.isRunning(taskId)) return { status: 409, body: { error: 'A run is already in progress.' } };
+    void this.engine.fire(taskId, { trigger: 'webhook', context: 'Triggered by a local webhook.' });
+    return { status: 202, body: { accepted: true } };
+  }
+
+  // ── Inbox (task_executions) ───────────────────────────────────────────────
+
+  /** Most recent executions across all tasks, newest first. */
+  listExecutions(limit = 50, taskId?: string): TaskExecution[] {
+    const lim = Math.max(1, Math.min(200, Math.floor(limit)));
+    const where = taskId ? 'WHERE e.task_id=?' : '';
+    return getDb().prepare(
+      `SELECT e.exec_id, e.task_id, t.name AS task_name, e.status, e.trigger_kind, e.started_at, e.ended_at,
+              e.run_id, e.summary, e.is_read, e.fail_reason
+         FROM task_executions e LEFT JOIN scheduled_tasks t ON t.task_id = e.task_id
+         ${where} ORDER BY e.started_at DESC, e.rowid DESC LIMIT ${lim}`
+    ).all(...(taskId ? [taskId] : [])) as TaskExecution[];
+  }
+
+  /** Number of finished, unread executions (the inbox badge). */
+  unreadCount(): number {
+    return (getDb().prepare(`SELECT COUNT(*) AS n FROM task_executions WHERE is_read=0 AND status<>'running'`).get() as { n: number }).n;
+  }
+
+  /** Mark one execution (or all, when omitted) as read. */
+  markRead(execId?: string): void {
+    if (execId) getDb().prepare(`UPDATE task_executions SET is_read=1 WHERE exec_id=?`).run(execId);
+    else getDb().prepare(`UPDATE task_executions SET is_read=1 WHERE is_read=0`).run();
+  }
+
+  /** Session id behind a run, so the inbox can open the run's chat. */
+  sessionForRun(runId: string): string | null {
+    const row = getDb().prepare(`SELECT session_id FROM agent_runs WHERE run_id=?`).get(runId) as { session_id: string } | undefined;
+    return row?.session_id ?? null;
   }
 
   // ── Private ──────────────────────────────────────────────────────────────
 
-  /** Wrap the runner with DB bookkeeping (last_run_at, last_status, run_count). */
+  /**
+   * Hold probes, cheapest first: a watched folder that vanished, a prompt that
+   * needs Google with no connected account, then model availability.
+   */
+  private async holdCheck(task: ScheduledTask): Promise<string | null> {
+    if (task.watch_folder && !fs.existsSync(task.watch_folder)) return `Folder missing: ${task.watch_folder}`;
+    if (this.probes.googleConnected && promptNeedsGoogle(task.prompt) && !this.probes.googleConnected()) {
+      return 'Needs re-auth: connect your Google account in Settings → Connections.';
+    }
+    if (this.probes.modelUnavailable) {
+      const reason = await this.probes.modelUnavailable();
+      if (reason) return `Model unavailable: ${reason}`;
+    }
+    return null;
+  }
+
+  /** Run the agent for one fire and project its REAL outcome (never "the promise resolved"). */
+  private async executeRun(task: ScheduledTask, opts: FireOptions): Promise<RunResult> {
+    if (!this.runTask) throw new Error('Scheduler is not ready.');
+    const prompt = opts.context ? `${task.prompt}\n\n(${opts.context})` : task.prompt;
+    const db = getDb();
+    const handle = await this.runTask(prompt, { scopeFolder: task.watch_folder ?? undefined });
+    // The executor returning proves NOTHING — every orchestrator failure
+    // path breaks rather than throws, so 'the promise resolved' was
+    // reported as success for stalls, cancellations, LLM errors,
+    // all-tools-failed runs, and plans that never executed at all
+    // (audit C2/S1-S3). Read the real outcome instead.
+    const sessionId = (handle as { sessionId?: string } | void)?.sessionId;
+    const outcome = this.readRunOutcome(db, sessionId);
+    return {
+      status: outcome.lastStatus as RunResult['status'],
+      runId: outcome.runId,
+      taskStatus: outcome.taskStatus,
+      detail: outcome.detail,
+      title: outcome.title,
+      summary: this.readRunSummary(db, sessionId) ?? outcome.detail,
+    };
+  }
+
+  /** The run's final agent message, flattened to one line (the inbox summary). */
+  private readRunSummary(db: ReturnType<typeof getDb>, sessionId: string | undefined): string | null {
+    if (!sessionId) return null;
+    const row = db.prepare(
+      `SELECT content FROM messages WHERE session_id=? AND sender_type='agent' AND content<>''
+        ORDER BY timestamp DESC, rowid DESC LIMIT 1`
+    ).get(sessionId) as { content: string } | undefined;
+    const line = row?.content.replace(/\s+/g, ' ').trim();
+    return line ? line.slice(0, 240) : null;
+  }
+
   /**
    * Read what ACTUALLY happened in the run this fire started, and project it
    * through the shared outcome function so the scheduler notification uses the
@@ -343,57 +644,5 @@ export class SchedulerService {
       : 'Artha — scheduled task ran, not verified';
 
     return { lastStatus, runId: row.run_id, taskStatus: outcome.taskStatus, detail: outcome.message, title };
-  }
-
-  private makeRunner(taskId: string, prompt: string): () => void {
-    return async () => {
-      const db = getDb();
-
-      // Overlap guard: without this, an hourly job whose run exceeds an hour
-      // starts a second concurrent run, double-counts run_count, and the two
-      // last_status writes race — one run's 'error' silently overwritten by
-      // the other's 'ok' (audit §5.4).
-      if (this.inFlight.has(taskId)) {
-        console.warn(`[Artha] Scheduled task ${taskId} skipped: previous run still in flight.`);
-        return;
-      }
-      this.inFlight.add(taskId);
-
-      const now = Math.floor(Date.now() / 1000);
-      db.prepare(`UPDATE scheduled_tasks SET last_run_at=?, last_status='running', run_count=run_count+1 WHERE task_id=?`)
-        .run(now, taskId);
-
-      try {
-        const taskRow = db.prepare(`SELECT name FROM scheduled_tasks WHERE task_id=?`).get(taskId) as { name: string } | undefined;
-        const label = taskRow?.name ?? prompt.slice(0, 60);
-        const handle = await this.runTask!(prompt);
-
-        // The executor returning proves NOTHING — every orchestrator failure
-        // path breaks rather than throws, so 'the promise resolved' was
-        // reported as success for stalls, cancellations, LLM errors,
-        // all-tools-failed runs, and plans that never executed at all
-        // (audit C2/S1-S3). Read the real outcome instead.
-        const outcome = this.readRunOutcome(db, (handle as { sessionId?: string } | void)?.sessionId);
-        db.prepare(`UPDATE scheduled_tasks SET last_status=?, last_run_id=?, last_outcome=?, last_detail=? WHERE task_id=?`)
-          .run(outcome.lastStatus, outcome.runId, outcome.taskStatus, outcome.detail, taskId);
-        sendNotification(outcome.title, `${label} — ${outcome.detail}`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[Artha] Scheduled task ${taskId} failed:`, msg);
-        db.prepare(`UPDATE scheduled_tasks SET last_status='error', last_outcome='failed', last_detail=? WHERE task_id=?`)
-          .run(msg.slice(0, 300), taskId);
-        const nameRow = db.prepare(`SELECT name FROM scheduled_tasks WHERE task_id=?`).get(taskId) as { name?: string } | undefined;
-        sendNotification('Artha — scheduled task failed', `${nameRow?.name ?? prompt.slice(0, 60)} — ${msg.slice(0, 120)}`);
-      } finally {
-        this.inFlight.delete(taskId);
-      }
-
-      // One-shot tasks: disable after firing so they don't re-trigger.
-      const row = db.prepare(`SELECT cron FROM scheduled_tasks WHERE task_id=?`).get(taskId) as { cron: string | null } | undefined;
-      if (!row?.cron) {
-        db.prepare(`UPDATE scheduled_tasks SET is_enabled=0 WHERE task_id=?`).run(taskId);
-        this.cancelTask(taskId);
-      }
-    };
   }
 }

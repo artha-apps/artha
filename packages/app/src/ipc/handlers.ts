@@ -370,6 +370,29 @@ async function startLanServer(): Promise<{ running: boolean; url: string | null;
       return;
     }
 
+    // Local webhook trigger for a scheduled task: POST /hooks/tasks/:taskId
+    // with header `X-Artha-Task-Token: <per-task token>`. Authorised by the
+    // per-task secret (not a member API key) so simple local tools can call it;
+    // it fails CLOSED — webhook off, no token, or a mismatch runs nothing
+    // (SchedulerService.handleWebhook → authorizeWebhook). The run itself goes
+    // through the same unattended path as a cron fire.
+    const hookMatch = /^\/hooks\/tasks\/([A-Za-z0-9-]{1,64})$/.exec(url.pathname);
+    if (hookMatch) {
+      if (req.method !== 'POST') { json(405, { error: 'Use POST.' }); return; }
+      const clientIp = req.socket.remoteAddress ?? 'unknown';
+      if (!lanChatLimiter.take(`hook:${clientIp}`)) {
+        json(429, { error: 'Too many requests. Slow down and retry shortly.' });
+        return;
+      }
+      const header = req.headers['x-artha-task-token'];
+      const token = Array.isArray(header) ? header[0] : header;
+      const result = SchedulerService.getInstance().handleWebhook(hookMatch[1], token);
+      // Drain (and ignore) any body so the socket closes cleanly.
+      req.resume();
+      json(result.status, result.body);
+      return;
+    }
+
     // All other routes require a valid Bearer token if any keys exist. The
     // resolved identity is captured for future per-member context; admin-only
     // routes (none yet in Phase 1) will require `role === 'admin'` when
@@ -2515,6 +2538,33 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('scheduler:remove', (_e, taskId: string) => {
     sched.remove(taskId);
     return true;
+  });
+
+  // ── Scheduler v2: inbox, Run now, triggers, notify policy, task files ────
+  ipcMain.handle('scheduler:executions', (_e, limit?: number, taskId?: string) =>
+    sched.listExecutions(limit ?? 50, taskId));
+  ipcMain.handle('scheduler:unreadCount', () => sched.unreadCount());
+  ipcMain.handle('scheduler:markRead', (_e, execId?: string) => { sched.markRead(execId); return true; });
+  ipcMain.handle('scheduler:runNow', (_e, taskId: string) => {
+    if (!currentEntitlements().scheduler) {
+      throw new Error('Scheduled tasks require a Personal (or higher) license — subscribe at artha.space/subscribe.');
+    }
+    return sched.runNow(taskId);
+  });
+  ipcMain.handle('scheduler:sessionForRun', (_e, runId: string) => sched.sessionForRun(runId));
+  ipcMain.handle('scheduler:setNotify', (_e, taskId: string, notify: string) =>
+    sched.update(taskId, { notify: notify as TaskInput['notify'] }));
+  ipcMain.handle('scheduler:setFolderTrigger', (_e, taskId: string, folder: string | null) =>
+    sched.setFolderTrigger(taskId, folder));
+  ipcMain.handle('scheduler:pickFolder', async () => {
+    const r = await dialog.showOpenDialog(window, { properties: ['openDirectory'] });
+    return r.canceled ? null : (r.filePaths[0] ?? null);
+  });
+  ipcMain.handle('scheduler:setWebhook', (_e, taskId: string, enabled: boolean) => {
+    const res = sched.setWebhook(taskId, enabled);
+    const lan = lanStatus();
+    // The webhook only listens while the LAN server is running.
+    return { ...res, url: lan.url ? `${lan.url}${res.path}` : null, lanRunning: lan.running };
   });
 
   // ── Artifacts ─────────────────────────────────────────────────────────────
