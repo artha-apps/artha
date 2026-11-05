@@ -677,6 +677,19 @@ export async function initDatabase(): Promise<void> {
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- Append-only per-run event timeline (agent/runEvents.ts). seq is
+    -- monotonic per run starting at 1; the composite PK both orders replay
+    -- and rejects a duplicate seq. Lets a reloaded renderer resubscribe from
+    -- the last seq it saw. Never used to decide task completion.
+    CREATE TABLE IF NOT EXISTS run_events (
+      run_id       TEXT NOT NULL,
+      seq          INTEGER NOT NULL,
+      ts           INTEGER NOT NULL,
+      kind         TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT 'null',
+      PRIMARY KEY (run_id, seq)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_source ON agent_tasks(source_type, source_id);
     CREATE INDEX IF NOT EXISTS idx_criteria_task ON task_acceptance_criteria(task_id);
     CREATE INDEX IF NOT EXISTS idx_evidence_task ON task_evidence(task_id);

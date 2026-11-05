@@ -105,6 +105,13 @@ import {
   type ParsedEntry,
 } from '../tools/memoryImport';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
+import { listActiveRuns, listRunEvents } from '../agent/runEvents';
+import { createRunSubscriptions } from '../agent/runEventIpc';
+
+/** Process-wide run:subscribe registry, keyed by webContents id + run id. */
+const runSubscriptions = createRunSubscriptions();
+/** webContents ids whose teardown hooks are already attached (attach once). */
+const runSubscribedClients = new Set<number>();
 
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
 // IPC channel shares the same ReAct loop and in-flight workflow map.
@@ -771,6 +778,39 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean) => {
     orchestrator.respondToolApproval(approvalId, approved);
   });
+
+  // ── Run event log (agent/runEvents.ts) ───────────────────────────────────
+  // run:subscribe replays a run's persisted events after `fromSeq`, then
+  // streams live ones on the `run:event` channel to the calling webContents —
+  // so a reloaded renderer resumes from its last seq without gaps or repeats.
+  // Read-only: subscribing never changes run state.
+  ipcMain.handle('run:subscribe', (e, runId: string, fromSeq?: number) => {
+    if (typeof runId !== 'string' || !runId) return { ok: false, error: 'runId required' };
+    const wc = e.sender;
+    if (!runSubscribedClients.has(wc.id)) {
+      runSubscribedClients.add(wc.id);
+      // A reload/destroy tears down this webContents' streams; the fresh page
+      // resubscribes from the lastSeq it kept.
+      const drop = (): void => { runSubscriptions.unsubscribeClient(wc.id); runSubscribedClients.delete(wc.id); };
+      wc.once('destroyed', drop);
+      // Full main-frame navigation (reload) only — in-page hash routing keeps
+      // the page and its subscriptions alive.
+      wc.on('did-start-navigation', (_ev: unknown, _url: unknown, isInPlace: boolean, isMainFrame: boolean) => {
+        if (isMainFrame && !isInPlace) runSubscriptions.unsubscribeClient(wc.id);
+      });
+    }
+    runSubscriptions.subscribe(wc.id, runId, Number(fromSeq) || 0, (msg) => {
+      if (wc.isDestroyed()) throw new Error('webContents destroyed');
+      wc.send('run:event', msg);
+    });
+    return { ok: true };
+  });
+  ipcMain.handle('run:unsubscribe', (e, runId: string) => ({ ok: runSubscriptions.unsubscribe(e.sender.id, runId) }));
+  // Runs currently executing — lets a reloaded renderer find what to resume.
+  ipcMain.handle('run:active', (_e, sessionId?: string) => listActiveRuns(sessionId));
+  // One-shot page of persisted events (timeline views, debugging).
+  ipcMain.handle('run:events', (_e, runId: string, fromSeq?: number, limit?: number) =>
+    listRunEvents(runId, Number(fromSeq) || 0, Number(limit) || 500));
 
   // ── Tool-call policies (governance for function calling) ─────────────────
   // CRUD over per-tool trust tiers evaluated before every function call.
