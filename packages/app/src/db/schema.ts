@@ -677,6 +677,18 @@ export async function initDatabase(): Promise<void> {
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- Per-app desktop-control grants (desktop/appGrants.ts). One row = "Artha
+    -- may drive app_id for subject until expires_at". subject is
+    -- 'session:<id>' (Once) or 'project:<id>' (Always for this project).
+    -- Expired rows are ignored on read; there is no implicit forever grant.
+    CREATE TABLE IF NOT EXISTS app_grants (
+      app_id      TEXT NOT NULL,
+      subject     TEXT NOT NULL,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at  INTEGER NOT NULL,
+      PRIMARY KEY (app_id, subject)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_source ON agent_tasks(source_type, source_id);
     CREATE INDEX IF NOT EXISTS idx_criteria_task ON task_acceptance_criteria(task_id);
     CREATE INDEX IF NOT EXISTS idx_evidence_task ON task_evidence(task_id);
