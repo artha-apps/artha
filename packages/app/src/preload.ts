@@ -33,6 +33,32 @@ export interface ModelStatus {
   ollamaInstalled?: boolean;
 }
 
+/** A queued outbox message as the renderer sees it. Mirrors `OutboxItem`
+ *  in agent/outbox.ts (kept local: preload must not import main-process DB code). */
+export interface OutboxItemView {
+  id: string;
+  sessionId: string;
+  position: number;
+  status: 'ready' | 'sending' | 'editing' | 'sent' | 'cancelled';
+  content: string;
+  attachments: { name: string; mime: string; data: string }[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A session's outbox state: pending items in send order plus pause/steer
+ *  flags. pausedReason 'cancel' ⇒ the UI shows "Queue paused after cancel". */
+export interface OutboxSnapshot {
+  sessionId: string;
+  items: OutboxItemView[];
+  paused: boolean;
+  pausedReason: 'user' | 'cancel' | null;
+  /** Item ids waiting to be injected at the next tool-call boundary. */
+  steering: string[];
+  /** Whether a run is in flight in the session (per the main process). */
+  active: boolean;
+}
+
 /** A parsed Bring-Your-Own-Memory entry, exchanged with the BYOM importer.
  *  Mirrors `ParsedEntry` in `tools/memoryImport.ts`. */
 export interface MemoryImportEntry {
@@ -293,6 +319,46 @@ const api = {
   // Goal-driven execution surface. `run` hands a goal to Bodhi, which routes it
   // to a capability and executes it through the orchestrator, returning the
   // final output + artifacts. `steps` reads a Task's step trace for progress.
+  /** Outbox — type while Artha works. Messages queued during an active run are
+   *  sent one at a time when it ends (paused after a cancel, held while an
+   *  approval is pending); "steer" injects one at the next tool-call boundary. */
+  outbox: {
+    list: (sessionId: string) =>
+      ipcRenderer.invoke('outbox:list', sessionId) as Promise<OutboxSnapshot>,
+    enqueue: (sessionId: string, content: string, attachments?: { name: string; mime: string; data: string }[]) =>
+      ipcRenderer.invoke('outbox:enqueue', sessionId, content, attachments) as Promise<{ item: OutboxItemView; snapshot: OutboxSnapshot }>,
+    reorder: (sessionId: string, orderedIds: string[]) =>
+      ipcRenderer.invoke('outbox:reorder', sessionId, orderedIds) as Promise<OutboxSnapshot>,
+    edit: (itemId: string, patch: { content?: string; editing?: boolean }) =>
+      ipcRenderer.invoke('outbox:edit', itemId, patch) as Promise<OutboxSnapshot | null>,
+    cancel: (itemId: string) =>
+      ipcRenderer.invoke('outbox:cancel', itemId) as Promise<OutboxSnapshot | null>,
+    pause: (sessionId: string) =>
+      ipcRenderer.invoke('outbox:pause', sessionId) as Promise<OutboxSnapshot>,
+    resume: (sessionId: string) =>
+      ipcRenderer.invoke('outbox:resume', sessionId) as Promise<OutboxSnapshot>,
+    steer: (itemId: string) =>
+      ipcRenderer.invoke('outbox:steer', itemId) as Promise<{ ok: boolean; snapshot: OutboxSnapshot | null }>,
+    /** Queue/pause state changed for a session. */
+    onUpdated: (cb: (snap: OutboxSnapshot) => void) => {
+      const h = (_e: unknown, snap: OutboxSnapshot) => cb(snap);
+      ipcRenderer.on('outbox:updated', h);
+      return () => { ipcRenderer.removeListener('outbox:updated', h); };
+    },
+    /** A queued item left the queue: mode 'drain' = new turn, 'steer' = injected into the live run. */
+    onSent: (cb: (ev: { sessionId: string; item: OutboxItemView; mode: 'drain' | 'steer' }) => void) => {
+      const h = (_e: unknown, ev: { sessionId: string; item: OutboxItemView; mode: 'drain' | 'steer' }) => cb(ev);
+      ipcRenderer.on('outbox:sent', h);
+      return () => { ipcRenderer.removeListener('outbox:sent', h); };
+    },
+    /** A drained turn failed to start/finish with an error. */
+    onTurnFailed: (cb: (ev: { sessionId: string; itemId: string; error: string }) => void) => {
+      const h = (_e: unknown, ev: { sessionId: string; itemId: string; error: string }) => cb(ev);
+      ipcRenderer.on('outbox:turnFailed', h);
+      return () => { ipcRenderer.removeListener('outbox:turnFailed', h); };
+    },
+  },
+
   delegate: {
     /** Non-blocking: kick off a goal, get back the Task id to poll. */
     // `mode` = optional permission mode for the task (ask | accept_edits | auto).

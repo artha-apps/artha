@@ -46,6 +46,7 @@ import { rewindRunToStep } from '../agent/checkpoints';
 import { listInterruptedRuns, getInterruptedRun, markInterruptedRun, buildResumePrompt } from '../agent/resume';
 import { refreshKeepAwake, readKeepAwakeSettings } from '../system/keepAwake';
 import type { SqlDb } from '../db/sqlLike';
+import * as outboxStore from '../agent/outbox';
 import { globalSearch } from '../search/global';
 import { getBriefing, markBriefingSeen } from '../briefing/briefing';
 import { spawnEnv } from '../system/nodePath';
@@ -807,6 +808,65 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('agent:clarifyRespond', (_e, workflowId: string, answers: string[] | null) => {
     orchestrator.clarifyRespond(workflowId, answers);
+  });
+
+  // ── Outbox (type while Artha works) ──────────────────────────────────────
+  // Queue messages while a run is active; the orchestrator's OutboxDriver
+  // drains them one at a time when the run ends (never after a cancel, never
+  // past a pending approval) or injects one at a tool-call boundary on steer.
+  // Every mutating handler returns the session's fresh snapshot.
+  ipcMain.handle('outbox:list', (_e, sessionId: string) => orchestrator.outbox.snapshot(sessionId));
+
+  ipcMain.handle('outbox:enqueue', (_e, sessionId: string, content: string, attachments?: outboxStore.OutboxAttachment[]) => {
+    const item = outboxStore.enqueue(sessionId, content, attachments ?? null);
+    // If no run is actually active (e.g. it ended while the user typed), the
+    // driver sends it right away — the queue never strands a message.
+    void orchestrator.outbox.tryDrain(sessionId);
+    orchestrator.outbox.notify(sessionId);
+    return { item, snapshot: orchestrator.outbox.snapshot(sessionId) };
+  });
+
+  ipcMain.handle('outbox:reorder', (_e, sessionId: string, orderedIds: string[]) => {
+    outboxStore.reorder(sessionId, Array.isArray(orderedIds) ? orderedIds : []);
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:edit', (_e, itemId: string, patch: { content?: string; editing?: boolean }) => {
+    const item = outboxStore.edit(itemId, patch ?? {});
+    const sessionId = item?.sessionId ?? outboxStore.getItem(itemId)?.sessionId;
+    if (!sessionId) return null;
+    // Saving an edit may unblock a drain that skipped the held item.
+    if (item?.status === 'ready') void orchestrator.outbox.tryDrain(sessionId);
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:cancel', (_e, itemId: string) => {
+    const sessionId = outboxStore.getItem(itemId)?.sessionId;
+    outboxStore.cancel(itemId);
+    if (!sessionId) return null;
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:pause', (_e, sessionId: string) => {
+    outboxStore.pause(sessionId, 'user');
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:resume', (_e, sessionId: string) => {
+    outboxStore.resume(sessionId);
+    void orchestrator.outbox.tryDrain(sessionId);
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:steer', async (_e, itemId: string) => {
+    const ok = await orchestrator.outbox.requestSteer(itemId);
+    const sessionId = outboxStore.getItem(itemId)?.sessionId;
+    return { ok, snapshot: sessionId ? orchestrator.outbox.snapshot(sessionId) : null };
   });
 
   // Per-tool-call approval (policy `confirm` tier). The renderer answers the

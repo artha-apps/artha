@@ -20,6 +20,7 @@ import { normalizeProviderIds } from '../llm/providerKind';
 import { ensureDefaultProfile } from '../llm/profiles';
 import type { SqlDb } from './sqlLike';
 import { INTERACTIONS_TABLE_SQL } from './interactionsTable';
+import { OUTBOX_SCHEMA_SQL } from './outboxSchema';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
 let db: Database.Database | null = null;
@@ -855,6 +856,8 @@ export async function initDatabase(): Promise<void> {
   // Unified human-in-the-loop frame (agent/interactions.ts). DDL lives in its
   // own module so tests run the identical CREATE TABLE IF NOT EXISTS.
   db.exec(INTERACTIONS_TABLE_SQL);
+  // Outbox (type while Artha works) — DDL shared with the vitest suites.
+  db.exec(OUTBOX_SCHEMA_SQL);
 
   console.log('[Artha] Database schema ready at', dbPath);
 }
@@ -1331,6 +1334,31 @@ export function runMigrations(): void {
     if (r.changes > 0) console.log(`[Artha] expired ${r.changes} orphaned interaction(s).`);
   } catch (err) {
     console.warn('[Artha] interaction reconciliation skipped:', err);
+  }
+
+  // Migration v25→v26 (Outbox): per-session pause flag for the outbox queue.
+  // outbox_paused=1 holds queued messages (user Pause, or automatically after
+  // the user cancels a run); outbox_paused_reason says why ('user'|'cancel').
+  try {
+    const cols = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
+    if (cols.length && !cols.some(c => c.name === 'outbox_paused')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN outbox_paused INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (cols.length && !cols.some(c => c.name === 'outbox_paused_reason')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN outbox_paused_reason TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] chat_sessions outbox_paused migration skipped:', err);
+  }
+
+  // An item left 'sending' by an app quit mid-hand-off was never confirmed
+  // persisted as a user turn by this process — return it to 'ready' so it is
+  // not silently lost. (The flip to 'sent' happens right after the message row
+  // is written, so the window is tiny.)
+  try {
+    db.prepare(`UPDATE outbox SET status='ready', updated_at=unixepoch() WHERE status IN ('sending','editing')`).run();
+  } catch (err) {
+    console.warn('[Artha] outbox reconciliation skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');
