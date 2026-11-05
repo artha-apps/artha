@@ -56,10 +56,11 @@ import { resolveAgentRoute, agentRouteInput } from '../router/agentRouter';
 import { ensureAgentModel } from '../router/modelProvisioner';
 import { selectToolsForRun } from '../mcp/toolBudget';
 import { nextEscalation, escalationLadder } from './escalation';
-import { decideAutoApprove } from './autoApprove';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
-import { evaluatePolicy } from '../bodhi/policy';
+import { evaluatePolicy, isAlwaysConfirmTool } from '../bodhi/policy';
+import { decideToolCall, decidePlanGate, defaultModeFor, getSessionMode, modeRequiresPlanApproval, resolveEffectiveMode } from './modes';
+import { addGrant, getGrantStore, DEFAULT_GRANT_TTL_SECONDS } from '../bodhi/grants';
 import { recordReceipt, RECEIPT_MUTATION_TOOLS, type ReceiptStatus } from '../bodhi/receipts';
 import {
   isSubcapabilityTool,
@@ -157,6 +158,9 @@ export interface ToolApprovalRequest {
   argsPreview: string;
   /** Note from the policy rule that triggered this prompt. */
   note: string;
+  /** Whether the modal may offer "Always allow (30 days)". False for the
+   *  always-confirm floor (email_send), which keeps asking every time. */
+  allowAlways?: boolean;
 }
 
 // ── Anti-hallucination tracker ───────────────────────────────────────────────
@@ -231,7 +235,11 @@ export class AgentOrchestrator {
   /** Pending per-tool-call approvals (policy `confirm` tier), keyed by approvalId.
    *  The workflowId is kept so cancelWorkflow() can promptly deny any approval
    *  the user is mid-decision on when they hit Stop. */
-  private toolApprovalResolvers = new Map<string, { workflowId: string; resolve: (approved: boolean) => void }>();
+  private toolApprovalResolvers = new Map<string, { workflowId: string; resolve: (approved: boolean, always?: boolean) => void }>();
+  /** Workflows whose plan the user explicitly approved on the plan card. Plan
+   *  mode unlocks state-changing tools only for these; auto mode lets a delete
+   *  that was in an approved plan run without a second prompt. */
+  private userApprovedWorkflows = new Set<string>();
 
   constructor(window: BrowserWindow) {
     this.window = window;
@@ -389,14 +397,16 @@ export class AgentOrchestrator {
       return;
     }
 
-    if (plan.requiresApproval) {
+    // Permission mode (agent/modes.ts) for the plan gate. Plan mode shows the
+    // plan card for EVERY plan; the per-call gate keeps it read-only until then.
+    const planMode = getSessionMode(sessionId) ?? defaultModeFor(this.userSettings().autonomousActions as boolean | undefined);
+    if (plan.requiresApproval || modeRequiresPlanApproval(planMode)) {
       // Reversible plans run without a modal (agent/autoApprove.ts); the user
       // reviews the outcome with Undo instead of the intent with a click.
-      // Deletes and anything not provably reversible still ask.
-      const auto = decideAutoApprove({
-        autonomous: this.userSettings().autonomousActions as boolean | undefined,
-        blast: plan.blastRadius,
-      });
+      // Deletes and anything not provably reversible still ask. Ask and plan
+      // modes always show the card (decidePlanGate). With no stored mode the
+      // default comes from autonomousActions, so this is today's behaviour.
+      const auto = decidePlanGate(planMode, plan.blastRadius);
       if (!auto.auto) {
         db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
           .run(JSON.stringify(plan.steps), workflowId);
@@ -622,9 +632,9 @@ ${envBlock}`,
 
   /** Called by the IPC handler when the user approves or denies a policy-gated
    *  tool call (the `confirm` tier). Resolves the awaiting ReAct loop. */
-  respondToolApproval(approvalId: string, approved: boolean): void {
+  respondToolApproval(approvalId: string, approved: boolean, always = false): void {
     const entry = this.toolApprovalResolvers.get(approvalId);
-    if (entry) entry.resolve(approved);
+    if (entry) entry.resolve(approved, always);
   }
 
   /** Emit a tool-approval request to the renderer and block until the user
@@ -640,8 +650,11 @@ ${envBlock}`,
     /** When set, the request and the answer are recorded as `interaction`
      *  run events (the stall watchdog pauses while one is pending). */
     runId?: string;
+    /** Offer "Always allow (30 days)". Never for the always-confirm floor. */
+    allowAlways?: boolean;
   }): Promise<boolean> {
     const approvalId = crypto.randomUUID();
+    const allowAlways = !!req.allowAlways && !isAlwaysConfirmTool(req.toolName);
     if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'request', approvalId, toolName: req.toolName, note: req.note });
     this.emit('agent:toolApprovalRequest', {
       approvalId,
@@ -650,15 +663,54 @@ ${envBlock}`,
       toolName: req.toolName,
       argsPreview: JSON.stringify(req.args, null, 2).slice(0, 800),
       note: req.note,
+      allowAlways,
     } satisfies ToolApprovalRequest);
     return Promise.race([
-      new Promise<boolean>(resolve => { this.toolApprovalResolvers.set(approvalId, { workflowId: req.workflowId, resolve }); }),
+      new Promise<boolean>(resolve => {
+        this.toolApprovalResolvers.set(approvalId, {
+          workflowId: req.workflowId,
+          resolve: (approved, always) => {
+            // "Always allow" records an expiring tool grant so the same tool
+            // stops asking (bodhi/grants.ts). Only when offered and approved.
+            if (approved && always && allowAlways) this.recordStandingGrant(req.sessionId, req.toolName);
+            resolve(approved);
+          },
+        });
+      }),
       new Promise<boolean>(resolve => setTimeout(() => resolve(false), 120_000)),
     ]).then(approved => {
       // Logging only — the decision itself (including fail-closed timeout) is unchanged.
       if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'response', approvalId, approved });
       return approved;
     }).finally(() => this.toolApprovalResolvers.delete(approvalId));
+  }
+
+  /** Grant subjects that apply to a run in this session, most specific first.
+   *  LAN runs get none — a teammate's request never rides the host's grants. */
+  private grantSubjects(sessionId: string, lan: boolean): string[] {
+    if (lan) return [];
+    const subjects = [`session:${sessionId}`];
+    const projectId = this.getSessionProjectId(sessionId);
+    if (projectId) subjects.push(`project:${projectId}`);
+    subjects.push('global');
+    return subjects;
+  }
+
+  /** Persist an "Always allow (30 days)" answer as a tool grant, scoped to the
+   *  chat's project when it has one, otherwise global. Never throws. */
+  private recordStandingGrant(sessionId: string, toolName: string): void {
+    if (isAlwaysConfirmTool(toolName)) return; // the floor is never granted from the modal
+    try {
+      const projectId = this.getSessionProjectId(sessionId);
+      addGrant({
+        scopeKind: 'tool',
+        scopeValue: toolName,
+        subject: projectId ? `project:${projectId}` : 'global',
+        ttlSeconds: DEFAULT_GRANT_TTL_SECONDS,
+      });
+    } catch (err) {
+      console.warn('[Artha] recording standing grant failed:', err);
+    }
   }
 
   /** Ask the LLM whether a goal needs clarification.
@@ -749,6 +801,8 @@ or
       this.emit('agent:streamEnd');
       return;
     }
+    // The user approved THIS plan — plan mode unlocks changes for it.
+    this.userApprovedWorkflows.add(workflowId);
     await this.executePlan(plan);
   }
 
@@ -1496,6 +1550,18 @@ RULES — follow exactly, no exceptions:
     // the filesystem tools to them (hard sandbox) and default generated docs to
     // the primary folder. Empty roots ⇒ unscoped chat, historical behaviour.
     const allowedRoots = getSessionAllowedRoots(args.sessionId);
+
+    // Permission mode for this run (agent/modes.ts). A LAN or scheduled run is
+    // always 'unattended', whatever the chat's stored mode says.
+    const gateRc = getRunContext();
+    const gateUnattended = !!gateRc?.lan || !!gateRc?.unattended;
+    const permissionMode = resolveEffectiveMode(
+      getSessionMode(args.sessionId),
+      this.userSettings().autonomousActions as boolean | undefined,
+      gateRc,
+    );
+    const grantSubjects = this.grantSubjects(args.sessionId, !!gateRc?.lan);
+    const rootPaths = (allowedRoots ?? []).map(r => r.path);
     const fsCtx: ToolContext = {
       allowedRoots,
       primaryDir: getSessionPrimaryFolder(args.sessionId),
@@ -1685,39 +1751,56 @@ RULES — follow exactly, no exceptions:
           // approval; auto runs silently. Local-first — rules never leave the
           // device. (See bodhi/policy.ts.)
           const decision = evaluatePolicy(toolCall.function.name, parsedArgs, { allowedRoots });
+          // Permission-mode gate (agent/modes.ts). Order: forbid > always-
+          // confirm floor (email_send) > dry_run > mode rules > active grant >
+          // the policy tier. It never returns 'ask' for an unattended run —
+          // that becomes 'block', so nothing hangs on a modal nobody sees.
+          const gate = await decideToolCall({
+            toolName: toolCall.function.name,
+            args: parsedArgs,
+            mode: permissionMode,
+            policy: decision,
+            isFloor: isAlwaysConfirmTool(toolCall.function.name),
+            attended: !gateUnattended,
+            roots: rootPaths,
+            planApproved: this.userApprovedWorkflows.has(args.workflowId),
+            subjects: grantSubjects,
+            connector: this.registry.serverForTool(toolCall.function.name)?.id,
+            grants: getGrantStore(),
+          });
           let receiptStatus: ReceiptStatus = 'ok';
           let policyHandled = false;
-          if (decision.tier === 'forbid') {
+          if (gate.action === 'block' && gate.source === 'policy-forbid') {
             toolResult = `Error: Blocked by your tool policy${decision.matchedPattern ? ` (rule "${decision.matchedPattern}")` : ''} — this call was not executed.${decision.note ? ` ${decision.note}` : ''}`;
             toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
-          } else if (decision.tier === 'dry_run') {
+          } else if (gate.action === 'dry_run') {
             toolResult = `Dry run (policy): would call ${toolCall.function.name} with ${JSON.stringify(parsedArgs)}. It was NOT executed — describe this to the user as a preview of what would happen.`;
             receiptStatus = 'skipped'; policyHandled = true;
-          } else if (decision.tier === 'confirm') {
-            // Confirm needs a human to answer. Only truly unattended runs — LAN
-            // requests and scheduled tasks (which set rc.unattended, see
-            // main.ts) — fail closed. NOTE: `silent` does NOT mean unattended:
-            // Delegate and sub-capability runs are silent (fast model, no verbose
-            // streaming) but a desktop user IS watching and can approve via the
-            // app-level ToolApprovalModal. Treating silent as unattended blocked
-            // email_send in Delegate — the exact "it won't send" bug.
-            const rc = getRunContext();
-            const unattended = !!rc?.lan || !!rc?.unattended;
-            if (unattended) {
-              toolResult = `Error: ${toolCall.function.name} needs interactive approval (policy rule "${decision.matchedPattern}") but this run is unattended, so it was blocked.`;
+          } else if (gate.action === 'block') {
+            // Mode block (e.g. plan mode before approval) or an ask that nobody
+            // can answer (unattended). Not executed; the model is told why so
+            // the run reports it instead of claiming the step happened.
+            toolResult = `Error: ${toolCall.function.name} was not executed — ${gate.reason}`;
+            toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
+          } else if (gate.action === 'ask') {
+            // Confirm needs a human to answer; decideToolCall already turned
+            // asks on unattended runs (LAN / scheduled) into blocks. NOTE:
+            // `silent` does NOT mean unattended — Delegate runs are silent but
+            // a desktop user approves via the app-level ToolApprovalModal.
+            const approved = await this.requestToolApproval({
+              workflowId: args.workflowId, sessionId: args.sessionId,
+              toolName: toolCall.function.name, args: parsedArgs,
+              note: decision.note || gate.reason,
+              allowAlways: gate.source !== 'floor',
+              runId: args.runId,
+            });
+            if (!approved) {
+              toolResult = `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
               toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
-            } else {
-              const approved = await this.requestToolApproval({
-                workflowId: args.workflowId, sessionId: args.sessionId,
-                toolName: toolCall.function.name, args: parsedArgs, note: decision.note,
-                runId: args.runId,
-              });
-              if (!approved) {
-                toolResult = `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
-                toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
-              }
-              // approved → fall through to normal execution below.
             }
+            // approved → fall through to normal execution below.
+          } else if (gate.source === 'grant') {
+            emit('agent:status', gate.reason);
           }
 
           if (!policyHandled) {

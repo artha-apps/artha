@@ -329,6 +329,23 @@ export async function initDatabase(): Promise<void> {
       created_at  INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- ── Standing grants (expiring "always allow" answers) ───────────────────
+    -- One row per "Always allow" decision (see bodhi/grants.ts). scope_kind +
+    -- scope_value say WHAT is allowed (a tool name, a host, a folder, an app,
+    -- a connector); subject says WHERE (session:<id> | project:<id> |
+    -- schedule:<id> | global). expires_at NULL = no expiry. revoke_gen > 0 =
+    -- revoked (kept for the audit trail). Expired/revoked rows never match.
+    CREATE TABLE IF NOT EXISTS grants (
+      id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      scope_kind  TEXT NOT NULL CHECK(scope_kind IN ('tool','host','folder','app','connector')),
+      scope_value TEXT NOT NULL,
+      subject     TEXT NOT NULL,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at  INTEGER,
+      revoke_gen  INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_grants_subject ON grants(subject, revoke_gen);
+
     -- ── Verified tool receipts (provenance for function calls) ──────────────
     -- One row per tool call (including policy-blocked / dry-run calls). Carries
     -- a plain-English effect, a content hash of the result, the governing policy
@@ -1244,6 +1261,18 @@ export function runMigrations(): void {
     if (r.changes > 0) console.log(`[Artha] reconciled ${r.changes} interrupted scheduled task(s).`);
   } catch (err) {
     console.warn('[Artha] scheduled task reconciliation skipped:', err);
+  }
+
+  // Migration v25→v26: per-session permission mode (agent/modes.ts). NULL =
+  // "use the default derived from the autonomousActions setting", so existing
+  // chats keep exactly their current behaviour.
+  try {
+    const cols = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
+    if (cols.length && !cols.some(c => c.name === 'permission_mode')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN permission_mode TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] chat_sessions permission_mode migration skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

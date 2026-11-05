@@ -20,6 +20,7 @@ import DelegateTaskInput from './DelegateTaskInput';
 import DelegateProgressTimeline from './DelegateProgressTimeline';
 import DelegatePlanView from './DelegatePlanView';
 import DelegateResultView from './DelegateResultView';
+import DelegateModeSelector from './DelegateModeSelector';
 
 export default function DelegateTab() {
   const {
@@ -46,6 +47,9 @@ export default function DelegateTab() {
   if (status === 'idle') {
     return (
       <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-8 pt-4 flex justify-end">
+          <DelegateModeSelector />
+        </div>
         <DelegateTaskInput onSubmit={submit} />
         {tasks.length > 0 && (
           <div className="max-w-2xl mx-auto px-8 pb-10">

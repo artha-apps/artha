@@ -10,9 +10,13 @@
  *
  * The exact arguments are shown verbatim so you can see precisely what would
  * happen (which file, which URL) before it does.
+ *
+ * "Always allow (30 days)" (shown only when the orchestrator offers it — never
+ * for the always-confirm floor such as email_send) approves this call AND
+ * records an expiring grant for the tool, revocable in Settings → Grants.
  */
 import { useEffect, useState } from 'react';
-import { ShieldQuestion, Check, X, Wrench, Code2, SlidersHorizontal } from 'lucide-react';
+import { ShieldQuestion, Check, X, Wrench, Code2, SlidersHorizontal, CalendarClock } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
 /** Map common tool-arg keys to friendly labels so non-technical users can read
@@ -62,12 +66,13 @@ export default function ToolApprovalModal() {
 
   if (!pendingToolApproval) return null;
 
-  const { approvalId, toolName, argsPreview, note } = pendingToolApproval;
+  const { approvalId, toolName, argsPreview, note, allowAlways } = pendingToolApproval;
 
-  /** Dismiss first for instant feedback, then answer over IPC. */
-  const respond = (approved: boolean) => {
+  /** Dismiss first for instant feedback, then answer over IPC. `always` asks
+   *  the orchestrator to record a 30-day grant for this tool. */
+  const respond = (approved: boolean, always = false) => {
     setPendingToolApproval(null);
-    window.artha.agent.respondToolApproval(approvalId, approved);
+    window.artha.agent.respondToolApproval(approvalId, approved, always);
   };
 
   /** Stepping away to manage rules means skipping this specific call (the safe
@@ -150,6 +155,17 @@ export default function ToolApprovalModal() {
             <Check size={15} /> Approve & Run
           </button>
         </div>
+        {allowAlways && (
+          <div className="px-5 -mt-2 pb-3">
+            <button
+              onClick={() => respond(true, true)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg border border-artha-border hover:border-artha-accent/50 text-xs text-artha-text transition-colors"
+              title={`Run ${toolName} without asking for the next 30 days. Revoke any time in Settings → Grants.`}
+            >
+              <CalendarClock size={13} className="text-artha-accent" /> Always allow (30 days)
+            </button>
+          </div>
+        )}
         <div className="flex items-center justify-between px-5 pb-4 -mt-1">
           <button
             onClick={reviewPolicies}

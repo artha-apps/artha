@@ -94,6 +94,8 @@ export interface ToolApprovalRequest {
   toolName: string;
   argsPreview: string;
   note: string;
+  /** True when the modal may offer "Always allow (30 days)" (never for email_send). */
+  allowAlways?: boolean;
 }
 
 /** A run-level failure surfaced inline in the thread (and as a toast). `retry`
@@ -140,7 +142,7 @@ export interface SessionScope {
  *  the Workspace Settings modal scoped to that panel. Keeping the union lets
  *  legacy call-sites (`setActiveView('models')`) deep-link into the modal
  *  without changing their signature. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'crm' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license' | 'guide' | 'about' | 'policies' | 'receipts';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'crm' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license' | 'guide' | 'about' | 'policies' | 'receipts' | 'grants';
 
 /** Top-level rooms inside the Chat view. Tab selection persists in
  *  localStorage so reloads land where you left off.

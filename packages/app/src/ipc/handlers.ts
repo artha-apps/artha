@@ -61,6 +61,8 @@ import { usableApiKey } from '../llm/client';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
+import { listGrants, revokeGrant } from '../bodhi/grants';
+import { getSessionMode, setSessionMode, isPermissionMode, defaultModeFor, type PermissionMode } from '../agent/modes';
 import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { deriveDelegateOutcome } from '../bodhi/delegateOutcome';
 import { recordAcceptance } from '../bodhi/acceptance';
@@ -576,6 +578,12 @@ function stopLanServer(): { running: boolean; url: string | null; localIp: strin
  *
  * Must be called exactly once, after the BrowserWindow is created.
  */
+/** Modes the Delegate header may set on a task session (plan and unattended
+ *  are excluded: Delegate approves plans itself; unattended is runtime-only). */
+function isDelegateMode(m: unknown): m is 'ask' | 'accept_edits' | 'auto' {
+  return isPermissionMode(m) && m !== 'plan' && m !== 'unattended';
+}
+
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
 
@@ -775,8 +783,34 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   // Per-tool-call approval (policy `confirm` tier). The renderer answers the
   // `agent:toolApprovalRequest` event with the user's decision.
-  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean) => {
-    orchestrator.respondToolApproval(approvalId, approved);
+  // `always` = the user picked "Always allow (30 days)"; the orchestrator
+  // records a tool grant only when the modal offered it.
+  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean, always?: boolean) => {
+    orchestrator.respondToolApproval(approvalId, approved, always === true);
+  });
+
+  // ── Standing grants ("Always allow") ─────────────────────────────────────
+  // Listed (active, expired and revoked) in Settings; revoke is immediate —
+  // the next tool call no longer matches the grant.
+  ipcMain.handle('grants:list', () => listGrants());
+  ipcMain.handle('grants:revoke', (_e, id: string) => typeof id === 'string' && revokeGrant(id));
+
+  // ── Per-chat permission mode (agent/modes.ts) ────────────────────────────
+  // getMode returns the stored mode plus the default it falls back to, so the
+  // header selector can show "Auto (default)". setMode(null) clears it.
+  ipcMain.handle('session:getMode', (_e, sessionId: string) => {
+    let autonomous: boolean | undefined;
+    try {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+      autonomous = (JSON.parse(row?.settings_json ?? '{}') as { autonomousActions?: boolean }).autonomousActions;
+    } catch { /* default */ }
+    const stored = getSessionMode(sessionId);
+    const fallback = defaultModeFor(autonomous);
+    return { mode: stored ?? fallback, stored, defaultMode: fallback };
+  });
+  ipcMain.handle('session:setMode', (_e, sessionId: string, mode: PermissionMode | null) => {
+    if (mode !== null && !isPermissionMode(mode)) throw new Error('Invalid permission mode');
+    return setSessionMode(sessionId, mode);
   });
 
   // ── Run event log (agent/runEvents.ts) ───────────────────────────────────
@@ -870,13 +904,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // run off in the background, and return the run id immediately. The renderer
   // polls `delegate:status` instead of blocking on the whole run — so long tasks
   // are observable (and don't hang the UI at "reviewing").
-  ipcMain.handle('delegate:start', async (_e, goal: string) => {
+  ipcMain.handle('delegate:start', async (_e, goal: string, mode?: PermissionMode | null) => {
     const db = getDb();
     const sessionId = crypto.randomUUID();
     const title = `Delegate: ${goal.slice(0, 38)}${goal.length > 38 ? '…' : ''}`;
     // origin='delegate' keeps this task's backing session out of the Chat sidebar.
     db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'delegate')`).run(sessionId, title);
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, goal);
+    // Optional permission mode from the Delegate header. Plan mode is not
+    // accepted here — Delegate has its own plan approval before start.
+    if (isDelegateMode(mode)) setSessionMode(sessionId, mode);
 
     // Delegate runs in Operator mode: instead of advising, the agent ACTS — it
     // drives the browser, hands control back for login when needed, and finishes
