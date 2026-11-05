@@ -75,7 +75,9 @@ export class OutboxDriver {
       this.notify(sessionId);
       return;
     }
-    void this.tryDrain(sessionId);
+    // Nothing drained ⇒ still tell the renderer the run is over, so the
+    // composer flips Queue back to Send.
+    void this.tryDrain(sessionId).then(item => { if (!item) this.notify(sessionId); });
   }
 
   /** Send the next ready item as a new turn if nothing blocks it. Returns the

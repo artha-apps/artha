@@ -230,4 +230,11 @@ describe('OutboxDriver', () => {
     expect(injectSteerAtBoundary(driver, 's1', messages)).toEqual([]);
     expect(messages).toHaveLength(5);
   });
+
+  it('a run ending with an empty queue still notifies active=false', async () => {
+    const run = startUserRun();
+    run.finish(); await tick();
+    const last = events.filter(e => e.channel === 'outbox:updated').pop()?.payload as { active: boolean } | undefined;
+    expect(last?.active).toBe(false);
+  });
 });
