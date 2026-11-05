@@ -242,6 +242,13 @@ export class MCPRegistry {
       .map(c => ({ id: c.id, name: c.name, tools: c.tools }));
   }
 
+  /** Servers currently quarantined (read-only; used by the Doctor report). */
+  getQuarantinedServers(): { id: string; name: string; failures: number }[] {
+    return Array.from(this.connections.values())
+      .filter(c => c.quarantined)
+      .map(c => ({ id: c.id, name: c.name, failures: c.failures }));
+  }
+
   /** Which connected server owns `toolName` (undefined for built-ins). */
   serverForTool(toolName: string): { id: string; name: string } | undefined {
     for (const c of this.connections.values()) {
