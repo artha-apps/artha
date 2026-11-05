@@ -919,13 +919,37 @@ const api = {
   // orchestrator with its stored prompt in an isolated session.
   scheduler: {
     list: () => ipcRenderer.invoke('scheduler:list'),
-    create: (input: { name: string; prompt: string; cron?: string; fire_at?: number }) =>
+    create: (input: { name: string; prompt: string; cron?: string; fire_at?: number; notify?: 'always' | 'on_change' | 'on_failure' }) =>
       ipcRenderer.invoke('scheduler:create', input),
     update: (taskId: string, patch: { name?: string; prompt?: string; cron?: string; fire_at?: number }) =>
       ipcRenderer.invoke('scheduler:update', taskId, patch),
     toggle: (taskId: string, enabled: boolean) =>
       ipcRenderer.invoke('scheduler:toggle', taskId, enabled),
     remove: (taskId: string) => ipcRenderer.invoke('scheduler:remove', taskId),
+    // ── v2: Scheduler inbox + triggers ──
+    /** Recent task_executions (newest first), optionally for one task. */
+    executions: (limit?: number, taskId?: string) => ipcRenderer.invoke('scheduler:executions', limit, taskId),
+    /** Finished, unread executions — the inbox badge. */
+    unreadCount: () => ipcRenderer.invoke('scheduler:unreadCount') as Promise<number>,
+    /** Mark one execution read, or all when execId is omitted. */
+    markRead: (execId?: string) => ipcRenderer.invoke('scheduler:markRead', execId),
+    /** Fire a task now through the same unattended path as a scheduled run. */
+    runNow: (taskId: string) => ipcRenderer.invoke('scheduler:runNow', taskId) as Promise<{ started: boolean; reason?: string }>,
+    /** Resolve a run id to its chat session (to open the run). */
+    sessionForRun: (runId: string) => ipcRenderer.invoke('scheduler:sessionForRun', runId) as Promise<string | null>,
+    setNotify: (taskId: string, notify: 'always' | 'on_change' | 'on_failure') =>
+      ipcRenderer.invoke('scheduler:setNotify', taskId, notify),
+    /** Watch a folder (must be inside an attached scope) — null clears it. */
+    setFolderTrigger: (taskId: string, folder: string | null) =>
+      ipcRenderer.invoke('scheduler:setFolderTrigger', taskId, folder),
+    pickFolder: () => ipcRenderer.invoke('scheduler:pickFolder') as Promise<string | null>,
+    /** Save a task as a Markdown task file; resolves to the path or null if cancelled. */
+    exportFile: (taskId: string) => ipcRenderer.invoke('scheduler:exportFile', taskId) as Promise<string | null>,
+    /** Pick a Markdown task file and create a task from it (null if cancelled). */
+    importFile: () => ipcRenderer.invoke('scheduler:importFile'),
+    /** Enable (mints a token, shown once) or disable the local webhook. */
+    setWebhook: (taskId: string, enabled: boolean) =>
+      ipcRenderer.invoke('scheduler:setWebhook', taskId, enabled) as Promise<{ token: string | null; path: string; url: string | null; lanRunning: boolean }>,
   },
 
   // ── Browser (co-piloted BrowserView) ─────────────────────────────────────

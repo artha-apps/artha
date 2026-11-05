@@ -13,7 +13,7 @@
  * The single-instance lock at the bottom ensures only one Artha window can run
  * at a time; a second launch attempt brings the existing window to focus.
  */
-import { app, BrowserWindow, shell, dialog } from 'electron';
+import { app, BrowserWindow, shell, dialog, powerMonitor } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
 import { registerIpcHandlers } from './ipc/handlers';
@@ -161,7 +161,7 @@ async function createWindow(): Promise<void> {
 
   // Initialise the scheduler after IPC handlers are ready (orchestrator is live).
   // The runner creates a fresh session per task so scheduled runs are isolated.
-  SchedulerService.getInstance().init(async (prompt: string) => {
+  SchedulerService.getInstance().init(async (prompt: string, opts?: { scopeFolder?: string }) => {
     const { getDb } = await import('./db/schema');
     const db = getDb();
     const sessionId = crypto.randomUUID();
@@ -169,19 +169,55 @@ async function createWindow(): Promise<void> {
     // title-prefix heuristic (and stay out of the normal chat sidebar).
     db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'scheduled')`)
       .run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
+    // Folder-triggered runs are confined to the watched folder: attaching it
+    // as the session's only scope makes the file tools enforce that boundary.
+    if (opts?.scopeFolder) {
+      db.prepare(`INSERT OR IGNORE INTO session_scopes (session_id, path, kind) VALUES (?, ?, 'folder')`)
+        .run(sessionId, opts.scopeFolder);
+    }
     // Dynamically import to avoid circular deps — orchestrator is already constructed by registerIpcHandlers.
     const { AgentOrchestrator } = await import('./agent/orchestrator');
     const { runWithContext } = await import('./agent/runContext');
     const orch = new AgentOrchestrator(mainWindow!);
     // Mark the run unattended so a `confirm`-tier tool policy fails closed
     // instead of popping a desktop modal nobody is watching at fire time.
+    // EVERY automation trigger (cron, catch-up, folder, webhook, Run now)
+    // comes through this one runner, so none can bypass it.
     await runWithContext({ actor: 'scheduler', lan: false, unattended: true }, () =>
       orch.handleMessage(sessionId, prompt),
     );
     // Hand the session back so the scheduler can read the run's REAL outcome
     // instead of inferring success from "the promise resolved".
     return { sessionId };
+  }, {
+    // Hold probes: a run that cannot succeed is put on hold BEFORE it starts.
+    googleConnected: () => {
+      try {
+        const row = getDb().prepare(`SELECT refresh_token FROM oauth_tokens WHERE provider='google'`).get() as { refresh_token: string | null } | undefined;
+        return !!row?.refresh_token;
+      } catch { return false; }
+    },
+    modelUnavailable: async () => {
+      const { resolveTransport } = await import('./llm/client');
+      const { isModelInstalled } = await import('./llm/ollamaPull');
+      let t: { baseUrl: string; model: string };
+      try { t = resolveTransport(getDb(), undefined, 'agent'); } catch { return 'no model is configured.'; }
+      // Only local Ollama models are probed; cloud endpoints are assumed reachable.
+      if (!/localhost:11434|127\.0\.0\.1:11434/.test(t.baseUrl)) return null;
+      const installed = await Promise.race([
+        isModelInstalled(t.model).catch(() => false),
+        new Promise<boolean>(r => setTimeout(() => r(false), 5000)),
+      ]);
+      return installed
+        ? null : `the local model "${t.model}" is not running or not installed.`;
+    },
   }).catch(err => console.error('[Artha] Scheduler init failed:', err));
+
+  // Missed-run catch-up on wake: a slot that passed while the machine slept
+  // runs once, late; then every task is re-armed from "now".
+  powerMonitor.on('resume', () => {
+    void SchedulerService.getInstance().handleWake().catch(err => console.error('[Artha] Scheduler wake failed:', err));
+  });
 
   // Load renderer
   if (isDev) {
