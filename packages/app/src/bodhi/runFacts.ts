@@ -66,7 +66,10 @@ export interface EvidenceInput {
   taskId?: string | null;
   runId: string;
   criterionId?: string | null;
-  kind: 'tool_result' | 'file' | 'artifact' | 'external_action' | 'test' | 'receipt' | 'model_assessment';
+  /** `false_completion_attempt`: the run tried to finish while its goal's
+   *  independent check was not `met` (bodhi/goalEvaluator.ts). */
+  kind: 'tool_result' | 'file' | 'artifact' | 'external_action' | 'test' | 'receipt' | 'model_assessment'
+    | 'false_completion_attempt';
   ref?: string | null;
   status: 'succeeded' | 'failed' | 'partial' | 'unknown';
   summary?: string | null;
