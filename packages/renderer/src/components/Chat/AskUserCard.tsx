@@ -14,7 +14,7 @@ import {
 } from '../../lib/askCard';
 
 /** One pending ask_user interaction. */
-function AskUserCard({ interaction }: { interaction: PendingInteraction }) {
+function AskUserCard({ interaction, elsewhere }: { interaction: PendingInteraction; elsewhere?: boolean }) {
   const questions = questionsOf(interaction);
   const removeInteraction = useInteractionsStore(s => s.removeInteraction);
   const [drafts, setDrafts] = useState<Record<string, AskDraft>>(
@@ -40,6 +40,7 @@ function AskUserCard({ interaction }: { interaction: PendingInteraction }) {
       <div className="flex items-center gap-2 mb-3">
         <HelpCircle size={15} className="text-artha-accent" />
         <span className="font-semibold text-artha-text">Artha needs your input to continue</span>
+        {elsewhere && <span className="ml-auto text-[11px] text-artha-muted">from another task</span>}
       </div>
       <div className="space-y-4">
         {questions.map(q => {
@@ -106,16 +107,22 @@ function AskUserCard({ interaction }: { interaction: PendingInteraction }) {
   );
 }
 
-/** All pending ask_user cards, optionally limited to one chat session. */
+/** All pending ask_user cards. Every pending question is shown wherever the
+ *  user is — a run blocked on a hidden card would wait forever (parallel
+ *  sub-tasks and delegated runs use their own sessions). Cards from a session
+ *  other than `sessionId` are labelled so they are not mistaken for this chat. */
 export default function AskUserCards({ sessionId }: { sessionId?: string | null }) {
   const asks = useInteractionsStore(s => s.asks);
-  const visible = sessionId === undefined
-    ? asks
-    : asks.filter(a => a.payload?.sessionId === sessionId);
-  if (visible.length === 0) return null;
+  if (asks.length === 0) return null;
   return (
     <div className="space-y-3">
-      {visible.map(a => <AskUserCard key={a.id} interaction={a} />)}
+      {asks.map(a => (
+        <AskUserCard
+          key={a.id}
+          interaction={a}
+          elsewhere={sessionId !== undefined && a.payload?.sessionId !== sessionId}
+        />
+      ))}
     </div>
   );
 }
