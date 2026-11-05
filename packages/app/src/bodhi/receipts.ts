@@ -53,6 +53,9 @@ export interface ReceiptInput {
   tier: PolicyTier;
   isMutation: boolean;
   durationMs: number;
+  /** Optional caller-supplied effect text, used instead of describeEffect()
+   *  when the caller knows the precise reason (e.g. stopped_by_user). */
+  effect?: string;
 }
 
 /** Filesystem tools whose effect is worth describing in concrete before→after
@@ -120,7 +123,7 @@ export const RECEIPT_MUTATION_TOOLS = new Set([
 /** Persist one receipt. Best-effort: a logging failure must never break a run. */
 export function recordReceipt(input: ReceiptInput): void {
   try {
-    const effect = describeEffect(input.toolName, input.args, input.result, input.status);
+    const effect = input.effect ?? describeEffect(input.toolName, input.args, input.result, input.status);
     const hash = input.status === 'ok' || input.status === 'error' ? hashResult(input.result) : '';
     getDb().prepare(`
       INSERT INTO tool_receipts

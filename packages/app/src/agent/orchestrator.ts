@@ -58,6 +58,10 @@ import { selectToolsForRun } from '../mcp/toolBudget';
 import { nextEscalation, escalationLadder } from './escalation';
 import { decideAutoApprove } from './autoApprove';
 import { noteDesktopControlActive } from '../controlOverlay';
+import { trackRun, wasStoppedByUser, getKillSwitch } from '../desktop/runtime';
+import { gateDesktopAction } from '../desktop/desktopGate';
+import { SqliteAppGrantStore, type GrantAnswer } from '../desktop/appGrants';
+import { resolveDesktopTargetApp } from '../tools/desktop';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
 import { evaluatePolicy } from '../bodhi/policy';
 import { recordReceipt, RECEIPT_MUTATION_TOOLS, type ReceiptStatus } from '../bodhi/receipts';
@@ -156,6 +160,16 @@ export interface ToolApprovalRequest {
   argsPreview: string;
   /** Note from the policy rule that triggered this prompt. */
   note: string;
+  /** Present when this is a per-app desktop-control grant prompt ("Allow
+   *  Artha to control {App}?"). The renderer then offers Once / Always for
+   *  this project / Deny and answers with `scope`. */
+  appGrant?: {
+    appName: string;
+    /** False when "Always" can't be offered (no project, deny-listed app). */
+    alwaysAllowed: boolean;
+    /** Deny-listed app (shell, settings, credential store) — always asks. */
+    alwaysConfirm: boolean;
+  };
 }
 
 // ── Anti-hallucination tracker ───────────────────────────────────────────────
@@ -231,6 +245,11 @@ export class AgentOrchestrator {
    *  The workflowId is kept so cancelWorkflow() can promptly deny any approval
    *  the user is mid-decision on when they hit Stop. */
   private toolApprovalResolvers = new Map<string, { workflowId: string; resolve: (approved: boolean) => void }>();
+  /** Scope the user picked on an app-grant prompt ('always' vs 'once'),
+   *  keyed by approvalId; read once the approval resolves. */
+  private approvalScopes = new Map<string, 'once' | 'always'>();
+  /** Per-app desktop-control grants (swappable store, see desktop/appGrants.ts). */
+  private appGrants = new SqliteAppGrantStore(() => getDb());
 
   constructor(window: BrowserWindow) {
     this.window = window;
@@ -621,9 +640,11 @@ ${envBlock}`,
 
   /** Called by the IPC handler when the user approves or denies a policy-gated
    *  tool call (the `confirm` tier). Resolves the awaiting ReAct loop. */
-  respondToolApproval(approvalId: string, approved: boolean): void {
+  respondToolApproval(approvalId: string, approved: boolean, scope?: 'once' | 'always'): void {
     const entry = this.toolApprovalResolvers.get(approvalId);
-    if (entry) entry.resolve(approved);
+    if (!entry) return;
+    if (approved && scope) this.approvalScopes.set(approvalId, scope);
+    entry.resolve(approved);
   }
 
   /** Emit a tool-approval request to the renderer and block until the user
@@ -636,8 +657,12 @@ ${envBlock}`,
     toolName: string;
     args: Record<string, unknown>;
     note: string;
+    appGrant?: ToolApprovalRequest['appGrant'];
+    /** Receives the approvalId so a caller can read the chosen scope. */
+    onId?: (approvalId: string) => void;
   }): Promise<boolean> {
     const approvalId = crypto.randomUUID();
+    req.onId?.(approvalId);
     this.emit('agent:toolApprovalRequest', {
       approvalId,
       workflowId: req.workflowId,
@@ -645,11 +670,33 @@ ${envBlock}`,
       toolName: req.toolName,
       argsPreview: JSON.stringify(req.args, null, 2).slice(0, 800),
       note: req.note,
+      ...(req.appGrant ? { appGrant: req.appGrant } : {}),
     } satisfies ToolApprovalRequest);
     return Promise.race([
       new Promise<boolean>(resolve => { this.toolApprovalResolvers.set(approvalId, { workflowId: req.workflowId, resolve }); }),
       new Promise<boolean>(resolve => setTimeout(() => resolve(false), 120_000)),
     ]).finally(() => this.toolApprovalResolvers.delete(approvalId));
+  }
+
+  /** Ask "Allow Artha to control {App}?" through the existing tool-approval
+   *  flow and map the answer to Once / Always / Deny. Timeout = Deny. */
+  private async requestAppGrant(req: {
+    workflowId: string; sessionId: string; toolName: string; args: Record<string, unknown>;
+    appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean;
+  }): Promise<GrantAnswer> {
+    let id = '';
+    const approved = await this.requestToolApproval({
+      workflowId: req.workflowId, sessionId: req.sessionId, toolName: req.toolName, args: req.args,
+      note: req.alwaysConfirm
+        ? `${req.appName} is sensitive (shell, settings or credentials), so Artha asks every time.`
+        : `Allow Artha to control ${req.appName}?`,
+      appGrant: { appName: req.appName, alwaysAllowed: req.alwaysAllowed, alwaysConfirm: req.alwaysConfirm },
+      onId: (x) => { id = x; },
+    });
+    const scope = this.approvalScopes.get(id);
+    this.approvalScopes.delete(id);
+    if (!approved) return 'deny';
+    return scope === 'always' && req.alwaysAllowed ? 'always' : 'once';
   }
 
   /** Ask the LLM whether a goal needs clarification.
@@ -1275,7 +1322,27 @@ RULES — follow exactly, no exceptions:
    *  Also owns the citation window for this workflow — every web/browser
    *  tool call appends citations that are drained + emitted alongside the
    *  final response. */
-  private async runReactLoop(args: {
+  private async runReactLoop(args: Parameters<AgentOrchestrator['runReactLoopInner']>[0]): Promise<void> {
+    // Register with the global kill switch for the loop's lifetime: the stop
+    // hotkey is held only while some run is active, and a press cancels this
+    // run through the same path as the chat's Stop button.
+    try {
+      const s = JSON.parse((getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json?: string } | undefined)?.settings_json ?? '{}');
+      if (typeof s.desktop_stop_shortcut === 'string' && s.desktop_stop_shortcut) getKillSwitch()?.setAccelerator(s.desktop_stop_shortcut);
+    } catch { /* settings are optional */ }
+    const untrack = trackRun({
+      workflowId: args.workflowId, runId: args.runId, sessionId: args.sessionId,
+      cancel: () => this.cancelWorkflow(args.workflowId),
+    });
+    try {
+      await this.runReactLoopInner(args);
+    } finally {
+      untrack();
+    }
+  }
+
+  /** The ReAct loop body (see runReactLoop for kill-switch tracking). */
+  private async runReactLoopInner(args: {
     workflowId: string;
     runId: string;
     sessionId: string;
@@ -1643,6 +1710,9 @@ RULES — follow exactly, no exceptions:
           // device. (See bodhi/policy.ts.)
           const decision = evaluatePolicy(toolCall.function.name, parsedArgs, { allowedRoots });
           let receiptStatus: ReceiptStatus = 'ok';
+          /** Overrides the receipt's generic effect text when we know better
+           *  (e.g. a desktop action skipped for lack of an app grant). */
+          let receiptEffect: string | undefined;
           let policyHandled = false;
           if (decision.tier === 'forbid') {
             toolResult = `Error: Blocked by your tool policy${decision.matchedPattern ? ` (rule "${decision.matchedPattern}")` : ''} — this call was not executed.${decision.note ? ` ${decision.note}` : ''}`;
@@ -1681,11 +1751,46 @@ RULES — follow exactly, no exceptions:
             if (isMemoryTool(toolCall.function.name)) {
               toolResult = invokeMemoryTool(toolCall.function.name, parsedArgs, args.sessionId);
             } else if (isDesktopTool(toolCall.function.name)) {
-              // Artha is about to drive the REAL cursor/keyboard — paint the
-              // full-screen "Artha is in control" overlay so the takeover is
-              // obvious. Auto-hides shortly after the last desktop action.
-              noteDesktopControlActive();
-              toolResult = await invokeDesktopTool(toolCall.function.name, parsedArgs);
+              // Per-app grant: resolve the app this action lands in and make
+              // sure the user has allowed Artha to control it (Once / Always
+              // for this project / Deny). Unattended runs skip and report.
+              const rcDesk = getRunContext();
+              const gate = await gateDesktopAction({
+                store: this.appGrants,
+                resolveApp: resolveDesktopTargetApp,
+                confirm: (q) => this.requestAppGrant({
+                  workflowId: args.workflowId, sessionId: args.sessionId,
+                  toolName: toolCall.function.name, args: parsedArgs,
+                  appName: q.appName, alwaysAllowed: q.alwaysAllowed,
+                  alwaysConfirm: q.reason === 'always_confirm',
+                }),
+                nowSec: () => Math.floor(Date.now() / 1000),
+              }, {
+                toolName: toolCall.function.name, args: parsedArgs,
+                sessionId: args.sessionId, projectId: this.getSessionProjectId(args.sessionId),
+                unattended: !!rcDesk?.lan || !!rcDesk?.unattended,
+              });
+              if (!gate.proceed) {
+                toolResult = gate.message;
+                toolStatus = 'error';
+                receiptStatus = gate.status;
+                receiptEffect = gate.status === 'skipped'
+                  ? `Skipped — ${gate.appName} not approved for desktop control (unattended run)`
+                  : `Blocked — user did not allow control of ${gate.appName}`;
+                // An unattended skip is a refusal, not a tool failure: count it
+                // with blocked calls so the run's honest status says so.
+                if (gate.status === 'skipped') toolCallsBlocked++;
+              } else if (isCancelled()) {
+                // Stop arrived while the grant prompt was open — don't act.
+                toolResult = 'Error: stopped_by_user — the user stopped Artha before this desktop action ran.';
+                toolStatus = 'error'; receiptStatus = 'blocked'; receiptEffect = 'Stopped by user — not executed.';
+              } else {
+                // Artha is about to drive the REAL cursor/keyboard — paint the
+                // full-screen "Artha is in control" overlay so the takeover is
+                // obvious. Auto-hides shortly after the last desktop action.
+                noteDesktopControlActive();
+                toolResult = await invokeDesktopTool(toolCall.function.name, parsedArgs);
+              }
             } else if (isSubcapabilityTool(toolCall.function.name)) {
               // Composable sub-capability: delegate a self-contained step to a
               // trusted capability whose tool scope is clamped to this loop's own
@@ -1790,6 +1895,7 @@ RULES — follow exactly, no exceptions:
             tier: decision.tier,
             isMutation: RECEIPT_MUTATION_TOOLS.has(toolCall.function.name),
             durationMs: Date.now() - toolStart,
+            effect: receiptEffect,
           });
 
           try {
@@ -2037,7 +2143,21 @@ RULES — follow exactly, no exceptions:
             });
           }
         } catch { /* bookkeeping must never break a run */ }
-        if (sendUnfulfilled) {
+        if (isCancelled() || wasStoppedByUser(args.workflowId)) {
+          // The user hit Stop (chat button or global kill switch) while the
+          // final turn was in flight. A stopped run is NEVER completed, even if
+          // the model produced a wrap-up — record it as cancelled.
+          this.cancelledWorkflows.delete(args.workflowId);
+          db.prepare(`UPDATE agent_runs SET status='cancelled' WHERE run_id=?`).run(args.runId);
+          db.prepare(`UPDATE agent_states SET status='cancelled' WHERE workflow_id=?`).run(args.workflowId);
+          terminalOutcome = 'cancelled';
+          persistRunFacts(db, args.runId, {
+            outcome: 'cancelled', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: wasStoppedByUser(args.workflowId) ? 'stopped_by_user' : 'cancelled_by_user',
+          });
+        } else if (sendUnfulfilled) {
           // A requested send never happened — this is NOT a completion. Report
           // it honestly so Delegate can't show a green "completed".
           db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);

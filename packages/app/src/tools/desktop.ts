@@ -13,6 +13,7 @@
  */
 import OpenAI from 'openai';
 import { desktopCapturer } from 'electron';
+import { desktopActionQueue, StoppedByUserError, STOPPED_BY_USER, type ActionControl } from '../desktop/actionQueue';
 
 export const DESKTOP_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
   {
@@ -174,12 +175,67 @@ function resolveKeys(nut: any, combo: string): unknown[] {
   }).filter((k): k is unknown => k !== undefined);
 }
 
+/** Characters typed per chunk; the kill switch is checked between chunks so a
+ *  long `desktop_type` halts promptly instead of finishing the paragraph. */
+const TYPE_CHUNK = 16;
+
+/** Name of the app most recently launched via desktop_open_app — a fallback
+ *  target when the frontmost app can't be queried. */
+let lastOpenedApp: string | null = null;
+
+/**
+ * Resolve the app a desktop action will land in, for the per-app grant check
+ * (desktop/appGrants.ts). desktop_open_app targets the app being opened; every
+ * other action targets the frontmost app (macOS System Events). Returns null
+ * when the app can't be determined — the gate then treats it as unknown and
+ * asks (fail closed).
+ */
+export async function resolveDesktopTargetApp(name: string, args: Record<string, unknown>): Promise<string | null> {
+  if (name === 'desktop_open_app') {
+    const app = String(args.appName ?? '').trim();
+    return app || null;
+  }
+  if (process.platform === 'darwin') {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const { stdout } = await promisify(execFile)('osascript', [
+        '-e', 'tell application "System Events" to get name of first application process whose frontmost is true',
+      ], { timeout: 3000 });
+      const app = stdout.trim();
+      if (app) return app;
+    } catch { /* fall through */ }
+  }
+  return lastOpenedApp;
+}
+
+/** Map a thrown error to the string the ReAct loop sees. A kill-switch stop is
+ *  reported with the machine-readable `stopped_by_user` reason. */
+function errorResult(err: unknown): string {
+  if (err instanceof StoppedByUserError) {
+    return `Error: ${STOPPED_BY_USER} — the user pressed the stop shortcut. This desktop action was stopped (if it had already started, its effect is unknown). Do not retry.`;
+  }
+  return `Error: ${err instanceof Error ? err.message : String(err)}`;
+}
+
 /**
  * Dispatch a desktop tool call. All errors are caught and returned as
  * `"Error: ..."` strings rather than thrown, so the ReAct loop can relay the
  * message to the model and retry or gracefully stop without crashing.
+ *
+ * Every call runs through the serial `desktopActionQueue`, so the global kill
+ * switch can reject queued actions and stop the in-flight one.
  */
 export async function invokeDesktopTool(name: string, args: Record<string, unknown>): Promise<string> {
+  try {
+    return await desktopActionQueue.enqueue((ctl) => runDesktopTool(name, args, ctl));
+  } catch (err) {
+    return errorResult(err);
+  }
+}
+
+/** The actual nut-js / Electron work for one desktop tool call. */
+async function runDesktopTool(name: string, args: Record<string, unknown>, ctl: ActionControl): Promise<string> {
   try {
     switch (name) {
       case 'desktop_screenshot': {
@@ -205,7 +261,10 @@ export async function invokeDesktopTool(name: string, args: Record<string, unkno
       case 'desktop_type': {
         const nut = await loadNut();
         const text = String(args.text ?? '');
-        await nut.keyboard.type(text);
+        for (let i = 0; i < text.length; i += TYPE_CHUNK) {
+          if (ctl.isStopped()) throw new StoppedByUserError();
+          await nut.keyboard.type(text.slice(i, i + TYPE_CHUNK));
+        }
         return `Typed ${text.length} character${text.length === 1 ? '' : 's'}.`;
       }
 
@@ -274,6 +333,7 @@ export async function invokeDesktopTool(name: string, args: Record<string, unkno
         const { execFile } = await import('child_process');
         const { promisify } = await import('util');
         await promisify(execFile)('open', ['-a', appName]);
+        lastOpenedApp = appName;
         return `Opened "${appName}".`;
       }
 
@@ -281,6 +341,8 @@ export async function invokeDesktopTool(name: string, args: Record<string, unkno
         return `Unknown desktop tool: ${name}`;
     }
   } catch (err) {
-    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    // Let a stop propagate so the queue rejects the caller with stopped_by_user.
+    if (err instanceof StoppedByUserError || ctl.isStopped()) throw new StoppedByUserError();
+    return errorResult(err);
   }
 }
