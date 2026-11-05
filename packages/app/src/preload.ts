@@ -227,7 +227,8 @@ const api = {
   // final output + artifacts. `steps` reads a Task's step trace for progress.
   delegate: {
     /** Non-blocking: kick off a goal, get back the Task id to poll. */
-    start: (goal: string) => ipcRenderer.invoke('delegate:start', goal) as Promise<{
+    // `mode` = optional permission mode for the task (ask | accept_edits | auto).
+    start: (goal: string, mode?: 'ask' | 'accept_edits' | 'auto' | null) => ipcRenderer.invoke('delegate:start', goal, mode ?? null) as Promise<{
       runId: string;
       sessionId: string;
       capability: string;

@@ -571,6 +571,12 @@ function stopLanServer(): { running: boolean; url: string | null; localIp: strin
  *
  * Must be called exactly once, after the BrowserWindow is created.
  */
+/** Modes the Delegate header may set on a task session (plan and unattended
+ *  are excluded: Delegate approves plans itself; unattended is runtime-only). */
+function isDelegateMode(m: unknown): m is 'ask' | 'accept_edits' | 'auto' {
+  return isPermissionMode(m) && m !== 'plan' && m !== 'unattended';
+}
+
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
 
@@ -858,13 +864,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // run off in the background, and return the run id immediately. The renderer
   // polls `delegate:status` instead of blocking on the whole run — so long tasks
   // are observable (and don't hang the UI at "reviewing").
-  ipcMain.handle('delegate:start', async (_e, goal: string) => {
+  ipcMain.handle('delegate:start', async (_e, goal: string, mode?: PermissionMode | null) => {
     const db = getDb();
     const sessionId = crypto.randomUUID();
     const title = `Delegate: ${goal.slice(0, 38)}${goal.length > 38 ? '…' : ''}`;
     // origin='delegate' keeps this task's backing session out of the Chat sidebar.
     db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'delegate')`).run(sessionId, title);
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, goal);
+    // Optional permission mode from the Delegate header. Plan mode is not
+    // accepted here — Delegate has its own plan approval before start.
+    if (isDelegateMode(mode)) setSessionMode(sessionId, mode);
 
     // Delegate runs in Operator mode: instead of advising, the agent ACTS — it
     // drives the browser, hands control back for login when needed, and finishes
