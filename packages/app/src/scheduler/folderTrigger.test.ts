@@ -4,6 +4,7 @@
  * is refused before any watcher starts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as path from 'path';
 import { FolderWatcher, startFolderTrigger, isIgnoredName, type FolderFs } from './folderTrigger';
 
 /** Fake fs: captures the watch listener so tests can emit events. */
@@ -14,7 +15,8 @@ function fakeFs(initial: string[]) {
   const impl: FolderFs = {
     watch: (_folder, l) => { listener = l; return { close: () => { closed.value = true; } }; },
     list: () => [...files],
-    exists: p => p === '/scope/inbox' || [...files].some(f => p.endsWith(`/${f}`)),
+    // Separator-agnostic: the watcher joins with path.join (backslashes on Windows).
+    exists: p => p === '/scope/inbox' || files.has(path.basename(p)),
   };
   const add = (name: string) => { files.add(name); listener?.('rename', name); };
   return { impl, add, emit: (n: string | null) => listener?.('rename', n), closed, watched: () => listener !== null };
