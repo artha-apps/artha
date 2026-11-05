@@ -26,6 +26,7 @@ import { getPackContextBlock, getPackSkillId } from './contextPacks';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
+import { noteRunStarted, noteRunEnded } from '../system/keepAwake';
 import { getRunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
 import { recordAcceptanceCriteria } from '../bodhi/criteria';
@@ -1275,7 +1276,19 @@ RULES — follow exactly, no exceptions:
    *  Also owns the citation window for this workflow — every web/browser
    *  tool call appends citations that are drained + emitted alongside the
    *  final response. */
-  private async runReactLoop(args: {
+  /** Run the ReAct loop while holding the keep-awake blocker (when the user
+   *  enabled it). The token is released in `finally`, so a throw, cancel or
+   *  timeout can never leave the machine pinned awake. */
+  private async runReactLoop(args: Parameters<AgentOrchestrator['runReactLoopInner']>[0]): Promise<void> {
+    const awake = noteRunStarted(args.runId);
+    try {
+      await this.runReactLoopInner(args);
+    } finally {
+      noteRunEnded(awake);
+    }
+  }
+
+  private async runReactLoopInner(args: {
     workflowId: string;
     runId: string;
     sessionId: string;
@@ -1623,7 +1636,8 @@ RULES — follow exactly, no exceptions:
             name: toolCall.function.name,
             args: toolCall.function.arguments,
           });
-          recordStep(stepIdx++, 'tool_call', {
+          const toolStepIdx = stepIdx++;
+          const toolStepId = recordStep(toolStepIdx, 'tool_call', {
             name: toolCall.function.name,
             args: toolCall.function.arguments,
             id: toolCall.id,
@@ -1698,7 +1712,11 @@ RULES — follow exactly, no exceptions:
                 depth,
               });
             } else {
-              toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs, fsCtx);
+              // Per-call identity: durable undo + file checkpoints are
+              // attributed to this exact step so a rewind can target it.
+              toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs, {
+                ...fsCtx, sessionId: args.sessionId, stepId: toolStepId, stepIdx: toolStepIdx,
+              });
             }
 
             // Self-correction: small models often pass a bare folder name
@@ -2452,15 +2470,18 @@ Rules:
       `INSERT INTO agent_steps (step_id, run_id, idx, kind, payload, messages_snapshot)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
+    // Returns the new step_id so a tool call can attribute its undo entry
+    // and file checkpoints to the exact step (rewindRunToStep target).
     return (
       idx: number,
       kind: string,
       payload: unknown,
       snapshot?: OpenAI.ChatCompletionMessageParam[]
-    ): void => {
+    ): string => {
+      const stepId = crypto.randomUUID();
       try {
         insert.run(
-          crypto.randomUUID(),
+          stepId,
           runId,
           idx,
           kind,
@@ -2470,6 +2491,7 @@ Rules:
       } catch (err) {
         console.warn('[Artha] step record failed:', err);
       }
+      return stepId;
     };
   }
 

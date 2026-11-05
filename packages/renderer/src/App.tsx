@@ -40,6 +40,7 @@ import ShortcutsOverlay from './components/ui/ShortcutsOverlay';
 import CommandPalette from './components/ui/CommandPalette';
 import { FeatureTour } from './components/ui/FeatureTour';
 import UndoAfterRun from './components/UndoAfterRun';
+import ResumeInterruptedRuns from './components/ResumeInterruptedRuns';
 import Briefing from './components/Briefing';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { tabTheme } from './lib/tabTheme';
@@ -332,6 +333,9 @@ export default function App() {
 
         {/* Proactive "Artha changed N files · Undo" after a run. */}
         <UndoAfterRun />
+
+        {/* Startup offer: Resume / Dismiss runs the app interrupted. Never auto-resumes. */}
+        <ResumeInterruptedRuns />
 
         {/* Opt-in "since you were last here" briefing (Settings → General). */}
         <Briefing />

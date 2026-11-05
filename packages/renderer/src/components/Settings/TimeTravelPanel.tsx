@@ -5,8 +5,9 @@
 import { useEffect, useState } from 'react';
 import {
   History, GitBranch, MessageSquare, Wrench, Sparkles, Brain,
-  CheckCircle2, XCircle, Play, Loader2, RefreshCw,
+  CheckCircle2, XCircle, Play, Loader2, RefreshCw, Undo2,
 } from 'lucide-react';
+import { toast } from '../../stores/toast';
 
 /** Mirrors `agent_runs`. `parent_run_id` non-null = this run was forked. */
 interface RunRow {
@@ -136,6 +137,20 @@ export default function TimeTravelPanel() {
     if (newRun) setSelectedRun(newRun as string);
   };
 
+  /** Restore every file the run touched to its state before this step.
+   *  Explicit + confirmed; the toast reports exactly what was and wasn't
+   *  restored, and that external actions (sent emails) are never undone. */
+  const rewindFiles = async (stepId: string, idx: number) => {
+    if (!selectedRun) return;
+    if (!window.confirm(`Restore files changed from step #${idx} onward to how they were before it? Files created after that point are removed.`)) return;
+    const r = await window.artha.checkpoints.rewind(selectedRun, stepId);
+    if (r.error) { toast.error("Couldn't rewind", r.error); return; }
+    const parts = [`${r.restored.length} restored`, `${r.removed.length} removed`];
+    if (r.skipped.length) parts.push(`${r.skipped.length} not restorable (${r.skipped.slice(0, 2).map(x => x.reason).join(', ')})`);
+    if (r.externalActions.length) parts.push(`${r.externalActions.length} external action(s) like sent emails can't be undone`);
+    (r.ok ? toast.success : toast.warning)(r.ok ? 'Files rewound' : 'Partly rewound', parts.join(' · '));
+  };
+
   const selected = runs.find(r => r.run_id === selectedRun);
 
   return (
@@ -231,6 +246,15 @@ export default function TimeTravelPanel() {
                       <p className="flex-1 text-xs text-artha-text leading-relaxed font-mono break-all">
                         {summariseStep(step)}
                       </p>
+                      {step.kind === 'tool_call' && /"name":"fs_/.test(step.payload) && (
+                        <button
+                          onClick={() => rewindFiles(step.step_id, step.idx)}
+                          className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md border border-artha-border text-[10px] text-artha-muted hover:text-artha-accent hover:border-artha-accent/40 transition-colors"
+                          title="Restore files to how they were before this step"
+                        >
+                          <Undo2 size={10} /> Rewind files
+                        </button>
+                      )}
                       {step.has_snapshot === 1 && (
                         <button
                           onClick={() => setForkingFrom(step.step_id)}

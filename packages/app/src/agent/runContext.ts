@@ -29,6 +29,11 @@ export interface RunContext {
    *  policy fails closed for these — there is nobody to approve, so the call is
    *  blocked rather than hanging on a desktop modal that no one will answer. */
   unattended?: boolean;
+  /** Set when this run continues one the app interrupted (restart/crash).
+   *  `confirmedActionIds` are the external_actions rows the interrupted run
+   *  had already confirmed or dispatched — tools that act externally (see
+   *  gmailSend.ts) refuse to repeat them, whatever the model asks for. */
+  resume?: { fromRunId: string; confirmedActionIds: string[] };
 }
 
 const storage = new AsyncLocalStorage<RunContext>();
