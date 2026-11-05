@@ -961,10 +961,13 @@ ${envBlock}`,
   private async requestAppGrant(req: {
     workflowId: string; sessionId: string; toolName: string; args: Record<string, unknown>;
     appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean;
+    /** The run asking: records the prompt on its timeline and pauses its stall watchdog. */
+    runId?: string;
   }): Promise<GrantAnswer> {
     let id = '';
     const approved = await this.requestToolApproval({
       workflowId: req.workflowId, sessionId: req.sessionId, toolName: req.toolName, args: req.args,
+      runId: req.runId,
       note: req.alwaysConfirm
         ? `${req.appName} is sensitive (shell, settings or credentials), so Artha asks every time.`
         : `Allow Artha to control ${req.appName}?`,
@@ -2266,7 +2269,7 @@ RULES — follow exactly, no exceptions:
                 store: this.appGrants,
                 resolveApp: resolveDesktopTargetApp,
                 confirm: (q) => this.requestAppGrant({
-                  workflowId: args.workflowId, sessionId: args.sessionId,
+                  workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId,
                   toolName: toolCall.function.name, args: parsedArgs,
                   appName: q.appName, alwaysAllowed: q.alwaysAllowed,
                   alwaysConfirm: q.reason === 'always_confirm',
@@ -2302,7 +2305,7 @@ RULES — follow exactly, no exceptions:
               // goal_set / goal_update — persisted goal state; goal_set may
               // pause for the user's approval (see invokeGoalTool).
               toolResult = await this.invokeGoalTool(toolCall.function.name, parsedArgs, {
-                workflowId: args.workflowId, sessionId: args.sessionId, userGoal: args.goal,
+                workflowId: args.workflowId, sessionId: args.sessionId, userGoal: args.goal, runId: args.runId,
               });
             } else if (isSubcapabilityTool(toolCall.function.name)) {
               // Composable sub-capability: delegate a self-contained step to a
@@ -3043,7 +3046,8 @@ Rules:
   private async invokeGoalTool(
     name: string,
     parsedArgs: Record<string, unknown>,
-    ctx: { workflowId: string; sessionId: string; userGoal: string },
+    /** `runId`: the run asking, so the goal_set approval lands on its timeline. */
+    ctx: { workflowId: string; sessionId: string; userGoal: string; runId?: string },
   ): Promise<string> {
     const db = getDb();
     try {
@@ -3066,7 +3070,7 @@ Rules:
           return 'Error: goal_set needs the user\'s approval, but this run is unattended, so no goal was set.';
         }
         const approved = await this.requestToolApproval({
-          workflowId: ctx.workflowId, sessionId: ctx.sessionId, toolName: 'goal_set',
+          workflowId: ctx.workflowId, sessionId: ctx.sessionId, toolName: 'goal_set', runId: ctx.runId,
           args: { objective, condition },
           note: 'Artha wants to make this the goal for this task. It will keep working until an independent check confirms the condition from evidence.',
         });
