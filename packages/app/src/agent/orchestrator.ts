@@ -2407,8 +2407,6 @@ Rules:
     }
   }
 
-  /** Build a 2-3 sentence summary anchored to the verified mutation list.
-   *  Falls back to a one-liner if the synthesis LLM call fails. */
   /** Dispatch goal_set / goal_update. Never throws — rejections come back as
    *  an `Error:` tool result the model can react to. goal_set needs the
    *  user's approval (existing tool-approval modal) unless the user's own
@@ -2527,6 +2525,8 @@ Rules:
     }
   }
 
+  /** Build a 2-3 sentence summary anchored to the verified mutation list.
+   *  Falls back to a one-liner if the synthesis LLM call fails. */
   private async generateVerifiedSummary(goal: string, mutations: TrackedMutation[]): Promise<string> {
     const successful = mutations.filter(m => m.success);
     const failed = mutations.filter(m => !m.success);
