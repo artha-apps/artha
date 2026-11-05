@@ -16,7 +16,11 @@
 import { app, BrowserWindow, shell, dialog, globalShortcut, powerMonitor } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
-import { registerIpcHandlers } from './ipc/handlers';
+import { registerIpcHandlers, getOrchestrator } from './ipc/handlers';
+import { createScheduledRunner } from './scheduler/scheduledRunner';
+import { runWithContext } from './agent/runContext';
+import { pruneRunEvents } from './agent/runEventRetention';
+import { listActiveRuns } from './agent/runEvents';
 import { initDatabase, runMigrations, getDb } from './db/schema';
 import { BrowserController } from './browser/controller';
 import { SchedulerService } from './scheduler/scheduler';
@@ -138,6 +142,19 @@ async function createWindow(): Promise<void> {
   }
   startHealthCheckpointing();
 
+  // run_events retention (agent/runEventRetention.ts): keep the last 30 days
+  // or the last 200 runs, whichever is larger. Runs once at launch and then
+  // daily; every prune logs what it removed, and a failure never blocks launch.
+  const pruneRunEventLog = (): void => {
+    try {
+      pruneRunEvents(getDb(), { activeRunIds: listActiveRuns().map(r => r.runId) });
+    } catch (err) {
+      console.warn('[Artha] run_events retention could not start:', err);
+    }
+  };
+  pruneRunEventLog();
+  setInterval(pruneRunEventLog, 24 * 60 * 60 * 1000).unref();
+
   // Durability: persistent undo, pre-mutation file checkpoints, keep-awake.
   // Each is independent and best-effort — a failure here must not block launch.
   try {
@@ -214,36 +231,28 @@ async function createWindow(): Promise<void> {
   })());
 
   // Initialise the scheduler after IPC handlers are ready (orchestrator is live).
-  // The runner creates a fresh session per task so scheduled runs are isolated.
-  SchedulerService.getInstance().init(async (prompt: string, opts?: { scopeFolder?: string }) => {
-    const { getDb } = await import('./db/schema');
-    const db = getDb();
-    const sessionId = crypto.randomUUID();
-    // origin='scheduled' so these sessions are identifiable without the old
-    // title-prefix heuristic (and stay out of the normal chat sidebar).
-    db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'scheduled')`)
-      .run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
-    // Folder-triggered runs are confined to the watched folder: attaching it
-    // as the session's only scope makes the file tools enforce that boundary.
-    if (opts?.scopeFolder) {
-      db.prepare(`INSERT OR IGNORE INTO session_scopes (session_id, path, kind) VALUES (?, ?, 'folder')`)
-        .run(sessionId, opts.scopeFolder);
-    }
-    // Dynamically import to avoid circular deps — orchestrator is already constructed by registerIpcHandlers.
-    const { AgentOrchestrator } = await import('./agent/orchestrator');
-    const { runWithContext } = await import('./agent/runContext');
-    const orch = new AgentOrchestrator(mainWindow!);
-    // Mark the run unattended so a `confirm`-tier tool policy fails closed
-    // instead of popping a desktop modal nobody is watching at fire time.
-    // EVERY automation trigger (cron, catch-up, folder, webhook, Run now)
-    // comes through this one runner, so none can bypass it.
-    await runWithContext({ actor: 'scheduler', lan: false, unattended: true }, () =>
-      orch.handleMessage(sessionId, prompt),
-    );
-    // Hand the session back so the scheduler can read the run's REAL outcome
-    // instead of inferring success from "the promise resolved".
-    return { sessionId };
-  }, {
+  // The runner creates a fresh session per task so scheduled runs are isolated,
+  // but runs them on the SHARED app-wide orchestrator (scheduler/scheduledRunner.ts)
+  // so the kill switch, cancelWorkflow and outbox state cover them too.
+  SchedulerService.getInstance().init(createScheduledRunner({
+    getOrchestrator,
+    runWithContext,
+    createSession: (prompt, opts) => {
+      const db = getDb();
+      const sessionId = crypto.randomUUID();
+      // origin='scheduled' so these sessions are identifiable without the old
+      // title-prefix heuristic (and stay out of the normal chat sidebar).
+      db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'scheduled')`)
+        .run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
+      // Folder-triggered runs are confined to the watched folder: attaching it
+      // as the session's only scope makes the file tools enforce that boundary.
+      if (opts?.scopeFolder) {
+        db.prepare(`INSERT OR IGNORE INTO session_scopes (session_id, path, kind) VALUES (?, ?, 'folder')`)
+          .run(sessionId, opts.scopeFolder);
+      }
+      return sessionId;
+    },
+  }), {
     // Hold probes: a run that cannot succeed is put on hold BEFORE it starts.
     googleConnected: () => {
       try {

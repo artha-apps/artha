@@ -116,6 +116,7 @@ import {
 } from '../tools/memoryImport';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 import { listActiveRuns, listRunEvents, recordRunEvent } from '../agent/runEvents';
+import { getRunTimeline } from '../agent/runTimeline';
 import { installInteractionRunEvents } from '../agent/interactionRunEvents';
 import { createRunSubscriptions } from '../agent/runEventIpc';
 import { getKillSwitch, triggerStop } from '../desktop/runtime';
@@ -130,6 +131,13 @@ import { exportTaskMarkdown, parseTaskMarkdown } from '../scheduler/taskFile';
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
 // IPC channel shares the same ReAct loop and in-flight workflow map.
 let orchestrator: AgentOrchestrator;
+
+/** The single app-wide orchestrator (null before registerIpcHandlers runs).
+ *  Purpose: scheduled / folder / webhook runs use this same instance so the
+ *  kill switch, cancelWorkflow and outbox state cover them too. */
+export function getOrchestrator(): AgentOrchestrator | null {
+  return orchestrator ?? null;
+}
 // Singleton RAG indexer shared by the standalone RAG panel and the scope
 // auto-indexer so they write to the same chunk store.
 // Resolved LAZILY (not at module load): handlers.ts is imported before
@@ -619,8 +627,24 @@ function isDelegateMode(m: unknown): m is 'ask' | 'accept_edits' | 'auto' {
   return isPermissionMode(m) && m !== 'plan' && m !== 'unattended';
 }
 
+/** Operator skill for a Delegate follow-up: the operator playbook plus the
+ *  matched capability's task playbook, if any. Shared by `delegate:continue`
+ *  and the outbox drain of a Delegate session, so both continue a task the same way. */
+async function resolveDelegateSkill(message: string): Promise<ReturnType<typeof buildOperatorSkill>> {
+  const registry = new CapabilityRegistry(SkillRegistry.getInstance());
+  const capability = await registry.select(message);
+  let taskPlaybook: { name: string; instructions: string } | null = null;
+  if (capability?.skillSlug) {
+    const resolved = (await SkillRegistry.getInstance().resolve(`/${capability.skillSlug}`)).skill;
+    if (resolved) taskPlaybook = { name: resolved.name, instructions: resolved.instructions };
+  }
+  return buildOperatorSkill(taskPlaybook);
+}
+
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
+  // Queued Delegate follow-ups (outbox drain) resolve their skill like Continue.
+  orchestrator.delegateSkillResolver = resolveDelegateSkill;
 
   // Safe push to the renderer. Guards window AND webContents (a reload destroys
   // webContents while the window lives) and swallows the destroy-mid-send race,
@@ -964,6 +988,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // One-shot page of persisted events (timeline views, debugging).
   ipcMain.handle('run:events', (_e, runId: string, fromSeq?: number, limit?: number) =>
     listRunEvents(runId, Number(fromSeq) || 0, Number(limit) || 500));
+  // Run Inspector timeline: own events + the workflow's plan-review events
+  // (agent/runTimeline.ts). Read-only.
+  ipcMain.handle('run:timeline', (_e, runId: string) =>
+    typeof runId === 'string' && runId ? getRunTimeline(runId) : []);
 
   // ── Tool-call policies (governance for function calling) ─────────────────
   // CRUD over per-tool trust tiers evaluated before every function call.
@@ -1114,15 +1142,8 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (!exists) return { ok: false, error: 'That task no longer exists.' };
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`)
       .run(sessionId, message);
-    const registry = new CapabilityRegistry(SkillRegistry.getInstance());
-    const capability = await registry.select(message);
-    let taskPlaybook: { name: string; instructions: string } | null = null;
-    if (capability?.skillSlug) {
-      const resolved = (await SkillRegistry.getInstance().resolve(`/${capability.skillSlug}`)).skill;
-      if (resolved) taskPlaybook = { name: resolved.name, instructions: resolved.instructions };
-    }
     const runId = orchestrator.startCapability({
-      sessionId, goal: message, skill: buildOperatorSkill(taskPlaybook),
+      sessionId, goal: message, skill: await resolveDelegateSkill(message),
     });
     return { ok: true, runId, sessionId };
   });

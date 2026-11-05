@@ -309,8 +309,12 @@ export class AgentOrchestrator {
     this.skills = SkillRegistry.getInstance();
     this.outbox = new OutboxDriver({
       persistUserMessage: (sessionId, content) => this.persistUserMessage(sessionId, content),
+      // Delegate sessions continue the task through the Delegate (operator)
+      // path; every other session gets a normal chat turn.
       startTurn: (sessionId, content, attachments) =>
-        this.handleMessage(sessionId, content, attachments.length ? attachments : undefined),
+        this.isDelegateSession(sessionId)
+          ? this.startDelegateFollowUp(sessionId, content)
+          : this.handleMessage(sessionId, content, attachments.length ? attachments : undefined),
       hasPendingApproval: (sessionId) => this.hasPendingApproval(sessionId),
       emit: (channel, payload) => this.emit(channel, payload),
     });
@@ -322,6 +326,48 @@ export class AgentOrchestrator {
     const db = getDb();
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, content);
     db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(sessionId);
+  }
+
+  /** Resolves the operator skill for a Delegate follow-up message (the same
+   *  capability routing `delegate:continue` uses). Set by the IPC layer, which
+   *  owns the capability registry; null ⇒ the follow-up runs skill-less. */
+  delegateSkillResolver: ((message: string) => Promise<ActiveSkill | null>) | null = null;
+
+  /** True for a Delegate task's backing session (origin='delegate'). */
+  private isDelegateSession(sessionId: string): boolean {
+    try {
+      const row = getDb().prepare(`SELECT origin FROM chat_sessions WHERE session_id=?`).get(sessionId) as { origin?: string } | undefined;
+      return row?.origin === 'delegate';
+    } catch { return false; }
+  }
+
+  /** Outbox drain for a Delegate session: start the queued follow-up as a
+   *  Delegate continuation (startCapability), exactly like the composer's
+   *  Continue button. The session is marked busy BEFORE the first await (the
+   *  driver's contract) and that hold is handed over to the capability run,
+   *  which settles the outbox turn when it ends. Tells the renderer the new
+   *  run id so the Delegate view follows it. */
+  private async startDelegateFollowUp(sessionId: string, content: string): Promise<void> {
+    this.outbox.runStarted(sessionId);
+    let handedOver = false;
+    try {
+      const skill = this.delegateSkillResolver ? await this.delegateSkillResolver(content) : null;
+      const runId = this.startCapability({ sessionId, goal: content, skill }, { outboxHeld: true });
+      handedOver = true;
+      this.emit('delegate:followUpStarted', { sessionId, runId });
+    } finally {
+      // Skill resolution or run creation failed: release the hold so the
+      // queue is not stuck behind a turn that never started.
+      if (!handedOver) this.outbox.runEnded(sessionId);
+    }
+  }
+
+  /** Outbox bookkeeping for a capability (Delegate) run: the session is busy
+   *  for the run's lifetime, so follow-ups typed meanwhile queue and drain
+   *  when it ends — and Stop / the kill switch pause the queue like chat. */
+  private holdOutboxForCapability(workflowId: string, sessionId: string, alreadyHeld = false): void {
+    this.workflowSessions.set(workflowId, sessionId);
+    if (!alreadyHeld) this.outbox.runStarted(sessionId);
   }
 
   /** True while the user owes this session a decision: a confirm-tier tool
@@ -915,10 +961,13 @@ ${envBlock}`,
   private async requestAppGrant(req: {
     workflowId: string; sessionId: string; toolName: string; args: Record<string, unknown>;
     appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean;
+    /** The run asking: records the prompt on its timeline and pauses its stall watchdog. */
+    runId?: string;
   }): Promise<GrantAnswer> {
     let id = '';
     const approved = await this.requestToolApproval({
       workflowId: req.workflowId, sessionId: req.sessionId, toolName: req.toolName, args: req.args,
+      runId: req.runId,
       note: req.alwaysConfirm
         ? `${req.appName} is sensitive (shell, settings or credentials), so Artha asks every time.`
         : `Allow Artha to control ${req.appName}?`,
@@ -1618,7 +1667,12 @@ RULES — follow exactly, no exceptions:
       skill: args.skill ?? null,
       matchedVia: 'invoke',
     };
-    return this.executePlan(plan, { silent: true });
+    this.holdOutboxForCapability(workflowId, args.sessionId);
+    try {
+      return await this.executePlan(plan, { silent: true });
+    } finally {
+      this.finishOutboxTurn(workflowId, args.sessionId);
+    }
   }
 
   /** Non-blocking variant of {@link runCapability}: synchronously create the
@@ -1626,7 +1680,11 @@ RULES — follow exactly, no exceptions:
    *  and return the run id right away. This is how goal-driven surfaces like
    *  Delegate execute — the UI polls the Task's status/steps instead of blocking
    *  on the whole run, which is what makes long tasks observable and resumable. */
-  startCapability(args: { sessionId: string; goal: string; skill?: ActiveSkill | null }): string {
+  startCapability(
+    args: { sessionId: string; goal: string; skill?: ActiveSkill | null },
+    /** `outboxHeld`: the caller (an outbox drain) already marked the session busy. */
+    opts: { outboxHeld?: boolean } = {},
+  ): string {
     const db = getDb();
     const workflowId = crypto.randomUUID();
     const runId = crypto.randomUUID();
@@ -1653,10 +1711,11 @@ RULES — follow exactly, no exceptions:
     // 'tool_args' routes the loop to the router's fast model (smallest installed
     // when un-benchmarked) so Delegate's many turns aren't all on the heavy
     // active model — the #1 cause of slow delegated runs on local hardware.
+    this.holdOutboxForCapability(workflowId, args.sessionId, opts.outboxHeld);
     void this.executePlan(plan, { silent: true, runId, taskType: 'tool_args' }).catch((err) => {
       console.error('[Artha] delegate capability run failed:', err);
       try { getDb().prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(runId); } catch { /* ignore */ }
-    });
+    }).finally(() => this.finishOutboxTurn(workflowId, args.sessionId));
 
     return runId;
   }
@@ -2210,7 +2269,7 @@ RULES — follow exactly, no exceptions:
                 store: this.appGrants,
                 resolveApp: resolveDesktopTargetApp,
                 confirm: (q) => this.requestAppGrant({
-                  workflowId: args.workflowId, sessionId: args.sessionId,
+                  workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId,
                   toolName: toolCall.function.name, args: parsedArgs,
                   appName: q.appName, alwaysAllowed: q.alwaysAllowed,
                   alwaysConfirm: q.reason === 'always_confirm',
@@ -2246,7 +2305,7 @@ RULES — follow exactly, no exceptions:
               // goal_set / goal_update — persisted goal state; goal_set may
               // pause for the user's approval (see invokeGoalTool).
               toolResult = await this.invokeGoalTool(toolCall.function.name, parsedArgs, {
-                workflowId: args.workflowId, sessionId: args.sessionId, userGoal: args.goal,
+                workflowId: args.workflowId, sessionId: args.sessionId, userGoal: args.goal, runId: args.runId,
               });
             } else if (isSubcapabilityTool(toolCall.function.name)) {
               // Composable sub-capability: delegate a self-contained step to a
@@ -2987,7 +3046,8 @@ Rules:
   private async invokeGoalTool(
     name: string,
     parsedArgs: Record<string, unknown>,
-    ctx: { workflowId: string; sessionId: string; userGoal: string },
+    /** `runId`: the run asking, so the goal_set approval lands on its timeline. */
+    ctx: { workflowId: string; sessionId: string; userGoal: string; runId?: string },
   ): Promise<string> {
     const db = getDb();
     try {
@@ -3010,7 +3070,7 @@ Rules:
           return 'Error: goal_set needs the user\'s approval, but this run is unattended, so no goal was set.';
         }
         const approved = await this.requestToolApproval({
-          workflowId: ctx.workflowId, sessionId: ctx.sessionId, toolName: 'goal_set',
+          workflowId: ctx.workflowId, sessionId: ctx.sessionId, toolName: 'goal_set', runId: ctx.runId,
           args: { objective, condition },
           note: 'Artha wants to make this the goal for this task. It will keep working until an independent check confirms the condition from evidence.',
         });
