@@ -854,7 +854,9 @@ or
     // Remembered until the chat turn ends so the outbox pauses ("Queue paused
     // after cancel") instead of auto-sending the next queued message.
     const stoppedSession = this.workflowSessions.get(workflowId) ?? this.sessionOfWorkflow(workflowId);
-    if (stoppedSession) this.userStoppedSessions.add(stoppedSession);
+    // Only while that session's turn is live — a late Stop after the turn
+    // ended must not pause the NEXT turn's queue.
+    if (stoppedSession && this.outbox.isActive(stoppedSession)) this.userStoppedSessions.add(stoppedSession);
     // If the user is mid-decision on a tool-approval modal for this workflow,
     // deny it immediately so the loop unblocks now instead of after the 120s
     // timeout — otherwise Stop feels broken while an approval is pending.
