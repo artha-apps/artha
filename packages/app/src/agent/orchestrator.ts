@@ -69,6 +69,7 @@ import {
 } from '../bodhi/subcapability';
 import { filterToolsByAllowlist, parseSlashInvocation, effectiveAllowedTools } from '../skills/util';
 import { recordSkillRun, type SkillMatchedVia, type SkillRunStatus } from '../skills/metrics';
+import { OutboxDriver, injectSteerAtBoundary } from './outboxDriver';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -231,11 +232,82 @@ export class AgentOrchestrator {
    *  The workflowId is kept so cancelWorkflow() can promptly deny any approval
    *  the user is mid-decision on when they hit Stop. */
   private toolApprovalResolvers = new Map<string, { workflowId: string; resolve: (approved: boolean) => void }>();
+  /** Chat-turn workflows (from handleMessage) → their session, so the outbox
+   *  can tell whether an approval/clarification is pending in a session. */
+  private workflowSessions = new Map<string, string>();
+  /** Workflows whose plan is waiting on the Plan Approval card. The session's
+   *  turn is still "active" for the outbox until approvePlan() settles it. */
+  private awaitingPlanApproval = new Set<string>();
+  /** Sessions whose current chat turn the user stopped (Stop button or plan
+   *  rejection). Unlike cancelledWorkflows (consumed by the loop), this
+   *  survives to the end of the turn so the outbox pauses instead of draining. */
+  private userStoppedSessions = new Set<string>();
+  /** Outbox (type while Artha works): drains queued messages when a turn ends
+   *  and supplies "steer now" messages at ReAct tool-call boundaries. */
+  readonly outbox: OutboxDriver;
 
   constructor(window: BrowserWindow) {
     this.window = window;
     this.registry = MCPRegistry.getInstance();
     this.skills = SkillRegistry.getInstance();
+    this.outbox = new OutboxDriver({
+      persistUserMessage: (sessionId, content) => this.persistUserMessage(sessionId, content),
+      startTurn: (sessionId, content, attachments) =>
+        this.handleMessage(sessionId, content, attachments.length ? attachments : undefined),
+      hasPendingApproval: (sessionId) => this.hasPendingApproval(sessionId),
+      emit: (channel, payload) => this.emit(channel, payload),
+    });
+  }
+
+  /** Write a user message row for an outbox hand-off (the same row
+   *  agent:sendMessage writes before calling handleMessage). */
+  private persistUserMessage(sessionId: string, content: string): void {
+    const db = getDb();
+    db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, content);
+    db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(sessionId);
+  }
+
+  /** True while the user owes this session a decision: a confirm-tier tool
+   *  approval, a Plan Approval card, or a clarification question. Queued
+   *  outbox items never auto-send past one of these. */
+  hasPendingApproval(sessionId: string): boolean {
+    for (const wf of this.awaitingPlanApproval) {
+      if (this.workflowSessions.get(wf) === sessionId) return true;
+    }
+    for (const [, entry] of this.toolApprovalResolvers) {
+      if (this.workflowSessions.get(entry.workflowId) === sessionId) return true;
+    }
+    for (const wf of this.clarifyResolvers.keys()) {
+      if (this.workflowSessions.get(wf) === sessionId) return true;
+    }
+    return false;
+  }
+
+  /** Session of a workflow not started by handleMessage (fan-out / fork), via
+   *  its agent_states or agent_runs row. Null when unknown. */
+  private sessionOfWorkflow(workflowId: string): string | null {
+    try {
+      const db = getDb();
+      const row = (db.prepare(`SELECT session_id FROM agent_states WHERE workflow_id=?`).get(workflowId)
+        ?? db.prepare(`SELECT session_id FROM agent_runs WHERE workflow_id=?`).get(workflowId)) as
+        { session_id: string } | undefined;
+      return row?.session_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Close out a chat turn for the outbox: forget the workflow and tell the
+   *  driver how it ended (a user stop pauses the queue; anything else drains). */
+  private finishOutboxTurn(workflowId: string, sessionId: string): void {
+    this.workflowSessions.delete(workflowId);
+    const cancelled = this.userStoppedSessions.delete(sessionId);
+    this.awaitingPlanApproval.delete(workflowId);
+    try {
+      this.outbox.runEnded(sessionId, { cancelled });
+    } catch (err) {
+      console.warn('[Artha] outbox drain failed (non-critical):', err);
+    }
   }
 
   /** Entry point: receive a user message and start the ReAct loop.
@@ -253,8 +325,29 @@ export class AgentOrchestrator {
     attachments?: Attachment[],
     opts: { modelOverride?: string } = {},
   ): Promise<void> {
-    const db = getDb();
     const workflowId = crypto.randomUUID();
+    // Outbox lifecycle: mark the session busy BEFORE the first await so a
+    // racing drain can't start a second turn, and settle it in `finally` so
+    // every terminal path (reply, error, stop) reaches the drain. A plan left
+    // on the approval card keeps the turn open until approvePlan() runs.
+    this.workflowSessions.set(workflowId, sessionId);
+    this.outbox.runStarted(sessionId);
+    try {
+      await this.handleMessageTurn(workflowId, sessionId, userContent, attachments, opts);
+    } finally {
+      if (!this.awaitingPlanApproval.has(workflowId)) this.finishOutboxTurn(workflowId, sessionId);
+    }
+  }
+
+  /** The body of a chat turn (see handleMessage for the flow). */
+  private async handleMessageTurn(
+    workflowId: string,
+    sessionId: string,
+    userContent: string,
+    attachments: Attachment[] | undefined,
+    opts: { modelOverride?: string },
+  ): Promise<void> {
+    const db = getDb();
 
     // Resolve a skill (explicit "/slug" or auto-match). `goal` has any leading
     // "/slug" stripped, so the rest of the loop never sees the invocation prefix.
@@ -399,6 +492,7 @@ export class AgentOrchestrator {
       if (!auto.auto) {
         db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
           .run(JSON.stringify(plan.steps), workflowId);
+        this.awaitingPlanApproval.add(workflowId);
         this.emit('agent:planReady', plan);
         return;
       }
@@ -734,18 +828,35 @@ or
   async approvePlan(workflowId: string, approved: boolean): Promise<void> {
     const plan = this.activePlans.get(workflowId);
     if (!plan) return;
+    // Only a turn parked on the approval card is settled for the outbox here.
+    const parked = this.awaitingPlanApproval.delete(workflowId);
     if (!approved) {
       this.activePlans.delete(workflowId);
       this.emit('agent:token', '\n\n_Plan cancelled by user._');
       this.emit('agent:streamEnd');
+      // Rejecting the plan is a user cancel: the queue pauses, never drains.
+      if (parked) {
+        this.userStoppedSessions.add(plan.sessionId);
+        this.finishOutboxTurn(workflowId, plan.sessionId);
+      }
       return;
     }
-    await this.executePlan(plan);
+    try {
+      await this.executePlan(plan);
+    } finally {
+      if (parked) this.finishOutboxTurn(workflowId, plan.sessionId);
+    }
   }
 
   /** Called when user hits the Stop button in the UI. */
   cancelWorkflow(workflowId: string): void {
     this.cancelledWorkflows.add(workflowId);
+    // Remembered until the chat turn ends so the outbox pauses ("Queue paused
+    // after cancel") instead of auto-sending the next queued message.
+    const stoppedSession = this.workflowSessions.get(workflowId) ?? this.sessionOfWorkflow(workflowId);
+    // Only while that session's turn is live — a late Stop after the turn
+    // ended must not pause the NEXT turn's queue.
+    if (stoppedSession && this.outbox.isActive(stoppedSession)) this.userStoppedSessions.add(stoppedSession);
     // If the user is mid-decision on a tool-approval modal for this workflow,
     // deny it immediately so the loop unblocks now instead of after the 120s
     // timeout — otherwise Stop feels broken while an approval is pending.
@@ -767,6 +878,8 @@ or
     const db = getDb();
     const workflowId = crypto.randomUUID();
     const results: string[] = new Array(subTasks.length).fill('');
+    // Lets cancelWorkflow(fan-out id) find the session for the outbox pause.
+    this.workflowSessions.set(workflowId, sessionId);
 
     this.emit('agent:workflowStart', workflowId);
     this.emit('agent:parallelStart', { goal, subTasks });
@@ -840,6 +953,7 @@ Rules:
     }
     this.emit('agent:token', combined);
     this.emit('agent:streamEnd');
+    this.workflowSessions.delete(workflowId);
 
     return results;
   }
@@ -1543,6 +1657,22 @@ RULES — follow exactly, no exceptions:
           errorDetail: 'cancelled_by_user',
         });
         break;
+      }
+
+      // Outbox "steer now": at a tool-call boundary (between iterations) of a
+      // top-level visible run, inject any messages the user asked to steer
+      // with. Never on the first iteration (nothing has happened yet; the drain
+      // covers that) and never past a pending approval (the driver checks).
+      if (iterations > 1 && !args.silent && depth === 0) {
+        try {
+          const steered = injectSteerAtBoundary(this.outbox, args.sessionId, messages);
+          if (steered.length) {
+            recordStep(stepIdx++, 'user', { steer: steered.map(i => ({ id: i.id, content: i.content })) });
+            emit('agent:status', 'Taking your new message into account…');
+          }
+        } catch (err) {
+          console.warn('[Artha] outbox steer injection failed (continuing):', err);
+        }
       }
 
       // Keep only the most recent browser_read_dom payload in context; stub the
