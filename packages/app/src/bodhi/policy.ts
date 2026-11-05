@@ -74,6 +74,13 @@ const TIER_RANK: Record<PolicyTier, number> = { auto: 0, dry_run: 1, confirm: 2,
  */
 const ALWAYS_CONFIRM_FLOOR = new Set<string>(['email_send']);
 
+/** True when `toolName` is on the built-in always-confirm floor. Read-only
+ *  accessor for the permission-mode gate (agent/modes.ts); the floor itself
+ *  stays private so it can't be mutated at runtime. */
+export function isAlwaysConfirmTool(toolName: string): boolean {
+  return ALWAYS_CONFIRM_FLOOR.has(toolName);
+}
+
 /** True when `pattern` matches `toolName`. Mirrors the Skills allowlist
  *  convention: "*" = all tools; a trailing "_" = name prefix; else exact. */
 export function policyMatches(pattern: string, toolName: string): boolean {
