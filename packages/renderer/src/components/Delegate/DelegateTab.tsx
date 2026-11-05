@@ -20,10 +20,11 @@ import DelegateTaskInput from './DelegateTaskInput';
 import DelegateProgressTimeline from './DelegateProgressTimeline';
 import DelegatePlanView from './DelegatePlanView';
 import DelegateResultView from './DelegateResultView';
+import GoalChip from './GoalChip';
 
 export default function DelegateTab() {
   const {
-    status, goal, plan, result, error, thread, stopping, runId, tasks,
+    status, goal, plan, result, error, thread, stopping, runId, sessionId, tasks,
     submit, confirm, cancel, reset, stop, continueTask, openTask, loadTasks, decide,
   } = useDelegateStore();
 
@@ -118,6 +119,9 @@ export default function DelegateTab() {
             </button>
           </div>
         </div>
+
+        {/* Persistent goal (objective, status, elapsed, Pause/Resume/Stop). */}
+        <GoalChip sessionId={sessionId} />
 
         {/* Failure state — lead with the agent's own honest explanation (the
             backend already wrote the truthful reason, e.g. "the email was NOT

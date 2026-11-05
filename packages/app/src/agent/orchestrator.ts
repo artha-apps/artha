@@ -28,7 +28,14 @@ import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getS
 import { buildShallowTree } from './folderTree';
 import { getRunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
-import { recordAcceptanceCriteria } from '../bodhi/criteria';
+import { recordAcceptanceCriteria, deriveCriteriaFromMutations, evaluateCriterion, ensureRunTask } from '../bodhi/criteria';
+import {
+  GOAL_TOOL_SCHEMAS, isGoalTool, getOpenGoal, createGoal, modelUpdateGoal, userStatedOutcome, GoalError,
+} from '../bodhi/goals';
+import {
+  evaluateGoal, applyStopGate, addGoalGapCriteria, numberEvidence, MAX_GOAL_FEEDBACK_ROUNDS,
+  type EvaluatorEvidence, type JudgeFn,
+} from '../bodhi/goalEvaluator';
 import { classifyToolResult, isFailure, countsAsCompletedMutation } from './toolOutcome';
 import OpenAI from 'openai';
 import {
@@ -1358,6 +1365,9 @@ RULES — follow exactly, no exceptions:
       // Composable sub-capabilities — let this run delegate a self-contained
       // step to a trusted, pre-scoped capability (bounded by depth + scope).
       ...(mayDelegate ? getSubcapabilityToolSchemas() : []),
+      // Persistent goals (bodhi/goals.ts) are a top-level concern: a nested
+      // capability works for its parent's goal and must not set its own.
+      ...(depth === 0 ? GOAL_TOOL_SCHEMAS : []),
     ];
     let tools = [...filterToolsByAllowlist(budget.tools, effectiveAllowed), ...extraTools];
     const fullTools = [...filterToolsByAllowlist(budget.full, effectiveAllowed), ...extraTools];
@@ -1373,6 +1383,12 @@ RULES — follow exactly, no exceptions:
     // (unattended runs auto-block confirm-tier tools). Counted separately so a
     // scheduled run that was blocked can say so instead of reporting success.
     let toolCallsBlocked = 0;
+    // Sanitized, bounded per-call evidence for the independent goal check
+    // (bodhi/goalEvaluator.ts). Short summaries only — never raw payloads.
+    const goalEvidence: Array<Omit<EvaluatorEvidence, 'id'>> = [];
+    const MAX_GOAL_EVIDENCE = 30;
+    // Stop-gate feedback rounds already spent on an unmet goal this run.
+    let goalRounds = 0;
     /** Which terminal path the loop actually took — drives the end-of-run
      *  notification so it can never claim completion for a stopped run. */
     let terminalOutcome: 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'interrupted' = 'interrupted';
@@ -1686,6 +1702,12 @@ RULES — follow exactly, no exceptions:
               // obvious. Auto-hides shortly after the last desktop action.
               noteDesktopControlActive();
               toolResult = await invokeDesktopTool(toolCall.function.name, parsedArgs);
+            } else if (isGoalTool(toolCall.function.name)) {
+              // goal_set / goal_update — persisted goal state; goal_set may
+              // pause for the user's approval (see invokeGoalTool).
+              toolResult = await this.invokeGoalTool(toolCall.function.name, parsedArgs, {
+                workflowId: args.workflowId, sessionId: args.sessionId, userGoal: args.goal,
+              });
             } else if (isSubcapabilityTool(toolCall.function.name)) {
               // Composable sub-capability: delegate a self-contained step to a
               // trusted capability whose tool scope is clamped to this loop's own
@@ -1762,6 +1784,14 @@ RULES — follow exactly, no exceptions:
             }
           }
           if (receiptStatus === 'blocked') toolCallsBlocked++;
+          if (depth === 0 && !isGoalTool(toolCall.function.name)) {
+            goalEvidence.push({
+              kind: 'tool_result',
+              status: outcome.status,
+              summary: `${toolCall.function.name}: ${toolResult.replace(/\s+/g, ' ').slice(0, 240)}`,
+            });
+            if (goalEvidence.length > MAX_GOAL_EVIDENCE) goalEvidence.shift();
+          }
 
           // Anti-hallucination: only count a mutation as having happened when
           // it FULLY succeeded — blocked, dry-run and partial batches (e.g.
@@ -1903,6 +1933,34 @@ RULES — follow exactly, no exceptions:
           continue;
         }
 
+        // ── Goal stop gate ─────────────────────────────────────────────────
+        // A final answer is a CLAIM of completion. When this session has an
+        // open goal, an independent evaluator decides from evidence whether
+        // its condition is met (bodhi/goalEvaluator.ts): met → goal completed;
+        // unmet → back to work with the gaps (bounded); otherwise the run ends
+        // as "needs you" with the gaps listed. The model can't skip this.
+        let goalNote: string | null = null;
+        if (depth === 0) {
+          const gate = await this.runGoalStopGate({
+            runId: args.runId, sessionId: args.sessionId, goal: args.goal,
+            finalAnswer: rawContent, mutations, goalEvidence, goalRounds,
+            toolCallsTotal, toolCallErrors, actorModel: loopModel,
+          });
+          if (gate?.action === 'continue' && gate.feedback) {
+            if (streamedLive) emit('agent:streamReset');
+            goalRounds++;
+            messages.push({ role: 'system', content: gate.feedback });
+            recordStep(stepIdx++, 'system', { note: 'goal-gate', action: 'continue', round: goalRounds, gaps: gate.gaps });
+            emit('agent:status', 'Goal not met yet — continuing…');
+            emptyCount = 0;
+            continue;
+          }
+          if (gate) {
+            recordStep(stepIdx++, 'system', { note: 'goal-gate', action: gate.action, gaps: gate.gaps });
+            goalNote = gate.note;
+          }
+        }
+
         let finalText: string;
 
         if (mutations.length > 0) {
@@ -1975,6 +2033,9 @@ RULES — follow exactly, no exceptions:
             `To send it: open Artha's browser, sign in to Gmail once, then ask me again — I'll deliver it ` +
             `through your Gmail (you approve once, then I send it).`;
         }
+
+        // Deterministic goal outcome line — written by the gate, not the model.
+        if (goalNote) finalText = `${finalText}\n\n${goalNote}`;
 
         // The raw content was already streamed live. Only re-emit if the final
         // text differs (verified summary, or cleaning changed it) — otherwise
@@ -2343,6 +2404,124 @@ Rules:
       // Drop the throwaway session (cascades its messages); the agent_run row and
       // its receipts persist so the sub-task stays auditable and in lineage.
       try { db.prepare(`DELETE FROM chat_sessions WHERE session_id=?`).run(childSessionId); } catch { /* ignore */ }
+    }
+  }
+
+  /** Dispatch goal_set / goal_update. Never throws — rejections come back as
+   *  an `Error:` tool result the model can react to. goal_set needs the
+   *  user's approval (existing tool-approval modal) unless the user's own
+   *  message already stated this outcome; unattended runs fail closed. */
+  private async invokeGoalTool(
+    name: string,
+    parsedArgs: Record<string, unknown>,
+    ctx: { workflowId: string; sessionId: string; userGoal: string },
+  ): Promise<string> {
+    const db = getDb();
+    try {
+      if (name === 'goal_update') {
+        const g = modelUpdateGoal(db, ctx.sessionId, { status: parsedArgs.status, reason: parsedArgs.reason });
+        return JSON.stringify({ ok: true, goal_id: g.goalId, status: g.status, reason: g.blockedReason });
+      }
+      const objective = typeof parsedArgs.objective === 'string' ? parsedArgs.objective : '';
+      const condition = typeof parsedArgs.condition === 'string' ? parsedArgs.condition : '';
+      if (!objective.trim() || !condition.trim()) {
+        return 'Error: goal_set needs both "objective" and "condition".';
+      }
+      // Fail fast (before prompting the user) if a goal already exists.
+      if (getOpenGoal(db, ctx.sessionId)) {
+        createGoal(db, { sessionId: ctx.sessionId, objective, condition }); // throws the clear GoalError
+      }
+      if (!userStatedOutcome(ctx.userGoal, objective, condition)) {
+        const rc = getRunContext();
+        if (rc?.lan || rc?.unattended) {
+          return 'Error: goal_set needs the user\'s approval, but this run is unattended, so no goal was set.';
+        }
+        const approved = await this.requestToolApproval({
+          workflowId: ctx.workflowId, sessionId: ctx.sessionId, toolName: 'goal_set',
+          args: { objective, condition },
+          note: 'Artha wants to make this the goal for this task. It will keep working until an independent check confirms the condition from evidence.',
+        });
+        if (!approved) return 'Error: The user declined this goal. Do not set it again; continue with the task as asked.';
+      }
+      const g = createGoal(db, { sessionId: ctx.sessionId, objective, condition });
+      return JSON.stringify({
+        ok: true, goal_id: g.goalId, status: g.status,
+        note: 'Goal recorded. When you finish, an independent check will verify the condition from evidence.',
+      });
+    } catch (err) {
+      if (err instanceof GoalError) return `Error: ${err.message}`;
+      return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /** The judge for the goal evaluator: a separate, tool-less completion call.
+   *  Prefers a different model from the actor when the router resolves one
+   *  for another phase, so the checker isn't the same model grading itself. */
+  private goalJudge(actorModel: string | null): JudgeFn | null {
+    let taskType: TaskType = 'synthesis';
+    for (const t of ['plan', 'synthesis'] as TaskType[]) {
+      const m = resolveRunModel(undefined, t);
+      if (m && m !== actorModel) { taskType = t; break; }
+    }
+    let client: ReturnType<typeof getActiveLLMClient>;
+    try { client = getActiveLLMClient(undefined, taskType); } catch { return null; }
+    return async (msgs) => {
+      const resp = await client.complete(msgs); // no tools offered — judgement only
+      return resp.choices[0]?.message?.content ?? '';
+    };
+  }
+
+  /** Run the stop gate for a session's open goal. Returns null when there is
+   *  no goal to gate (none, or paused by the user). Never throws. */
+  private async runGoalStopGate(a: {
+    runId: string; sessionId: string; goal: string; finalAnswer: string;
+    mutations: TrackedMutation[]; goalEvidence: Array<Omit<EvaluatorEvidence, 'id'>>;
+    goalRounds: number; toolCallsTotal: number; toolCallErrors: number; actorModel: string | null;
+  }): Promise<{ action: 'complete' | 'continue' | 'needs_review'; gaps: string[]; feedback?: string; note: string | null } | null> {
+    try {
+      const db = getDb();
+      const goal = getOpenGoal(db, a.sessionId);
+      if (!goal || goal.status === 'paused') return null;
+      if (goal.status === 'blocked') {
+        // The model (or an earlier gate) said it can't proceed — honest, not a
+        // false completion. Surface the reason and end as needs review — the
+        // reason becomes a prose criterion so the run can't project as verified.
+        try {
+          const taskId = ensureRunTask(db, { runId: a.runId, sessionId: a.sessionId, goal: a.goal });
+          addGoalGapCriteria(db, taskId, 'awaiting_user_review', [`Blocked: ${goal.blockedReason ?? 'no reason given'}`]);
+        } catch { /* bookkeeping must never break a run */ }
+        return { action: 'needs_review', gaps: [], note: `⏸️ Goal blocked — needs you: ${goal.blockedReason ?? 'no reason given'}` };
+      }
+      // Deterministic criteria from the run's concrete claims, checked on disk.
+      const criteria = deriveCriteriaFromMutations(a.mutations).map(d => ({
+        description: d.description, required: d.required,
+        outcome: evaluateCriterion(d, (p: string) => fs.existsSync(p)),
+      }));
+      const verdict = await evaluateGoal({
+        objective: goal.objective, condition: goal.condition,
+        runFacts: {
+          toolCallsTotal: a.toolCallsTotal, toolCallsFailed: a.toolCallErrors,
+          mutationsTotal: a.mutations.length, mutationsFailed: a.mutations.filter(m => !m.success).length,
+        },
+        criteria,
+        evidence: numberEvidence(a.goalEvidence),
+        finalAnswer: a.finalAnswer,
+      }, this.goalJudge(a.actorModel));
+      const r = applyStopGate(db, {
+        goal, verdict, roundsUsed: a.goalRounds, runId: a.runId, sessionId: a.sessionId, objective: a.goal,
+      });
+      const gapList = r.gaps.map(g => `- ${g}`).join('\n');
+      const note = r.action === 'complete'
+        ? `🎯 Goal met — confirmed by an independent check: ${goal.condition}`
+        : r.action === 'needs_review'
+          ? verdict.verdict === 'unmet'
+            ? `⚠️ Goal not met after ${MAX_GOAL_FEEDBACK_ROUNDS} more attempts — needs you. Still missing:\n${gapList}`
+            : `⚠️ Goal could not be verified automatically — needs your review.${gapList ? `\n${gapList}` : ''}`
+          : null;
+      return { action: r.action, gaps: r.gaps, feedback: r.feedback, note };
+    } catch (err) {
+      console.warn('[Artha] goal stop gate skipped:', (err as Error)?.name ?? 'Error');
+      return null;
     }
   }
 
