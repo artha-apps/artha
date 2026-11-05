@@ -83,6 +83,8 @@ export interface AgentPlan {
   requiresApproval: boolean;
   /** Pre-flight blast-radius estimate, rendered as the approval card header. */
   blastRadius?: BlastRadius;
+  /** Comment-driven planner revisions so far (the planner revises at most once). */
+  revisions?: number;
 }
 
 /** A per-tool-call approval the orchestrator paused on (policy `confirm` tier)
