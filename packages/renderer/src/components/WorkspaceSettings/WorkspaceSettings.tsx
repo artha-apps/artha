@@ -30,6 +30,7 @@ import MarketplacePanel from '../Settings/MarketplacePanel';
 import TeamPanel from '../Settings/TeamPanel';
 import LicensePanel from '../Settings/LicensePanel';
 import PoliciesPanel from '../Settings/PoliciesPanel';
+import GrantsPanel from '../Settings/GrantsPanel';
 import SettingsPanel from '../Settings/SettingsPanel';
 import GuidePanel from '../Settings/GuidePanel';
 import AboutPanel from '../Settings/AboutPanel';
@@ -61,6 +62,7 @@ const SECTIONS: NavSection[] = [
       { id: 'skills',    label: 'Skills',     icon: Sparkles,    Panel: SkillsPanel },
       { id: 'mcp',       label: 'MCP Tools',  icon: Wrench,      Panel: MCPToolsPanel },
       { id: 'policies',  label: 'Tool Policies', icon: ShieldAlert, Panel: PoliciesPanel },
+      { id: 'grants',    label: 'Grants',     icon: KeyRound,    Panel: GrantsPanel },
       { id: 'web',       label: 'Web',        icon: Globe,       Panel: WebPanel },
       { id: 'router',    label: 'Router',     icon: Route,       Panel: RouterPanel },
     ],

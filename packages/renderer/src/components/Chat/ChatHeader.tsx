@@ -5,11 +5,13 @@
  *   • Breadcrumb — Project ▸ Chat title (the title is inline-editable).
  *   • Scope chip — how many folders/files this chat is sandboxed to.
  *   • Run details — opens the Run Inspector for this chat's most recent run.
+ *   • Permission mode — how much the agent may do here without asking.
  */
 import { useEffect, useRef, useState } from 'react';
 import { Folder, Pencil, Check, X, FileText, ReceiptText, Lock } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 import { Tooltip } from '../ui/Tooltip';
+import PermissionModeSelector from './PermissionModeSelector';
 
 export default function ChatHeader() {
   const {
@@ -84,6 +86,7 @@ export default function ChatHeader() {
 
       {/* Right actions */}
       <div className="ml-auto flex items-center gap-2 shrink-0">
+        <PermissionModeSelector sessionId={session.session_id} />
         <Tooltip
           content={scopes.length ? scopes.map(s => s.path).join('\n') : 'This chat has no folder scope — the agent works without a sandbox.'}
           side="bottom"

@@ -18,6 +18,9 @@ import { sealPlaintextApiKeys, sealPlaintextColumns } from '../security/secretSt
 import { resealRawCredentialBlobs } from '../security/secrets';
 import { normalizeProviderIds } from '../llm/providerKind';
 import { ensureDefaultProfile } from '../llm/profiles';
+import type { SqlDb } from './sqlLike';
+import { INTERACTIONS_TABLE_SQL } from './interactionsTable';
+import { OUTBOX_SCHEMA_SQL } from './outboxSchema';
 
 /** Module-scoped handle so every call site uses the same WAL-mode connection. */
 let db: Database.Database | null = null;
@@ -329,6 +332,23 @@ export async function initDatabase(): Promise<void> {
       created_at  INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- ── Standing grants (expiring "always allow" answers) ───────────────────
+    -- One row per "Always allow" decision (see bodhi/grants.ts). scope_kind +
+    -- scope_value say WHAT is allowed (a tool name, a host, a folder, an app,
+    -- a connector); subject says WHERE (session:<id> | project:<id> |
+    -- schedule:<id> | global). expires_at NULL = no expiry. revoke_gen > 0 =
+    -- revoked (kept for the audit trail). Expired/revoked rows never match.
+    CREATE TABLE IF NOT EXISTS grants (
+      id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      scope_kind  TEXT NOT NULL CHECK(scope_kind IN ('tool','host','folder','app','connector')),
+      scope_value TEXT NOT NULL,
+      subject     TEXT NOT NULL,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at  INTEGER,
+      revoke_gen  INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_grants_subject ON grants(subject, revoke_gen);
+
     -- ── Verified tool receipts (provenance for function calls) ──────────────
     -- One row per tool call (including policy-blocked / dry-run calls). Carries
     -- a plain-English effect, a content hash of the result, the governing policy
@@ -401,6 +421,27 @@ export async function initDatabase(): Promise<void> {
       run_count    INTEGER NOT NULL DEFAULT 0,
       created_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );
+
+    -- Run history for scheduled tasks (automations v2). One row per fire —
+    -- cron, catch-up, folder trigger, webhook or "Run now". status comes from
+    -- the shared honest-outcome projection (never 'ok' unless verified);
+    -- 'held' = a hold state stopped the run before it started. is_read drives
+    -- the Scheduler inbox unread count; summary_hash backs notify=on_change.
+    CREATE TABLE IF NOT EXISTS task_executions (
+      exec_id      TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      task_id      TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'running',
+      trigger_kind TEXT NOT NULL DEFAULT 'schedule',
+      started_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+      ended_at     INTEGER,
+      run_id       TEXT,
+      summary      TEXT,
+      summary_hash TEXT,
+      is_read      INTEGER NOT NULL DEFAULT 0,
+      fail_reason  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_exec_task ON task_executions(task_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_task_exec_unread ON task_executions(is_read);
 
     -- ── Agent Memory ──────────────────────────────────────────────────────
     -- Persistent facts the agent accumulates across sessions.
@@ -677,6 +718,51 @@ export async function initDatabase(): Promise<void> {
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- Append-only per-run event timeline (agent/runEvents.ts). seq is
+    -- monotonic per run starting at 1; the composite PK both orders replay
+    -- and rejects a duplicate seq. Lets a reloaded renderer resubscribe from
+    -- the last seq it saw. Never used to decide task completion.
+    CREATE TABLE IF NOT EXISTS run_events (
+      run_id       TEXT NOT NULL,
+      seq          INTEGER NOT NULL,
+      ts           INTEGER NOT NULL,
+      kind         TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT 'null',
+      PRIMARY KEY (run_id, seq)
+    );
+
+    -- Persistent goals (bodhi/goals.ts): a session-scoped objective plus a
+    -- checkable condition, judged at every run's stop gate by the independent
+    -- evaluator (bodhi/goalEvaluator.ts). ONLY the evaluator path may write
+    -- status='completed'; only the user may write 'terminated'. Timestamps are
+    -- epoch MILLISECONDS so active_ms (accumulated active time) is exact.
+    CREATE TABLE IF NOT EXISTS goals (
+      goal_id           TEXT PRIMARY KEY,
+      session_id        TEXT NOT NULL,
+      objective         TEXT NOT NULL,
+      condition         TEXT NOT NULL,
+      status            TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active','paused','blocked','completed','terminated')),
+      blocked_reason    TEXT,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      active_ms         INTEGER NOT NULL DEFAULT 0,
+      last_verdict_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_goals_session ON goals(session_id, status);
+
+    -- Per-app desktop-control grants (desktop/appGrants.ts). One row = "Artha
+    -- may drive app_id for subject until expires_at". subject is
+    -- 'session:<id>' (Once) or 'project:<id>' (Always for this project).
+    -- Expired rows are ignored on read; there is no implicit forever grant.
+    CREATE TABLE IF NOT EXISTS app_grants (
+      app_id      TEXT NOT NULL,
+      subject     TEXT NOT NULL,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at  INTEGER NOT NULL,
+      PRIMARY KEY (app_id, subject)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_source ON agent_tasks(source_type, source_id);
     CREATE INDEX IF NOT EXISTS idx_criteria_task ON task_acceptance_criteria(task_id);
     CREATE INDEX IF NOT EXISTS idx_evidence_task ON task_evidence(task_id);
@@ -787,6 +873,12 @@ export async function initDatabase(): Promise<void> {
            'Ask before deleting any file (default — edit or remove in Settings → Tool Policies).'
     WHERE NOT EXISTS (SELECT 1 FROM tool_policies);
   `);
+
+  // Unified human-in-the-loop frame (agent/interactions.ts). DDL lives in its
+  // own module so tests run the identical CREATE TABLE IF NOT EXISTS.
+  db.exec(INTERACTIONS_TABLE_SQL);
+  // Outbox (type while Artha works) — DDL shared with the vitest suites.
+  db.exec(OUTBOX_SCHEMA_SQL);
 
   console.log('[Artha] Database schema ready at', dbPath);
 }
@@ -1215,6 +1307,17 @@ export function runMigrations(): void {
     add('last_run_id', 'TEXT');     // the inspectable handle that was missing
     add('last_outcome', 'TEXT');    // projected task status
     add('last_detail', 'TEXT');     // honest one-line explanation
+    // Automations v2 (ops hygiene, notify policy, triggers). All additive.
+    add('next_due_at', 'INTEGER');                              // armed cron slot — basis for catch-up
+    add('last_catchup_slot', 'INTEGER');                        // at most one catch-up per slot
+    add('consecutive_failures', 'INTEGER NOT NULL DEFAULT 0');  // auto-pause at 3
+    add('pause_reason', 'TEXT');                                // visible why-it-paused
+    add('on_hold', 'INTEGER NOT NULL DEFAULT 0');               // re-auth / folder missing / model unavailable
+    add('hold_reason', 'TEXT');
+    add('notify', "TEXT NOT NULL DEFAULT 'always'");            // always | on_change | on_failure
+    add('watch_folder', 'TEXT');                                // folder trigger (must be inside scopes)
+    add('webhook_enabled', 'INTEGER NOT NULL DEFAULT 0');       // local webhook, off by default
+    add('webhook_token', 'TEXT');                               // per-task secret; no token = rejected
   } catch (err) {
     console.warn('[Artha] scheduled_tasks truthfulness migration skipped:', err);
   }
@@ -1233,5 +1336,132 @@ export function runMigrations(): void {
     console.warn('[Artha] scheduled task reconciliation skipped:', err);
   }
 
+  // Migration v25→v26: per-session permission mode (agent/modes.ts). NULL =
+  // "use the default derived from the autonomousActions setting", so existing
+  // chats keep exactly their current behaviour.
+  try {
+    const cols = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
+    if (cols.length && !cols.some(c => c.name === 'permission_mode')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN permission_mode TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] chat_sessions permission_mode migration skipped:', err);
+  }
+
+  // Durable undo, file checkpoints and resume bookkeeping (additive).
+  try {
+    applyDurabilitySchema(db as unknown as SqlDb);
+  } catch (err) {
+    console.warn('[Artha] durability schema migration skipped:', err);
+  }
+
+  // An interaction left 'pending' by an app quit has no live waiter any more
+  // (the paused run died with the main process), so it can never be answered.
+  // Mark it expired so the UI does not re-show a question nobody is awaiting.
+  // A renderer-only reload does NOT run this — pending rows survive it.
+  try {
+    const r = db.prepare(
+      `UPDATE interactions SET status='expired', answered_at=unixepoch() WHERE status='pending'`
+    ).run();
+    if (r.changes > 0) console.log(`[Artha] expired ${r.changes} orphaned interaction(s).`);
+  } catch (err) {
+    console.warn('[Artha] interaction reconciliation skipped:', err);
+  }
+
+  // Migration v25→v26 (Outbox): per-session pause flag for the outbox queue.
+  // outbox_paused=1 holds queued messages (user Pause, or automatically after
+  // the user cancels a run); outbox_paused_reason says why ('user'|'cancel').
+  try {
+    const cols = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
+    if (cols.length && !cols.some(c => c.name === 'outbox_paused')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN outbox_paused INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (cols.length && !cols.some(c => c.name === 'outbox_paused_reason')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN outbox_paused_reason TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] chat_sessions outbox_paused migration skipped:', err);
+  }
+
+  // An item left 'sending' by an app quit mid-hand-off was never confirmed
+  // persisted as a user turn by this process — return it to 'ready' so it is
+  // not silently lost. (The flip to 'sent' happens right after the message row
+  // is written, so the window is tiny.)
+  try {
+    db.prepare(`UPDATE outbox SET status='ready', updated_at=unixepoch() WHERE status IN ('sending','editing')`).run();
+  } catch (err) {
+    console.warn('[Artha] outbox reconciliation skipped:', err);
+  }
+
+  // Executions left 'running' by an app quit get the same honest treatment.
+  try {
+    db.prepare(
+      `UPDATE task_executions
+          SET status='unverified', ended_at=unixepoch(),
+              fail_reason='Artha closed while this run was in progress; completion was not verified.'
+        WHERE status='running'`
+    ).run();
+  } catch (err) {
+    console.warn('[Artha] task_executions reconciliation skipped:', err);
+  }
+
   console.log('[Artha] Database migrations applied.');
+}
+
+/**
+ * Durability tables + columns: persistent undo, file checkpoints, and the
+ * interrupted-run resume offer. Additive and idempotent — safe to run on every
+ * launch. Exported (and driver-agnostic via SqlDb) so tests can apply the
+ * exact production DDL to an in-memory `node:sqlite` database.
+ */
+export function applyDurabilitySchema(db: SqlDb): void {
+  db.exec(`
+    -- Reversible filesystem actions the agent performed. Previously held in
+    -- memory and lost on restart; persisted so "Undo" survives an app quit.
+    -- created_at is epoch MILLISECONDS (ordering within one second matters).
+    -- Capped at 50 rows per session (pruned on insert, see agent/undo.ts).
+    CREATE TABLE IF NOT EXISTS undo_entries (
+      id           TEXT PRIMARY KEY,
+      run_id       TEXT,
+      session_id   TEXT,
+      step_id      TEXT,
+      op           TEXT NOT NULL,          -- move|move_batch|copy|create_dir|trash
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at   INTEGER NOT NULL,
+      undone_at    INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_undo_session ON undo_entries(session_id, created_at);
+
+    -- Pre-mutation file snapshots. Content lives in the content-addressed
+    -- store userData/checkpoints/<sha256>; a row records what a path looked
+    -- like immediately BEFORE a step overwrote/moved/deleted it.
+    --   existed=0      → the path did not exist (rewind removes it)
+    --   skipped_reason → no snapshot was taken (too_large|directory|unreadable)
+    --   evicted_at     → snapshot evicted by the store cap (never silent)
+    CREATE TABLE IF NOT EXISTS checkpoint_files (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id         TEXT NOT NULL,
+      step_id        TEXT,
+      step_idx       INTEGER,
+      path           TEXT NOT NULL,
+      sha256         TEXT,
+      existed        INTEGER NOT NULL,
+      size           INTEGER,
+      skipped_reason TEXT,
+      evicted_at     INTEGER,
+      created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_checkpoint_run ON checkpoint_files(run_id, id);
+    CREATE INDEX IF NOT EXISTS idx_checkpoint_sha ON checkpoint_files(sha256);
+  `);
+
+  // agent_runs: resume-offer state for runs reconciled as 'interrupted'.
+  // NULL = still offered; 'dismissed' | 'resumed' = handled by the user.
+  const runCols = db.prepare(`PRAGMA table_info(agent_runs)`).all() as { name: string }[];
+  const add = (col: string, decl: string) => {
+    if (runCols.length && !runCols.some(c => c.name === col)) {
+      db.exec(`ALTER TABLE agent_runs ADD COLUMN ${col} ${decl}`);
+    }
+  };
+  add('resume_state', 'TEXT');
 }

@@ -315,12 +315,27 @@ const MAX_POLL_MS = 15 * 60 * 1000; // 15 min ceiling so a hung run can't poll f
  * UI stays in "executing" with visible progress and only moves to "reviewing"
  * /"completed" when the Task actually finishes.
  */
+/** Permission mode chosen in the Delegate header for the NEXT task (null =
+ *  follow the Autonomous actions default). Module state so the selector and
+ *  the engine share it without widening the store. */
+let delegateMode: 'ask' | 'accept_edits' | 'auto' | null = null;
+
+/** Set the permission mode for the next Delegate task. */
+export function setDelegateMode(mode: 'ask' | 'accept_edits' | 'auto' | null): void {
+  delegateMode = mode;
+}
+
+/** The permission mode the next Delegate task will start with. */
+export function getDelegateMode(): 'ask' | 'accept_edits' | 'auto' | null {
+  return delegateMode;
+}
+
 export const ipcDelegateEngine: DelegateEngine = {
   plan: (goal, onStage) => mockDelegateEngine.plan(goal, onStage),
 
   async execute(plan, hooks) {
     hooks.onStage('executing');
-    const { runId, sessionId, capability } = await window.artha.delegate.start(plan.goal);
+    const { runId, sessionId, capability } = await window.artha.delegate.start(plan.goal, delegateMode);
     // Surface the task identity to the store. These were previously local
     // variables that died with the function, which is why the UI could not
     // stop a run, continue a task, or link to its evidence.

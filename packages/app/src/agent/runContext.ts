@@ -29,6 +29,11 @@ export interface RunContext {
    *  policy fails closed for these — there is nobody to approve, so the call is
    *  blocked rather than hanging on a desktop modal that no one will answer. */
   unattended?: boolean;
+  /** Set when this run continues one the app interrupted (restart/crash).
+   *  `confirmedActionIds` are the external_actions rows the interrupted run
+   *  had already confirmed or dispatched — tools that act externally (see
+   *  gmailSend.ts) refuse to repeat them, whatever the model asks for. */
+  resume?: { fromRunId: string; confirmedActionIds: string[] };
 }
 
 const storage = new AsyncLocalStorage<RunContext>();
@@ -42,4 +47,15 @@ export function runWithContext<T>(ctx: RunContext, fn: () => T): T {
  *  desktop path that never sets it — treated as a trusted local actor). */
 export function getRunContext(): RunContext | undefined {
   return storage.getStore();
+}
+
+/**
+ * True when a `confirm`-tier tool call in the current run must be BLOCKED
+ * rather than shown to a human: LAN requests and unattended runs (every
+ * scheduler trigger — cron, catch-up, folder, webhook, Run now) have nobody to
+ * answer an approval modal. The orchestrator's policy gate uses this, so the
+ * rule lives in one testable place.
+ */
+export function confirmTierMustFailClosed(rc: RunContext | undefined = getRunContext()): boolean {
+  return !!rc?.lan || !!rc?.unattended;
 }

@@ -20,10 +20,13 @@ import DelegateTaskInput from './DelegateTaskInput';
 import DelegateProgressTimeline from './DelegateProgressTimeline';
 import DelegatePlanView from './DelegatePlanView';
 import DelegateResultView from './DelegateResultView';
+import DelegateModeSelector from './DelegateModeSelector';
+import GoalChip from './GoalChip';
+import AskUserCards from '../Chat/AskUserCard';
 
 export default function DelegateTab() {
   const {
-    status, goal, plan, result, error, thread, stopping, runId, tasks,
+    status, goal, plan, result, error, thread, stopping, runId, sessionId, tasks,
     submit, confirm, cancel, reset, stop, continueTask, openTask, loadTasks, decide,
   } = useDelegateStore();
 
@@ -46,6 +49,9 @@ export default function DelegateTab() {
   if (status === 'idle') {
     return (
       <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-8 pt-4 flex justify-end">
+          <DelegateModeSelector />
+        </div>
         <DelegateTaskInput onSubmit={submit} />
         {tasks.length > 0 && (
           <div className="max-w-2xl mx-auto px-8 pb-10">
@@ -119,6 +125,9 @@ export default function DelegateTab() {
           </div>
         </div>
 
+        {/* Persistent goal (objective, status, elapsed, Pause/Resume/Stop). */}
+        <GoalChip sessionId={sessionId} />
+
         {/* Failure state — lead with the agent's own honest explanation (the
             backend already wrote the truthful reason, e.g. "the email was NOT
             sent…") rather than a generic "something went wrong". */}
@@ -138,6 +147,9 @@ export default function DelegateTab() {
         {plan && (
           <DelegatePlanView plan={plan} status={status} onConfirm={confirm} onCancel={cancel} />
         )}
+
+        {/* ask_user — a delegated run paused on a question for the user. */}
+        <AskUserCards />
 
         {/* Result — shown for a verified completion AND for a finished-but-
             unverified run (needs_review); the view itself renders the honest

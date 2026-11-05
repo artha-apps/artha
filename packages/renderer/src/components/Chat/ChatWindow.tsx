@@ -12,7 +12,7 @@
  * presentational beyond that toggle and the input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw, Bot, Pencil, History, Package } from 'lucide-react';
+import { Send, ListPlus, Square, Copy, Check, Globe, Sparkles, Paperclip, FileText, X, Mic, MicOff, Loader, CheckCircle2, Folder, FolderPlus, FilePlus2, RefreshCw, Bot, Pencil, History, Package } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useChatStore, type ReasoningStep } from '../../stores/chat';
 import { useBrowserStore } from '../../stores/browser';
@@ -20,8 +20,12 @@ import { BrandWordmark } from '../ui/BrandWordmark';
 import { toast, useToastStore } from '../../stores/toast';
 import ToolCallInline from './ToolCallInline';
 import Citations from './Citations';
+import AskUserCards from './AskUserCard';
 import AtAutocomplete, { type AtSuggestion } from './AtAutocomplete';
 import { Tooltip } from '../ui/Tooltip';
+import OutboxPanel from './OutboxPanel';
+import { composerMode } from '../../lib/outboxQueue';
+import type { OutboxSnapshot } from '../../../../app/src/preload';
 
 /** First-run hints shown on the empty state and the new-session screen. */
 const SUGGESTED_PROMPTS = [
@@ -363,6 +367,36 @@ export default function ChatWindow() {
     return () => { off(); };
   }, [setLiveReasoning]);
 
+  // ── Outbox (type while Artha works) ──────────────────────────────────────
+  // The active session's queue snapshot. Loaded on session switch and kept
+  // fresh from `outbox:updated`; drained/steered items become user bubbles.
+  const [outbox, setOutbox] = useState<OutboxSnapshot | null>(null);
+  useEffect(() => {
+    setOutbox(null);
+    if (!activeSessionId) return;
+    let live = true;
+    window.artha.outbox.list(activeSessionId).then(s => { if (live) setOutbox(s); }).catch(() => {});
+    return () => { live = false; };
+  }, [activeSessionId]);
+  useEffect(() => {
+    const offUpdated = window.artha.outbox.onUpdated(snap => {
+      if (snap.sessionId === useChatStore.getState().activeSessionId) setOutbox(snap);
+    });
+    // A queued item left the queue: show it as the user's turn. A drained item
+    // starts a fresh run, so the working UI turns on; a steered one joins the
+    // run already in progress.
+    const offSent = window.artha.outbox.onSent(({ sessionId, item, mode }) => {
+      const st = useChatStore.getState();
+      st.addUserMessage(sessionId, item.content, item.attachments.length ? item.attachments : undefined);
+      if (mode === 'drain' && sessionId === st.activeSessionId) st.setStreaming(true);
+    });
+    const offFailed = window.artha.outbox.onTurnFailed(({ sessionId, error }) => {
+      if (sessionId === useChatStore.getState().activeSessionId) useChatStore.getState().setStreaming(false);
+      toast.error('Queued message failed', error);
+    });
+    return () => { offUpdated(); offSent(); offFailed(); };
+  }, []);
+
   // Clear the indicator once the run is no longer streaming.
   useEffect(() => {
     if (!isStreaming) setParallelTasks(null);
@@ -446,7 +480,22 @@ export default function ChatWindow() {
    *  arrives — small UX win on slow models. */
   const send = async (text?: string) => {
     const msg = (text ?? input).trim();
-    if (!msg || !activeSessionId || isStreaming) return;
+    if (!msg || !activeSessionId) return;
+    // A run is active: Send is Queue — park the message in the outbox; main
+    // sends it when the run ends (or at a tool-call boundary on steer-now).
+    if (composerMode(isStreaming, outbox) === 'queue') {
+      const attachments = pendingAttachments.length ? [...pendingAttachments] : undefined;
+      try {
+        const r = await window.artha.outbox.enqueue(activeSessionId, msg, attachments);
+        setOutbox(r.snapshot);
+        setInput('');
+        if (textareaRef.current) textareaRef.current.style.height = 'auto';
+        setPendingAttachments([]);
+      } catch (err) {
+        toast.error('Couldn’t queue message', err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
     // Model-readiness guard: sending with no active model used to fail opaquely.
     // Route the user to model setup instead. Only pays a round-trip until a
     // model is first confirmed (then the ref short-circuits).
@@ -998,6 +1047,9 @@ export default function ChatWindow() {
             </div>
           )}
 
+          {/* ask_user — the run is paused inside a tool call waiting on these. */}
+          <AskUserCards sessionId={activeSessionId} />
+
           <div ref={bottomRef} />
         </div>
       </div>
@@ -1271,6 +1323,11 @@ export default function ChatWindow() {
             </div>
           )}
 
+          {/* Outbox queue — messages typed while Artha works */}
+          {outbox && outbox.sessionId === activeSessionId && (
+            <OutboxPanel snapshot={outbox} onSnapshot={setOutbox} />
+          )}
+
           {/* Pending image attachments — shown above composer */}
           {pendingAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2 px-1">
@@ -1351,6 +1408,15 @@ export default function ChatWindow() {
                 <Globe size={14} />
               </button>
             </Tooltip>
+            {/* While a run is active, Send becomes Queue (next to Stop). */}
+            {composerMode(isStreaming, outbox) === 'queue' && (
+              <Tooltip content="Queue — sends when Artha finishes (↩)">
+                <button onClick={() => send()} disabled={!input.trim()} aria-label="Queue message"
+                  className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-artha-accent/15 hover:bg-artha-accent/25 text-artha-accent text-xs font-medium disabled:opacity-25 disabled:cursor-not-allowed transition-colors shrink-0">
+                  <ListPlus size={14} /> Queue
+                </button>
+              </Tooltip>
+            )}
             {isStreaming ? (
               <Tooltip content="Stop the agent">
                 <button onClick={stop}
@@ -1358,7 +1424,7 @@ export default function ChatWindow() {
                   <Square size={14} fill="currentColor" />
                 </button>
               </Tooltip>
-            ) : (
+            ) : composerMode(isStreaming, outbox) === 'send' && (
               <Tooltip content="Send message (⌘↩)">
                 <button onClick={() => send()} disabled={!input.trim()}
                   className="p-2 rounded-xl bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-artha-on-accent disabled:opacity-25 disabled:cursor-not-allowed transition-all duration-200 active:scale-95 shrink-0">

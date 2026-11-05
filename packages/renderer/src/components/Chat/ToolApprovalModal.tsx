@@ -10,9 +10,17 @@
  *
  * The exact arguments are shown verbatim so you can see precisely what would
  * happen (which file, which URL) before it does.
+ *
+ * "Always allow (30 days)" (shown only when the orchestrator offers it — never
+ * for the always-confirm floor such as email_send) approves this call AND
+ * records an expiring grant for the tool, revocable in Settings → Grants.
+ *
+ * Per-app desktop grants reuse this modal: when the request carries
+ * `appGrant`, it asks "Allow Artha to control {App}?" with Once / Always for
+ * this project (30 days) / Deny.
  */
 import { useEffect, useState } from 'react';
-import { ShieldQuestion, Check, X, Wrench, Code2, SlidersHorizontal } from 'lucide-react';
+import { ShieldQuestion, Check, X, Wrench, Code2, SlidersHorizontal, CalendarClock, MonitorSmartphone } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
 /** Map common tool-arg keys to friendly labels so non-technical users can read
@@ -62,12 +70,16 @@ export default function ToolApprovalModal() {
 
   if (!pendingToolApproval) return null;
 
-  const { approvalId, toolName, argsPreview, note } = pendingToolApproval;
+  const { approvalId, toolName, argsPreview, note, allowAlways, appGrant } = pendingToolApproval;
 
-  /** Dismiss first for instant feedback, then answer over IPC. */
-  const respond = (approved: boolean) => {
+  /** Dismiss first for instant feedback, then answer over IPC. Enter on an
+   *  app-grant prompt means "Once" — never the durable "Always". On a tool
+   *  prompt, 'always' asks the orchestrator to record a 30-day tool grant
+   *  (only honoured when it offered one). */
+  const respond = (approved: boolean, scope?: 'once' | 'always') => {
     setPendingToolApproval(null);
-    window.artha.agent.respondToolApproval(approvalId, approved);
+    const answer = appGrant ? (scope ?? 'once') : (scope === 'always' && allowAlways ? 'always' : undefined);
+    window.artha.agent.respondToolApproval(approvalId, approved, answer);
   };
 
   /** Stepping away to manage rules means skipping this specific call (the safe
@@ -79,6 +91,56 @@ export default function ToolApprovalModal() {
   };
 
   const rows = humanizeArgs(argsPreview);
+
+  if (appGrant) {
+    return (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-artha-bg/60 backdrop-blur-md animate-fade-in">
+        <div className="w-full max-w-md mx-4 rounded-2xl border border-artha-border bg-artha-surface-raised shadow-modal overflow-hidden animate-scale-in">
+          <div className="flex items-start gap-3 px-5 pt-5 pb-4 border-b border-artha-border">
+            <div className="w-8 h-8 rounded-xl bg-artha-warn/10 border border-artha-warn/30 flex items-center justify-center shrink-0 mt-0.5">
+              <MonitorSmartphone size={15} className="text-artha-warn" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-artha-text">Allow Artha to control {appGrant.appName}?</p>
+              <p className="text-xs text-artha-muted mt-0.5">
+                Artha will move your mouse and type in this app ({toolName}).
+              </p>
+            </div>
+          </div>
+          {appGrant.alwaysConfirm && (
+            <p className="px-5 pt-3 text-xs text-artha-warn">
+              {note || `${appGrant.appName} is sensitive, so Artha asks every time.`}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2 px-5 py-4">
+            <button
+              onClick={() => respond(false)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-artha-border hover:bg-artha-danger/8 hover:border-artha-danger/40 text-sm text-artha-text transition-colors"
+            >
+              <X size={15} className="text-artha-danger" /> Deny
+            </button>
+            <button
+              onClick={() => respond(true, 'once')}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-artha-border hover:bg-artha-surface text-sm text-artha-text transition-colors"
+            >
+              <Check size={15} /> Once
+            </button>
+            {appGrant.alwaysAllowed && (
+              <button
+                onClick={() => respond(true, 'always')}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-artha-on-accent text-sm font-medium transition-all duration-200 active:scale-95"
+              >
+                <Check size={15} /> Always for this project (30 days)
+              </button>
+            )}
+          </div>
+          <div className="px-5 pb-4 -mt-1 text-right">
+            <span className="text-[10px] text-artha-subtle">Enter = Once · Esc denies</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-artha-bg/60 backdrop-blur-md animate-fade-in">
@@ -150,6 +212,17 @@ export default function ToolApprovalModal() {
             <Check size={15} /> Approve & Run
           </button>
         </div>
+        {allowAlways && (
+          <div className="px-5 -mt-2 pb-3">
+            <button
+              onClick={() => respond(true, 'always')}
+              className="w-full flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg border border-artha-border hover:border-artha-accent/50 text-xs text-artha-text transition-colors"
+              title={`Run ${toolName} without asking for the next 30 days. Revoke any time in Settings → Grants.`}
+            >
+              <CalendarClock size={13} className="text-artha-accent" /> Always allow (30 days)
+            </button>
+          </div>
+        )}
         <div className="flex items-center justify-between px-5 pb-4 -mt-1">
           <button
             onClick={reviewPolicies}

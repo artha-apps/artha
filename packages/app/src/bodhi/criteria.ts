@@ -127,6 +127,30 @@ export interface CriteriaDb {
   };
 }
 
+/**
+ * Return the run's `agent_tasks` id, creating and linking a task row when the
+ * run has none yet. Shared by acceptance criteria and the goal stop gate so
+ * every criterion/evidence row for a run hangs off the same task. Throws on DB
+ * errors — callers wrap it in their own never-throw contract.
+ */
+export function ensureRunTask(
+  db: CriteriaDb,
+  opts: { runId: string; sessionId: string; goal: string; newId?: () => string },
+): string {
+  const runRow = db.prepare(`SELECT task_id FROM agent_runs WHERE run_id=?`).get(opts.runId) as
+    { task_id: string | null } | undefined;
+  let taskId = runRow?.task_id ?? null;
+  if (!taskId) {
+    taskId = (opts.newId ?? (() => Math.random().toString(16).slice(2) + Date.now().toString(16)))();
+    db.prepare(
+      `INSERT INTO agent_tasks (task_id, source_type, source_id, conversation_id, objective, acceptance_mode, last_run_id)
+       VALUES (?, 'delegate', ?, ?, ?, 'system_verified', ?)`
+    ).run(taskId, opts.runId, opts.sessionId, opts.goal.slice(0, 500), opts.runId);
+    db.prepare(`UPDATE agent_runs SET task_id=? WHERE run_id=?`).run(taskId, opts.runId);
+  }
+  return taskId;
+}
+
 export interface RecordCriteriaResult {
   taskId: string | null;
   recorded: number;
@@ -182,17 +206,7 @@ export function recordAcceptanceCriteria(
     if (!drafts.length) return { ...empty, truncated };
 
     // 1. Ensure the run is anchored to a task row.
-    const runRow = db.prepare(`SELECT task_id FROM agent_runs WHERE run_id=?`).get(opts.runId) as
-      { task_id: string | null } | undefined;
-    let taskId = runRow?.task_id ?? null;
-    if (!taskId) {
-      taskId = (opts.newId ?? (() => Math.random().toString(16).slice(2) + Date.now().toString(16)))();
-      db.prepare(
-        `INSERT INTO agent_tasks (task_id, source_type, source_id, conversation_id, objective, acceptance_mode, last_run_id)
-         VALUES (?, 'delegate', ?, ?, ?, 'system_verified', ?)`
-      ).run(taskId, opts.runId, opts.sessionId, opts.goal.slice(0, 500), opts.runId);
-      db.prepare(`UPDATE agent_runs SET task_id=? WHERE run_id=?`).run(taskId, opts.runId);
-    }
+    const taskId = ensureRunTask(db, opts);
 
     // 2. Evaluate against reality and persist.
     let passed = 0, failed = 0;

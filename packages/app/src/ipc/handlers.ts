@@ -42,6 +42,11 @@ import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { runWithContext } from '../agent/runContext';
 import { listUndoable, revert } from '../agent/undo';
+import { rewindRunToStep } from '../agent/checkpoints';
+import { listInterruptedRuns, getInterruptedRun, markInterruptedRun, buildResumePrompt } from '../agent/resume';
+import { refreshKeepAwake, readKeepAwakeSettings } from '../system/keepAwake';
+import type { SqlDb } from '../db/sqlLike';
+import * as outboxStore from '../agent/outbox';
 import { globalSearch } from '../search/global';
 import { getBriefing, markBriefingSeen } from '../briefing/briefing';
 import { spawnEnv } from '../system/nodePath';
@@ -61,10 +66,13 @@ import { usableApiKey } from '../llm/client';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
+import { listGrants, revokeGrant } from '../bodhi/grants';
+import { getSessionMode, setSessionMode, isPermissionMode, defaultModeFor, type PermissionMode } from '../agent/modes';
 import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { deriveDelegateOutcome } from '../bodhi/delegateOutcome';
 import { recordAcceptance } from '../bodhi/acceptance';
 import { readRunEvidence } from '../bodhi/evidence';
+import { getLatestGoal, userSetGoalStatus, goalElapsedMs, GoalError } from '../bodhi/goals';
 import { parseSkillImport } from '../skills/util';
 import { getSkillMetrics, getSkillModelStats, getSkillToolUsage, getSkillFailures } from '../skills/metrics';
 import { getDefaultRagIndexer, setDefaultEmbeddingResolver } from '../rag/indexer';
@@ -99,12 +107,25 @@ import { getRawLicenseKey, currentEntitlements } from '../license/current';
 import { DEFAULT_WEB_CONFIG, clearWebCache, type WebConfig } from '../tools/web';
 import { BrowserController } from '../browser/controller';
 import { setBrowserToolEmitter } from '../tools/browser';
+import { getInteractionHub, type Interaction } from '../agent/interactions';
+import type { PlanReview } from '../agent/planReview';
 import { createRateLimiter } from '../net/rateLimiter';
 import {
   parseMemoryExport, refineMemoryExport, importMemories, exportMemories,
   type ParsedEntry,
 } from '../tools/memoryImport';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
+import { listActiveRuns, listRunEvents, recordRunEvent } from '../agent/runEvents';
+import { installInteractionRunEvents } from '../agent/interactionRunEvents';
+import { createRunSubscriptions } from '../agent/runEventIpc';
+import { getKillSwitch, triggerStop } from '../desktop/runtime';
+import { DEFAULT_STOP_ACCELERATOR } from '../desktop/killSwitch';
+
+/** Process-wide run:subscribe registry, keyed by webContents id + run id. */
+const runSubscriptions = createRunSubscriptions();
+/** webContents ids whose teardown hooks are already attached (attach once). */
+const runSubscribedClients = new Set<number>();
+import { exportTaskMarkdown, parseTaskMarkdown } from '../scheduler/taskFile';
 
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
 // IPC channel shares the same ReAct loop and in-flight workflow map.
@@ -370,6 +391,29 @@ async function startLanServer(): Promise<{ running: boolean; url: string | null;
       return;
     }
 
+    // Local webhook trigger for a scheduled task: POST /hooks/tasks/:taskId
+    // with header `X-Artha-Task-Token: <per-task token>`. Authorised by the
+    // per-task secret (not a member API key) so simple local tools can call it;
+    // it fails CLOSED — webhook off, no token, or a mismatch runs nothing
+    // (SchedulerService.handleWebhook → authorizeWebhook). The run itself goes
+    // through the same unattended path as a cron fire.
+    const hookMatch = /^\/hooks\/tasks\/([A-Za-z0-9-]{1,64})$/.exec(url.pathname);
+    if (hookMatch) {
+      if (req.method !== 'POST') { json(405, { error: 'Use POST.' }); return; }
+      const clientIp = req.socket.remoteAddress ?? 'unknown';
+      if (!lanChatLimiter.take(`hook:${clientIp}`)) {
+        json(429, { error: 'Too many requests. Slow down and retry shortly.' });
+        return;
+      }
+      const header = req.headers['x-artha-task-token'];
+      const token = Array.isArray(header) ? header[0] : header;
+      const result = SchedulerService.getInstance().handleWebhook(hookMatch[1], token);
+      // Drain (and ignore) any body so the socket closes cleanly.
+      req.resume();
+      json(result.status, result.body);
+      return;
+    }
+
     // All other routes require a valid Bearer token if any keys exist. The
     // resolved identity is captured for future per-member context; admin-only
     // routes (none yet in Phase 1) will require `role === 'admin'` when
@@ -569,6 +613,12 @@ function stopLanServer(): { running: boolean; url: string | null; localIp: strin
  *
  * Must be called exactly once, after the BrowserWindow is created.
  */
+/** Modes the Delegate header may set on a task session (plan and unattended
+ *  are excluded: Delegate approves plans itself; unattended is runtime-only). */
+function isDelegateMode(m: unknown): m is 'ask' | 'accept_edits' | 'auto' {
+  return isPermissionMode(m) && m !== 'plan' && m !== 'unattended';
+}
+
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
 
@@ -581,6 +631,14 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (!wc || wc.isDestroyed()) return;
     try { wc.send(channel, payload); } catch { /* torn down mid-send */ }
   };
+
+  // Unified human-in-the-loop frame (agent/interactions.ts): every pause
+  // (ask_user, plan, handoff, confirm) is pushed on `interaction:pending` /
+  // `interaction:resolved`.
+  getInteractionHub().setEmitter((channel, payload) => safeSend(channel, payload));
+  // ask_user cards and plan reviews also land in the run event log as
+  // `interaction` events (confirms record their own in requestToolApproval).
+  installInteractionRunEvents(getInteractionHub(), recordRunEvent);
 
   // Load all enabled MCP servers at startup
   // A server that only ever fails is paused automatically (mcp/registry.ts);
@@ -762,15 +820,150 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     await orchestrator.approvePlan(workflowId, approved);
   });
 
+  // Structured plan review: Accept / Accept with comments / Reject (reason).
+  ipcMain.handle('agent:reviewPlan', async (_e, workflowId: string, review: PlanReview) => {
+    await orchestrator.reviewPlan(workflowId, review);
+  });
+
+  // Unified interaction frame. listPending lets the renderer re-show pending
+  // pauses after a reload; respond answers/declines any of them by id (each
+  // flow routes it to its own legacy resolver, so behaviour is identical).
+  ipcMain.handle('interactions:listPending', (): Interaction[] => getInteractionHub().listPending());
+  ipcMain.handle('interactions:respond', (_e, id: string, status: 'answered' | 'declined', answer?: unknown): boolean => {
+    if (status !== 'answered' && status !== 'declined') return false;
+    return getInteractionHub().respond(id, status, answer);
+  });
+
   ipcMain.handle('agent:clarifyRespond', (_e, workflowId: string, answers: string[] | null) => {
     orchestrator.clarifyRespond(workflowId, answers);
   });
 
+  // ── Outbox (type while Artha works) ──────────────────────────────────────
+  // Queue messages while a run is active; the orchestrator's OutboxDriver
+  // drains them one at a time when the run ends (never after a cancel, never
+  // past a pending approval) or injects one at a tool-call boundary on steer.
+  // Every mutating handler returns the session's fresh snapshot.
+  ipcMain.handle('outbox:list', (_e, sessionId: string) => orchestrator.outbox.snapshot(sessionId));
+
+  ipcMain.handle('outbox:enqueue', (_e, sessionId: string, content: string, attachments?: outboxStore.OutboxAttachment[]) => {
+    const item = outboxStore.enqueue(sessionId, content, attachments ?? null);
+    // If no run is actually active (e.g. it ended while the user typed), the
+    // driver sends it right away — the queue never strands a message.
+    void orchestrator.outbox.tryDrain(sessionId);
+    orchestrator.outbox.notify(sessionId);
+    return { item, snapshot: orchestrator.outbox.snapshot(sessionId) };
+  });
+
+  ipcMain.handle('outbox:reorder', (_e, sessionId: string, orderedIds: string[]) => {
+    outboxStore.reorder(sessionId, Array.isArray(orderedIds) ? orderedIds : []);
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:edit', (_e, itemId: string, patch: { content?: string; editing?: boolean }) => {
+    const item = outboxStore.edit(itemId, patch ?? {});
+    const sessionId = item?.sessionId ?? outboxStore.getItem(itemId)?.sessionId;
+    if (!sessionId) return null;
+    // Saving an edit may unblock a drain that skipped the held item.
+    if (item?.status === 'ready') void orchestrator.outbox.tryDrain(sessionId);
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:cancel', (_e, itemId: string) => {
+    const sessionId = outboxStore.getItem(itemId)?.sessionId;
+    outboxStore.cancel(itemId);
+    if (!sessionId) return null;
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:pause', (_e, sessionId: string) => {
+    outboxStore.pause(sessionId, 'user');
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:resume', (_e, sessionId: string) => {
+    outboxStore.resume(sessionId);
+    void orchestrator.outbox.tryDrain(sessionId);
+    orchestrator.outbox.notify(sessionId);
+    return orchestrator.outbox.snapshot(sessionId);
+  });
+
+  ipcMain.handle('outbox:steer', async (_e, itemId: string) => {
+    const ok = await orchestrator.outbox.requestSteer(itemId);
+    const sessionId = outboxStore.getItem(itemId)?.sessionId;
+    return { ok, snapshot: sessionId ? orchestrator.outbox.snapshot(sessionId) : null };
+  });
+
   // Per-tool-call approval (policy `confirm` tier). The renderer answers the
   // `agent:toolApprovalRequest` event with the user's decision.
-  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean) => {
-    orchestrator.respondToolApproval(approvalId, approved);
+  // `scope` = 'always' when the user picked "Always allow (30 days)" (tool
+  // grant, recorded only when the modal offered it) or "Always for this
+  // project" on a per-app desktop grant prompt; 'once' = app-grant Once.
+  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean, scope?: unknown) => {
+    // Back-compat: a bare `true` from an older renderer means "always".
+    const s = scope === 'always' || scope === true ? 'always' : scope === 'once' ? 'once' : undefined;
+    orchestrator.respondToolApproval(approvalId, approved, s);
   });
+
+  // ── Standing grants ("Always allow") ─────────────────────────────────────
+  // Listed (active, expired and revoked) in Settings; revoke is immediate —
+  // the next tool call no longer matches the grant.
+  ipcMain.handle('grants:list', () => listGrants());
+  ipcMain.handle('grants:revoke', (_e, id: string) => typeof id === 'string' && revokeGrant(id));
+
+  // ── Per-chat permission mode (agent/modes.ts) ────────────────────────────
+  // getMode returns the stored mode plus the default it falls back to, so the
+  // header selector can show "Auto (default)". setMode(null) clears it.
+  ipcMain.handle('session:getMode', (_e, sessionId: string) => {
+    let autonomous: boolean | undefined;
+    try {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+      autonomous = (JSON.parse(row?.settings_json ?? '{}') as { autonomousActions?: boolean }).autonomousActions;
+    } catch { /* default */ }
+    const stored = getSessionMode(sessionId);
+    const fallback = defaultModeFor(autonomous);
+    return { mode: stored ?? fallback, stored, defaultMode: fallback };
+  });
+  ipcMain.handle('session:setMode', (_e, sessionId: string, mode: PermissionMode | null) => {
+    if (mode !== null && !isPermissionMode(mode)) throw new Error('Invalid permission mode');
+    return setSessionMode(sessionId, mode);
+  });
+
+  // ── Run event log (agent/runEvents.ts) ───────────────────────────────────
+  // run:subscribe replays a run's persisted events after `fromSeq`, then
+  // streams live ones on the `run:event` channel to the calling webContents —
+  // so a reloaded renderer resumes from its last seq without gaps or repeats.
+  // Read-only: subscribing never changes run state.
+  ipcMain.handle('run:subscribe', (e, runId: string, fromSeq?: number) => {
+    if (typeof runId !== 'string' || !runId) return { ok: false, error: 'runId required' };
+    const wc = e.sender;
+    if (!runSubscribedClients.has(wc.id)) {
+      runSubscribedClients.add(wc.id);
+      // A reload/destroy tears down this webContents' streams; the fresh page
+      // resubscribes from the lastSeq it kept.
+      const drop = (): void => { runSubscriptions.unsubscribeClient(wc.id); runSubscribedClients.delete(wc.id); };
+      wc.once('destroyed', drop);
+      // Full main-frame navigation (reload) only — in-page hash routing keeps
+      // the page and its subscriptions alive.
+      wc.on('did-start-navigation', (_ev: unknown, _url: unknown, isInPlace: boolean, isMainFrame: boolean) => {
+        if (isMainFrame && !isInPlace) runSubscriptions.unsubscribeClient(wc.id);
+      });
+    }
+    runSubscriptions.subscribe(wc.id, runId, Number(fromSeq) || 0, (msg) => {
+      if (wc.isDestroyed()) throw new Error('webContents destroyed');
+      wc.send('run:event', msg);
+    });
+    return { ok: true };
+  });
+  ipcMain.handle('run:unsubscribe', (e, runId: string) => ({ ok: runSubscriptions.unsubscribe(e.sender.id, runId) }));
+  // Runs currently executing — lets a reloaded renderer find what to resume.
+  ipcMain.handle('run:active', (_e, sessionId?: string) => listActiveRuns(sessionId));
+  // One-shot page of persisted events (timeline views, debugging).
+  ipcMain.handle('run:events', (_e, runId: string, fromSeq?: number, limit?: number) =>
+    listRunEvents(runId, Number(fromSeq) || 0, Number(limit) || 500));
 
   // ── Tool-call policies (governance for function calling) ─────────────────
   // CRUD over per-tool trust tiers evaluated before every function call.
@@ -830,13 +1023,16 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // run off in the background, and return the run id immediately. The renderer
   // polls `delegate:status` instead of blocking on the whole run — so long tasks
   // are observable (and don't hang the UI at "reviewing").
-  ipcMain.handle('delegate:start', async (_e, goal: string) => {
+  ipcMain.handle('delegate:start', async (_e, goal: string, mode?: PermissionMode | null) => {
     const db = getDb();
     const sessionId = crypto.randomUUID();
     const title = `Delegate: ${goal.slice(0, 38)}${goal.length > 38 ? '…' : ''}`;
     // origin='delegate' keeps this task's backing session out of the Chat sidebar.
     db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'delegate')`).run(sessionId, title);
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, goal);
+    // Optional permission mode from the Delegate header. Plan mode is not
+    // accepted here — Delegate has its own plan approval before start.
+    if (isDelegateMode(mode)) setSessionMode(sessionId, mode);
 
     // Delegate runs in Operator mode: instead of advising, the agent ACTS — it
     // drives the browser, hands control back for login when needed, and finishes
@@ -888,6 +1084,26 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // were checked (and passed/failed) and the evidence behind them. Lets the user
   // see WHY a task is or isn't verified, instead of trusting a bare label.
   ipcMain.handle('delegate:evidence', (_e, runId: string) => readRunEvidence(getDb(), runId));
+
+  // Persistent goal for a Delegate task (bodhi/goals.ts). `goal` returns the
+  // session's most recent goal (any status) plus its elapsed active time; the
+  // renderer polls it for the header chip.
+  ipcMain.handle('delegate:goal', (_e, sessionId: string) => {
+    try {
+      const g = typeof sessionId === 'string' ? getLatestGoal(getDb(), sessionId) : null;
+      return g ? { ...g, elapsedMs: goalElapsedMs(g) } : null;
+    } catch { return null; }
+  });
+  // User Pause / Resume / Stop. The user path accepts only active | paused |
+  // terminated — not even the UI can declare a goal completed.
+  ipcMain.handle('delegate:goalSetStatus', (_e, goalId: string, status: string) => {
+    try {
+      const g = userSetGoalStatus(getDb(), String(goalId), status);
+      return { ok: true, goal: { ...g, elapsedMs: goalElapsedMs(g) } };
+    } catch (err) {
+      return { ok: false, error: err instanceof GoalError ? err.message : 'Could not update the goal.' };
+    }
+  });
 
   // Continue an existing Delegate task IN ITS OWN session, so follow-ups keep
   // the task's context, plan and history instead of silently starting an
@@ -2209,9 +2425,39 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   // ── Undo ───────────────────────────────────────────────────────────────
   // Reverse a reversible filesystem action the agent performed (move / copy /
-  // create-dir / trash). In-memory, process-lifetime — see agent/undo.ts.
+  // create-dir / trash). Persisted in undo_entries — see agent/undo.ts.
   ipcMain.handle('undo:list', () => listUndoable());
   ipcMain.handle('undo:revert', (_e, id: string) => revert(id));
+
+  // ── File checkpoints ───────────────────────────────────────────────────
+  // Put every file a run touched back to how it was before `stepId` ran.
+  // Returns a per-path report; external actions are listed, never "undone".
+  ipcMain.handle('checkpoints:rewind', (_e, runId: string, stepId: string) => rewindRunToStep(runId, stepId));
+
+  // ── Interrupted runs: resume offer ─────────────────────────────────────
+  // Runs the app interrupted (quit/crash) are OFFERED, never auto-resumed —
+  // unattended (scheduled) ones included. See agent/resume.ts.
+  ipcMain.handle('runs:listInterrupted', () => listInterruptedRuns(getDb() as unknown as SqlDb));
+  ipcMain.handle('runs:dismissInterrupted', (_e, runId: string) => markInterruptedRun(getDb() as unknown as SqlDb, runId, 'dismissed'));
+  ipcMain.handle('runs:resumeInterrupted', (_e, runId: string) => {
+    const db = getDb();
+    const run = getInterruptedRun(db as unknown as SqlDb, runId);
+    if (!run) return { ok: false, error: 'That run was already resumed or dismissed.' };
+    // Claim it first so a double-click can't start two continuations.
+    if (!markInterruptedRun(db as unknown as SqlDb, runId, 'resumed')) {
+      return { ok: false, error: 'That run was already resumed or dismissed.' };
+    }
+    const prompt = buildResumePrompt(run);
+    db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(run.sessionId, prompt);
+    db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(run.sessionId);
+    // The confirmed action ids ride in the run context so email_send refuses
+    // to repeat them in code, not just because the prompt asked nicely.
+    void runWithContext(
+      { actor: 'local', lan: false, resume: { fromRunId: runId, confirmedActionIds: run.confirmedActions.map(a => a.actionId) } },
+      () => orchestrator.handleMessage(run.sessionId, prompt),
+    ).catch((err: unknown) => console.error('[Artha] resume failed:', err));
+    return { ok: true, sessionId: run.sessionId };
+  });
 
   // ── Global search ──────────────────────────────────────────────────────
   // One query across chats, memory, and artifacts. `semantic` opts into an
@@ -2515,6 +2761,58 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('scheduler:remove', (_e, taskId: string) => {
     sched.remove(taskId);
     return true;
+  });
+
+  // ── Scheduler v2: inbox, Run now, triggers, notify policy, task files ────
+  ipcMain.handle('scheduler:executions', (_e, limit?: number, taskId?: string) =>
+    sched.listExecutions(limit ?? 50, taskId));
+  ipcMain.handle('scheduler:unreadCount', () => sched.unreadCount());
+  ipcMain.handle('scheduler:markRead', (_e, execId?: string) => { sched.markRead(execId); return true; });
+  ipcMain.handle('scheduler:runNow', (_e, taskId: string) => {
+    if (!currentEntitlements().scheduler) {
+      throw new Error('Scheduled tasks require a Personal (or higher) license — subscribe at artha.space/subscribe.');
+    }
+    return sched.runNow(taskId);
+  });
+  ipcMain.handle('scheduler:sessionForRun', (_e, runId: string) => sched.sessionForRun(runId));
+  ipcMain.handle('scheduler:setNotify', (_e, taskId: string, notify: string) =>
+    sched.update(taskId, { notify: notify as TaskInput['notify'] }));
+  ipcMain.handle('scheduler:setFolderTrigger', (_e, taskId: string, folder: string | null) =>
+    sched.setFolderTrigger(taskId, folder));
+  ipcMain.handle('scheduler:pickFolder', async () => {
+    const r = await dialog.showOpenDialog(window, { properties: ['openDirectory'] });
+    return r.canceled ? null : (r.filePaths[0] ?? null);
+  });
+  // Task files: Markdown + frontmatter (name, schedule, prompt, notify).
+  // Import creates the task through sched.create, so the 15-minute floor and
+  // the license gate apply; triggers are never imported.
+  ipcMain.handle('scheduler:exportFile', async (_e, taskId: string) => {
+    const t = sched.list().find(x => x.task_id === taskId);
+    if (!t) throw new Error('Task not found.');
+    const safe = t.name.replace(/[^A-Za-z0-9 _-]+/g, '').trim().slice(0, 60) || 'task';
+    const r = await dialog.showSaveDialog(window, { defaultPath: `${safe}.md`, filters: [{ name: 'Markdown', extensions: ['md'] }] });
+    if (r.canceled || !r.filePath) return null;
+    const fs = await import('fs');
+    await fs.promises.writeFile(r.filePath, exportTaskMarkdown(t), 'utf8');
+    return r.filePath;
+  });
+  ipcMain.handle('scheduler:importFile', async () => {
+    if (!currentEntitlements().scheduler) {
+      throw new Error('Scheduled tasks require a Personal (or higher) license — subscribe at artha.space/subscribe.');
+    }
+    const r = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'Markdown', extensions: ['md'] }] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const fs = await import('fs');
+    const stat = await fs.promises.stat(r.filePaths[0]);
+    if (stat.size > 64 * 1024) throw new Error('Task file is too large (max 64 KB).');
+    const data = parseTaskMarkdown(await fs.promises.readFile(r.filePaths[0], 'utf8'));
+    return sched.create({ name: data.name, prompt: data.prompt, cron: data.schedule ?? undefined, notify: data.notify });
+  });
+  ipcMain.handle('scheduler:setWebhook', (_e, taskId: string, enabled: boolean) => {
+    const res = sched.setWebhook(taskId, enabled);
+    const lan = lanStatus();
+    // The webhook only listens while the LAN server is running.
+    return { ...res, url: lan.url ? `${lan.url}${res.path}` : null, lanRunning: lan.running };
   });
 
   // ── Artifacts ─────────────────────────────────────────────────────────────
@@ -2886,11 +3184,34 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (!first) throw new Error('No screen source available.');
     return first.thumbnail.toPNG().toString('base64');
   });
+  // Keep-awake while a run is active (default off) and whether that also
+  // applies on battery. Applied live via refreshKeepAwake().
+  ipcMain.handle('settings:getKeepAwake', () => readKeepAwakeSettings(JSON.stringify(readSettings())));
+  ipcMain.handle('settings:setKeepAwake', (_e, patch: { keepAwakeWhileRunning?: boolean; keepAwakeOnBattery?: boolean }) => {
+    if (typeof patch?.keepAwakeWhileRunning === 'boolean') writeSetting('keepAwakeWhileRunning', patch.keepAwakeWhileRunning);
+    if (typeof patch?.keepAwakeOnBattery === 'boolean') writeSetting('keepAwakeOnBattery', patch.keepAwakeOnBattery);
+    refreshKeepAwake();
+    return readKeepAwakeSettings(JSON.stringify(readSettings()));
+  });
   ipcMain.handle('settings:getDesktopControl', () => !!readSettings().desktop_control_enabled);
   ipcMain.handle('settings:setDesktopControl', (_e, enabled: boolean) => {
     writeSetting('desktop_control_enabled', !!enabled);
     return true;
   });
+  // Global stop shortcut (desktop/killSwitch.ts). Empty string = default.
+  // Applied to the live kill switch immediately; also re-read at each run start.
+  ipcMain.handle('settings:getDesktopStopShortcut', () => {
+    const v = readSettings().desktop_stop_shortcut;
+    return typeof v === 'string' && v ? v : (getKillSwitch()?.currentAccelerator ?? DEFAULT_STOP_ACCELERATOR);
+  });
+  ipcMain.handle('settings:setDesktopStopShortcut', (_e, accelerator: string) => {
+    const next = typeof accelerator === 'string' ? accelerator.trim().slice(0, 64) : '';
+    writeSetting('desktop_stop_shortcut', next);
+    getKillSwitch()?.setAccelerator(next || DEFAULT_STOP_ACCELERATOR);
+    return getKillSwitch()?.currentAccelerator ?? (next || DEFAULT_STOP_ACCELERATOR);
+  });
+  // Same effect as pressing the global stop shortcut (e.g. from a UI button).
+  ipcMain.handle('desktop:stopAll', () => triggerStop());
 
   // ── Crash reporting (Sentry) ─────────────────────────────────────────────
   // Opt-out telemetry. These three channels back the Settings toggle and the
