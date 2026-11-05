@@ -5,6 +5,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AgentRoute } from './router/agentRouter';
 import type { SkillMetric, SkillModelStats, SkillToolUsage, SkillFailure } from './skills/metrics';
+import type { Interaction } from './agent/interactions';
+
+/** A human-in-the-loop pause as delivered to the renderer (type-only import —
+ *  the preload never loads the main-process module). */
+export type InteractionDTO = Interaction;
 
 /**
  * The full type of `window.artha` as seen by the renderer. Inferred from the
@@ -172,6 +177,29 @@ const api = {
     },
     approvePlan: (workflowId: string, approved: boolean) =>
       ipcRenderer.invoke('agent:approvePlan', workflowId, approved),
+    /** Structured plan review (agent/planReview.ts): accept, accept with
+     *  per-step comments (the planner revises once and asks again), or reject
+     *  with a reason (the run ends cancelled-by-user). */
+    reviewPlan: (workflowId: string, review: {
+      decision: 'accept' | 'accept_with_comments' | 'reject';
+      comments?: { step_index: number; original_text: string; comment: string }[];
+      reason?: string;
+    }) => ipcRenderer.invoke('agent:reviewPlan', workflowId, review) as Promise<void>,
+    /** Unified human-in-the-loop frame (agent/interactions.ts). */
+    listPendingInteractions: () =>
+      ipcRenderer.invoke('interactions:listPending') as Promise<InteractionDTO[]>,
+    respondInteraction: (id: string, status: 'answered' | 'declined', answer?: unknown) =>
+      ipcRenderer.invoke('interactions:respond', id, status, answer) as Promise<boolean>,
+    onInteractionPending: (cb: (i: InteractionDTO) => void) => {
+      const h = (_e: unknown, p: InteractionDTO) => cb(p);
+      ipcRenderer.on('interaction:pending', h);
+      return () => ipcRenderer.removeListener('interaction:pending', h);
+    },
+    onInteractionResolved: (cb: (p: { id: string; status: string }) => void) => {
+      const h = (_e: unknown, p: { id: string; status: string }) => cb(p);
+      ipcRenderer.on('interaction:resolved', h);
+      return () => ipcRenderer.removeListener('interaction:resolved', h);
+    },
     onSkillActive: (cb: (payload: { slug: string; name: string; icon: string }) => void) => {
       ipcRenderer.on('agent:skillActive', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:skillActive');

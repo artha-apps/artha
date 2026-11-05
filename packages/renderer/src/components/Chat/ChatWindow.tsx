@@ -20,6 +20,7 @@ import { BrandWordmark } from '../ui/BrandWordmark';
 import { toast, useToastStore } from '../../stores/toast';
 import ToolCallInline from './ToolCallInline';
 import Citations from './Citations';
+import AskUserCards from './AskUserCard';
 import AtAutocomplete, { type AtSuggestion } from './AtAutocomplete';
 import { Tooltip } from '../ui/Tooltip';
 
@@ -997,6 +998,9 @@ export default function ChatWindow() {
               </div>
             </div>
           )}
+
+          {/* ask_user — the run is paused inside a tool call waiting on these. */}
+          <AskUserCards sessionId={activeSessionId} />
 
           <div ref={bottomRef} />
         </div>
