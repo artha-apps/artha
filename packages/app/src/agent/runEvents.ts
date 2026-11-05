@@ -114,6 +114,7 @@ emitter.setMaxListeners(0); // many subscribers (renderer + LAN clients) is norm
 export function setRunEventStore(s: RunEventStore): void {
   store = s;
   lastSeq.clear();
+  activeRuns.clear();
   emitter.removeAllListeners();
 }
 
@@ -180,30 +181,64 @@ export function onRunEvent(runId: string, listener: (ev: RunEvent) => void): () 
 export function subscribeRunEvents(
   runId: string,
   fromSeq: number,
-  deliver: (ev: RunEvent) => void,
+  deliver: (ev: RunEvent, replayed: boolean) => void,
 ): () => void {
   let cursor = Math.max(0, Math.floor(fromSeq));
   let replaying = true;
   const buffered: RunEvent[] = [];
-  const push = (ev: RunEvent): void => {
+  // `replayed` tells the client whether this event came from history (it
+  // missed it) or is live (the legacy IPC stream also carried it), so a UI can
+  // rebuild from history without double-rendering live events.
+  const push = (ev: RunEvent, replayed: boolean): void => {
     if (ev.seq <= cursor) return; // already delivered — the exactly-once gate
     cursor = ev.seq;
-    deliver(ev);
+    deliver(ev, replayed);
   };
-  const off = onRunEvent(runId, ev => { if (replaying) buffered.push(ev); else push(ev); });
+  const off = onRunEvent(runId, ev => { if (replaying) buffered.push(ev); else push(ev, false); });
   try {
     for (;;) {
       const page = listRunEvents(runId, cursor, 500);
       if (page.length === 0) break;
-      for (const ev of page) push(ev);
+      for (const ev of page) push(ev, true);
     }
     buffered.sort((a, b) => a.seq - b.seq);
-    for (const ev of buffered) push(ev);
+    for (const ev of buffered) push(ev, false);
   } finally {
     buffered.length = 0;
     replaying = false;
   }
   return off;
+}
+
+// ── Active runs ──────────────────────────────────────────────────────────────
+
+/** A run whose agent loop is currently executing in this process. */
+export interface ActiveRun {
+  runId: string;
+  workflowId: string;
+  sessionId: string;
+  startedAt: number;
+}
+
+/** Loops currently running, so a freshly reloaded renderer can find the run it
+ *  should resubscribe to even if it never saw the run's id. */
+const activeRuns = new Map<string, ActiveRun>();
+
+/** Register a loop as running (called by the orchestrator at loop entry). */
+export function markRunActive(run: Omit<ActiveRun, 'startedAt'>): void {
+  activeRuns.set(run.runId, { ...run, startedAt: Date.now() });
+}
+
+/** Unregister a loop (called by the orchestrator when the loop exits). */
+export function markRunInactive(runId: string): void {
+  activeRuns.delete(runId);
+}
+
+/** Snapshot of running loops, oldest first. Optionally scoped to a session. */
+export function listActiveRuns(sessionId?: string): ActiveRun[] {
+  return [...activeRuns.values()]
+    .filter(r => !sessionId || r.sessionId === sessionId)
+    .sort((a, b) => a.startedAt - b.startedAt);
 }
 
 // ── IPC channel mapping ──────────────────────────────────────────────────────

@@ -111,6 +111,9 @@ export interface ContextPackRow {
  *
  * All `invoke` calls map 1-to-1 to an `ipcMain.handle` in `ipc/handlers.ts`.
  */
+/** Wire shape of one run event (mirrors agent/runEvents.ts RunEvent). */
+type RunEventWire = { runId: string; seq: number; ts: number; kind: string; payload: unknown };
+
 const api = {
   // ── Agent ────────────────────────────────────────────────────────────────
   agent: {
@@ -217,6 +220,37 @@ const api = {
     onParallelTaskDone: (cb: (payload: { index: number; result: string }) => void) => {
       ipcRenderer.on('agent:parallelTaskDone', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:parallelTaskDone');
+    },
+  },
+
+  // ── Run event log ──────────────────────────────────────────────────────────
+  // Replayable, per-run timeline (agent/runEvents.ts). Attach `onEvent` BEFORE
+  // calling `subscribe` — replayed events are sent during the subscribe call.
+  run: {
+    /** Replay events after `fromSeq` (exclusive; 0 = from the start), then
+     *  stream live ones to `onEvent`. Resubscribing replaces the old stream. */
+    subscribe: (runId: string, fromSeq = 0) =>
+      ipcRenderer.invoke('run:subscribe', runId, fromSeq) as Promise<{ ok: boolean; error?: string }>,
+    unsubscribe: (runId: string) =>
+      ipcRenderer.invoke('run:unsubscribe', runId) as Promise<{ ok: boolean }>,
+    /** Loops currently executing (optionally for one session). */
+    active: (sessionId?: string) =>
+      ipcRenderer.invoke('run:active', sessionId) as Promise<Array<{ runId: string; workflowId: string; sessionId: string; startedAt: number }>>,
+    /** One page of persisted events after `fromSeq`. */
+    events: (runId: string, fromSeq = 0, limit = 500) =>
+      ipcRenderer.invoke('run:events', runId, fromSeq, limit) as Promise<RunEventWire[]>,
+    /** Every event delivered by an active subscription. Removes only this
+     *  listener on cleanup, so several views can tail independently. */
+    onEvent: (cb: (msg: { event: RunEventWire; replayed: boolean }) => void) => {
+      const h = (_e: unknown, m: { event: RunEventWire; replayed: boolean }) => cb(m);
+      ipcRenderer.on('run:event', h);
+      return () => { ipcRenderer.removeListener('run:event', h); };
+    },
+    /** A ReAct loop started for a workflow — carries the run id to subscribe to. */
+    onStarted: (cb: (p: { runId: string; workflowId: string; sessionId: string }) => void) => {
+      const h = (_e: unknown, p: { runId: string; workflowId: string; sessionId: string }) => cb(p);
+      ipcRenderer.on('run:started', h);
+      return () => { ipcRenderer.removeListener('run:started', h); };
     },
   },
 
