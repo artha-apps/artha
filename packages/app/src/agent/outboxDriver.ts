@@ -62,7 +62,7 @@ export class OutboxDriver {
    *  the queue instead of draining; any other outcome drains the next item.
    *  Un-injected steer requests fall back to the normal drain (they were
    *  already moved to the front of the queue). */
-  runEnded(sessionId: string, opts: { cancelled?: boolean } = {}): void {
+  runEnded(sessionId: string, opts: { cancelled?: boolean; reason?: 'cancel' | 'stop' } = {}): void {
     const n = (this.active.get(sessionId) ?? 0) - 1;
     if (n > 0) { this.active.set(sessionId, n); return; }
     this.active.delete(sessionId);
@@ -70,7 +70,7 @@ export class OutboxDriver {
     if (opts.cancelled) {
       // Only worth pausing (and telling the user) if something is waiting.
       if (outbox.list(sessionId, this.deps.db).length > 0) {
-        outbox.pause(sessionId, 'cancel', this.deps.db);
+        outbox.pause(sessionId, opts.reason ?? 'cancel', this.deps.db);
       }
       this.notify(sessionId);
       return;
@@ -156,7 +156,7 @@ export class OutboxDriver {
 
   /** The renderer-facing state of one session's queue. */
   snapshot(sessionId: string): {
-    sessionId: string; items: OutboxItem[]; paused: boolean; pausedReason: 'user' | 'cancel' | null;
+    sessionId: string; items: OutboxItem[]; paused: boolean; pausedReason: 'user' | 'cancel' | 'stop' | null;
     steering: string[]; active: boolean;
   } {
     const pause = outbox.getPauseState(sessionId, this.deps.db);

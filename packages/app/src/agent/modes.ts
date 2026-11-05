@@ -94,6 +94,9 @@ export const READ_ONLY_TOOLS = new Set<string>([
   'crm_find',
   'browser_read_dom', 'browser_screenshot', 'browser_get_url',
   'desktop_screenshot', 'desktop_find_on_screen', 'desktop_get_active_window',
+  // ask_user changes nothing: it only asks the user (and an unattended run
+  // gets "unanswered" from runAskUser). Plan mode is where questions help most.
+  'ask_user',
 ]);
 
 /** Reversible filesystem edits (tracked by agent/undo.ts). */

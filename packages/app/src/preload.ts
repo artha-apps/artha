@@ -52,7 +52,7 @@ export interface OutboxSnapshot {
   sessionId: string;
   items: OutboxItemView[];
   paused: boolean;
-  pausedReason: 'user' | 'cancel' | null;
+  pausedReason: 'user' | 'cancel' | 'stop' | null;
   /** Item ids waiting to be injected at the next tool-call boundary. */
   steering: string[];
   /** Whether a run is in flight in the session (per the main process). */

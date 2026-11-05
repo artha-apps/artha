@@ -37,8 +37,12 @@ export interface OutboxItem {
   updatedAt: number;
 }
 
-/** Per-session pause state. reason='cancel' ⇒ the UI says "Queue paused after cancel". */
-export interface OutboxPauseState { paused: boolean; reason: 'user' | 'cancel' | null }
+/** Why a session's queue is paused: the user's Pause button, a user cancel
+ *  (Stop / plan reject ⇒ "Queue paused after cancel"), or the global stop
+ *  shortcut (kill switch ⇒ "Queue paused after stop"). */
+export type OutboxPauseReason = 'user' | 'cancel' | 'stop';
+/** Per-session pause state. */
+export interface OutboxPauseState { paused: boolean; reason: OutboxPauseReason | null }
 
 /** Minimal statement/connection surface we rely on. Satisfied structurally by
  *  better-sqlite3 (runtime) and node:sqlite's DatabaseSync (tests). */
@@ -192,7 +196,7 @@ export function cancel(id: string, db?: OutboxDb): boolean {
 
 /** Pause the session's queue. reason='cancel' is set automatically when the
  *  user stops a run, so the UI can say "Queue paused after cancel". */
-export function pause(sessionId: string, reason: 'user' | 'cancel' = 'user', db?: OutboxDb): void {
+export function pause(sessionId: string, reason: OutboxPauseReason = 'user', db?: OutboxDb): void {
   conn(db).prepare(
     `UPDATE chat_sessions SET outbox_paused=1, outbox_paused_reason=? WHERE session_id=?`
   ).run(reason, sessionId);
@@ -211,7 +215,7 @@ export function getPauseState(sessionId: string, db?: OutboxDb): OutboxPauseStat
     `SELECT outbox_paused AS p, outbox_paused_reason AS r FROM chat_sessions WHERE session_id=?`
   ).get(sessionId) as { p: number; r: string | null } | undefined;
   const paused = !!row && Number(row.p) === 1;
-  const reason = paused ? (row?.r === 'cancel' ? 'cancel' : 'user') : null;
+  const reason: OutboxPauseReason | null = paused ? (row?.r === 'cancel' ? 'cancel' : row?.r === 'stop' ? 'stop' : 'user') : null;
   return { paused, reason };
 }
 

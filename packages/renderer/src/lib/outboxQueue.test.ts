@@ -32,3 +32,9 @@ describe('outbox composer helpers', () => {
     expect(ids).toEqual(['a', 'b', 'c']);
   });
 });
+
+describe('queueStatusLine after the global stop shortcut', () => {
+  it('says "Queue paused after stop"', () => {
+    expect(queueStatusLine(snap({ paused: true, pausedReason: 'stop' }))).toBe('Queue paused after stop');
+  });
+});

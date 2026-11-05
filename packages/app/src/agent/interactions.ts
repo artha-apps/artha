@@ -127,21 +127,50 @@ export function getInteraction(db: SqlLike, id: string): Interaction | null {
 export const INTERACTION_PENDING_CHANNEL = 'interaction:pending';
 export const INTERACTION_RESOLVED_CHANNEL = 'interaction:resolved';
 
+/** One open or settle, as seen by an observer. */
+export interface InteractionLifecycleEvent {
+  phase: 'request' | 'response';
+  id: string;
+  runId: string;
+  kind: InteractionKind;
+  workflowId?: string;
+  status?: Exclude<InteractionStatus, 'pending'>;
+}
+export type InteractionObserver = (ev: InteractionLifecycleEvent) => void;
+
 /** Process-wide broker. A singleton because several AgentOrchestrator
  *  instances exist (desktop, scheduler) while there is one IPC surface. */
 export class InteractionHub {
   private waiters = new Map<string, {
     workflowId?: string;
+    sessionId?: string;
+    runId: string;
+    kind: InteractionKind;
     resolve: (o: InteractionOutcome) => void;
     responder?: InteractionResponder;
   }>();
   private emitFn: (channel: string, payload: unknown) => void = () => {};
+  private observers: InteractionObserver[] = [];
 
   constructor(private db: () => SqlLike = () => getDb() as unknown as SqlLike) {}
 
   /** Wire renderer delivery (ipc/handlers.ts installs a safe webContents send). */
   setEmitter(fn: (channel: string, payload: unknown) => void): void {
     this.emitFn = fn;
+  }
+
+  /** Observe every open/settle (e.g. to mirror them into the run event log).
+   *  Observers are notification-only: they cannot change a decision, and a
+   *  throwing observer is ignored. Returns an unsubscribe fn. */
+  observe(fn: InteractionObserver): () => void {
+    this.observers.push(fn);
+    return () => { this.observers = this.observers.filter(o => o !== fn); };
+  }
+
+  private notifyObservers(ev: InteractionLifecycleEvent): void {
+    for (const o of this.observers) {
+      try { o(ev); } catch (err) { console.warn('[Artha] interaction observer failed:', err); }
+    }
   }
 
   /** Open a pending interaction. Persists it (best-effort), tells the renderer,
@@ -165,9 +194,13 @@ export class InteractionHub {
       };
     }
     const outcome = new Promise<InteractionOutcome>(resolve => {
-      this.waiters.set(interaction.id, { workflowId: req.workflowId, resolve, responder });
+      const sessionId = typeof req.payload.sessionId === 'string' ? req.payload.sessionId : undefined;
+      this.waiters.set(interaction.id, {
+        workflowId: req.workflowId, sessionId, runId: req.runId, kind: req.kind, resolve, responder,
+      });
     });
     this.emitFn(INTERACTION_PENDING_CHANNEL, interaction);
+    this.notifyObservers({ phase: 'request', id: interaction.id, runId: req.runId, kind: req.kind, workflowId: req.workflowId });
     return { interaction, outcome };
   }
 
@@ -192,6 +225,7 @@ export class InteractionHub {
     this.waiters.delete(id);
     w.resolve({ status, answer: answer ?? null });
     this.emitFn(INTERACTION_RESOLVED_CHANNEL, { id, status });
+    this.notifyObservers({ phase: 'response', id, runId: w.runId, kind: w.kind, workflowId: w.workflowId, status });
     return true;
   }
 
@@ -201,6 +235,12 @@ export class InteractionHub {
     for (const [id, w] of [...this.waiters]) {
       if (w.workflowId === workflowId) this.settle(id, 'declined', { reason: 'cancelled' });
     }
+  }
+
+  /** Live (still answerable) interactions with the workflow / session they
+   *  belong to — the outbox uses this to never send past a pending pause. */
+  livePending(): Array<{ id: string; kind: InteractionKind; workflowId?: string; sessionId?: string }> {
+    return [...this.waiters].map(([id, w]) => ({ id, kind: w.kind, workflowId: w.workflowId, sessionId: w.sessionId }));
   }
 
   /** Whether an interaction is still awaiting a live answer in this process. */

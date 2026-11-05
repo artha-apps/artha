@@ -115,7 +115,8 @@ import {
   type ParsedEntry,
 } from '../tools/memoryImport';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
-import { listActiveRuns, listRunEvents } from '../agent/runEvents';
+import { listActiveRuns, listRunEvents, recordRunEvent } from '../agent/runEvents';
+import { installInteractionRunEvents } from '../agent/interactionRunEvents';
 import { createRunSubscriptions } from '../agent/runEventIpc';
 import { getKillSwitch, triggerStop } from '../desktop/runtime';
 import { DEFAULT_STOP_ACCELERATOR } from '../desktop/killSwitch';
@@ -635,6 +636,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // (ask_user, plan, handoff, confirm) is pushed on `interaction:pending` /
   // `interaction:resolved`.
   getInteractionHub().setEmitter((channel, payload) => safeSend(channel, payload));
+  // ask_user cards and plan reviews also land in the run event log as
+  // `interaction` events (confirms record their own in requestToolApproval).
+  installInteractionRunEvents(getInteractionHub(), recordRunEvent);
 
   // Load all enabled MCP servers at startup
   // A server that only ever fails is paused automatically (mcp/registry.ts);

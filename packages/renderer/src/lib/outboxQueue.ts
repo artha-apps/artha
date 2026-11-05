@@ -8,7 +8,7 @@
 export interface OutboxSnapshotLike {
   items: { id: string; status: string }[];
   paused: boolean;
-  pausedReason: 'user' | 'cancel' | null;
+  pausedReason: 'user' | 'cancel' | 'stop' | null;
   steering: string[];
   active: boolean;
 }
@@ -24,7 +24,12 @@ export function composerMode(isStreaming: boolean, snapshot: Pick<OutboxSnapshot
  *  their queued messages did not go out. */
 export function queueStatusLine(snapshot: OutboxSnapshotLike | null): string | null {
   if (!snapshot || snapshot.items.length === 0) return null;
-  if (snapshot.paused) return snapshot.pausedReason === 'cancel' ? 'Queue paused after cancel' : 'Queue paused';
+  if (snapshot.paused) {
+    if (snapshot.pausedReason === 'cancel') return 'Queue paused after cancel';
+    // The global stop shortcut (kill switch) stopped the run.
+    if (snapshot.pausedReason === 'stop') return 'Queue paused after stop';
+    return 'Queue paused';
+  }
   const n = snapshot.items.length;
   return snapshot.active
     ? `${n} queued — sends when Artha finishes`

@@ -87,6 +87,7 @@ import { filterToolsByAllowlist, parseSlashInvocation, effectiveAllowedTools } f
 import { recordSkillRun, type SkillMatchedVia, type SkillRunStatus } from '../skills/metrics';
 import { recordRunEvent, runEventFromChannel, startRunMonitor, markRunActive, markRunInactive } from './runEvents';
 import { OutboxDriver, injectSteerAtBoundary } from './outboxDriver';
+import * as outboxStore from './outbox';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -292,6 +293,12 @@ export class AgentOrchestrator {
    *  rejection). Unlike cancelledWorkflows (consumed by the loop), this
    *  survives to the end of the turn so the outbox pauses instead of draining. */
   private userStoppedSessions = new Set<string>();
+  /** Sessions whose current turn the GLOBAL stop shortcut (kill switch)
+   *  stopped — their queue pauses with reason 'stop' ("Queue paused after stop"). */
+  private killStoppedSessions = new Set<string>();
+  /** Sessions with a goal stop-gate evaluation in flight (count). The outbox
+   *  never drains past one. */
+  private goalGateInFlight = new Map<string, number>();
   /** Outbox (type while Artha works): drains queued messages when a turn ends
    *  and supplies "steer now" messages at ReAct tool-call boundaries. */
   readonly outbox: OutboxDriver;
@@ -330,7 +337,31 @@ export class AgentOrchestrator {
     for (const wf of this.clarifyResolvers.keys()) {
       if (this.workflowSessions.get(wf) === sessionId) return true;
     }
+    // Any live unified interaction (ask_user card, plan review, confirm,
+    // browser hand-off) of this session — by session id, or via its workflow.
+    for (const i of getInteractionHub().livePending()) {
+      if (i.sessionId === sessionId) return true;
+      if (i.workflowId && this.workflowSessions.get(i.workflowId) === sessionId) return true;
+    }
+    // A goal stop-gate evaluation is in progress for this session.
+    if (this.goalGateInFlight.has(sessionId)) return true;
     return false;
+  }
+
+  /** Global stop shortcut stopped a run in this session: hold the queue now
+   *  (so no steer or drain slips out) and make the turn's end keep it paused
+   *  with reason 'stop'. Mirrors the chat-Stop rule: only pauses when
+   *  something is queued; a later Resume is the user's call. */
+  private pauseOutboxForKillSwitch(sessionId: string): void {
+    try {
+      if (this.outbox.isActive(sessionId)) this.killStoppedSessions.add(sessionId);
+      if (outboxStore.list(sessionId).length > 0) {
+        outboxStore.pause(sessionId, 'stop');
+        this.outbox.notify(sessionId);
+      }
+    } catch (err) {
+      console.warn('[Artha] outbox pause after stop failed (non-critical):', err);
+    }
   }
 
   /** Session of a workflow not started by handleMessage (fan-out / fork), via
@@ -351,10 +382,12 @@ export class AgentOrchestrator {
    *  driver how it ended (a user stop pauses the queue; anything else drains). */
   private finishOutboxTurn(workflowId: string, sessionId: string): void {
     this.workflowSessions.delete(workflowId);
-    const cancelled = this.userStoppedSessions.delete(sessionId);
+    const userStopped = this.userStoppedSessions.delete(sessionId);
+    const killStopped = this.killStoppedSessions.delete(sessionId);
+    const cancelled = userStopped || killStopped;
     this.awaitingPlanApproval.delete(workflowId);
     try {
-      this.outbox.runEnded(sessionId, { cancelled });
+      this.outbox.runEnded(sessionId, { cancelled, reason: killStopped ? 'stop' : 'cancel' });
     } catch (err) {
       console.warn('[Artha] outbox drain failed (non-critical):', err);
     }
@@ -1662,6 +1695,7 @@ RULES — follow exactly, no exceptions:
       // straight to cancelWorkflow), so record it in the run event log.
       cancel: () => {
         recordRunEvent(args.runId, 'status', { source: 'kill_switch', reason: 'stopped_by_user' });
+        this.pauseOutboxForKillSwitch(args.sessionId);
         this.cancelWorkflow(args.workflowId);
       },
     });
@@ -2161,7 +2195,7 @@ RULES — follow exactly, no exceptions:
               // Resolves THIS tool call with the user's answers (no new turn).
               const rcAsk = getRunContext();
               toolResult = await runAskUser(parsedArgs, {
-                unattended: !!rcAsk?.lan || !!rcAsk?.unattended,
+                unattended: confirmTierMustFailClosed(rcAsk),
                 runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId,
                 hub: getInteractionHub(),
               });
@@ -2185,7 +2219,7 @@ RULES — follow exactly, no exceptions:
               }, {
                 toolName: toolCall.function.name, args: parsedArgs,
                 sessionId: args.sessionId, projectId: this.getSessionProjectId(args.sessionId),
-                unattended: !!rcDesk?.lan || !!rcDesk?.unattended,
+                unattended: confirmTierMustFailClosed(rcDesk),
               });
               if (!deskGate.proceed) {
                 toolResult = deskGate.message;
@@ -3020,6 +3054,20 @@ Rules:
      *  judge call so a stop that lands mid-evaluation can't complete the goal. */
     stopped?: () => boolean;
   }): Promise<{ action: 'complete' | 'continue' | 'needs_review'; gaps: string[]; feedback?: string; note: string | null } | null> {
+    // While the gate evaluates, the outbox holds this session's queue: a
+    // queued message must not start a new turn mid-evaluation.
+    this.goalGateInFlight.set(a.sessionId, (this.goalGateInFlight.get(a.sessionId) ?? 0) + 1);
+    try {
+      return await this.runGoalStopGateInner(a);
+    } finally {
+      const n = (this.goalGateInFlight.get(a.sessionId) ?? 1) - 1;
+      if (n > 0) this.goalGateInFlight.set(a.sessionId, n); else this.goalGateInFlight.delete(a.sessionId);
+      // The gate may have been the only thing holding a drain back.
+      if (!this.outbox.isActive(a.sessionId)) void this.outbox.tryDrain(a.sessionId).catch(() => {});
+    }
+  }
+
+  private async runGoalStopGateInner(a: Parameters<AgentOrchestrator['runGoalStopGate']>[0]): Promise<{ action: 'complete' | 'continue' | 'needs_review'; gaps: string[]; feedback?: string; note: string | null } | null> {
     try {
       const db = getDb();
       const goal = getOpenGoal(db, a.sessionId);
