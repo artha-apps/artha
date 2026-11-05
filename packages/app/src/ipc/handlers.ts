@@ -130,6 +130,13 @@ import { exportTaskMarkdown, parseTaskMarkdown } from '../scheduler/taskFile';
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
 // IPC channel shares the same ReAct loop and in-flight workflow map.
 let orchestrator: AgentOrchestrator;
+
+/** The single app-wide orchestrator (null before registerIpcHandlers runs).
+ *  Purpose: scheduled / folder / webhook runs use this same instance so the
+ *  kill switch, cancelWorkflow and outbox state cover them too. */
+export function getOrchestrator(): AgentOrchestrator | null {
+  return orchestrator ?? null;
+}
 // Singleton RAG indexer shared by the standalone RAG panel and the scope
 // auto-indexer so they write to the same chunk store.
 // Resolved LAZILY (not at module load): handlers.ts is imported before

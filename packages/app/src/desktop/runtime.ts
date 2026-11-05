@@ -1,8 +1,8 @@
 /**
  * Process-wide wiring for the desktop kill switch.
  *
- * Several AgentOrchestrator instances can run at once (chat, scheduler, LAN),
- * so the kill switch can't hold a reference to "the" orchestrator. Instead
+ * Chat, scheduled and LAN runs share one AgentOrchestrator, but loops nest and
+ * run concurrently, so the kill switch can't hold "the" current run. Instead
  * every ReAct loop registers itself here with a cancel callback on start and
  * unregisters on exit; a stop press cancels every registered loop.
  *
