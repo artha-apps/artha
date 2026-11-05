@@ -134,6 +134,22 @@ async function createWindow(): Promise<void> {
   }
   startHealthCheckpointing();
 
+  // Durability: persistent undo, pre-mutation file checkpoints, keep-awake.
+  // Each is independent and best-effort — a failure here must not block launch.
+  try {
+    const { configureUndoStore } = await import('./agent/undo');
+    configureUndoStore(getDb());
+  } catch (err) { console.warn('[Artha] durable undo unavailable:', err); }
+  try {
+    const { configureCheckpointStore } = await import('./agent/checkpoints');
+    configureCheckpointStore({ db: getDb(), dir: path.join(app.getPath('userData'), 'checkpoints') });
+  } catch (err) { console.warn('[Artha] file checkpoints unavailable:', err); }
+  try {
+    const { installKeepAwake } = await import('./system/keepAwake');
+    await installKeepAwake(() =>
+      (getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json?: string } | undefined)?.settings_json);
+  } catch (err) { console.warn('[Artha] keep-awake unavailable:', err); }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,

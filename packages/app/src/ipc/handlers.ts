@@ -42,6 +42,10 @@ import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { runWithContext } from '../agent/runContext';
 import { listUndoable, revert } from '../agent/undo';
+import { rewindRunToStep } from '../agent/checkpoints';
+import { listInterruptedRuns, getInterruptedRun, markInterruptedRun, buildResumePrompt } from '../agent/resume';
+import { refreshKeepAwake, readKeepAwakeSettings } from '../system/keepAwake';
+import type { SqlDb } from '../db/sqlLike';
 import { globalSearch } from '../search/global';
 import { getBriefing, markBriefingSeen } from '../briefing/briefing';
 import { spawnEnv } from '../system/nodePath';
@@ -2209,9 +2213,39 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   // ── Undo ───────────────────────────────────────────────────────────────
   // Reverse a reversible filesystem action the agent performed (move / copy /
-  // create-dir / trash). In-memory, process-lifetime — see agent/undo.ts.
+  // create-dir / trash). Persisted in undo_entries — see agent/undo.ts.
   ipcMain.handle('undo:list', () => listUndoable());
   ipcMain.handle('undo:revert', (_e, id: string) => revert(id));
+
+  // ── File checkpoints ───────────────────────────────────────────────────
+  // Put every file a run touched back to how it was before `stepId` ran.
+  // Returns a per-path report; external actions are listed, never "undone".
+  ipcMain.handle('checkpoints:rewind', (_e, runId: string, stepId: string) => rewindRunToStep(runId, stepId));
+
+  // ── Interrupted runs: resume offer ─────────────────────────────────────
+  // Runs the app interrupted (quit/crash) are OFFERED, never auto-resumed —
+  // unattended (scheduled) ones included. See agent/resume.ts.
+  ipcMain.handle('runs:listInterrupted', () => listInterruptedRuns(getDb() as unknown as SqlDb));
+  ipcMain.handle('runs:dismissInterrupted', (_e, runId: string) => markInterruptedRun(getDb() as unknown as SqlDb, runId, 'dismissed'));
+  ipcMain.handle('runs:resumeInterrupted', (_e, runId: string) => {
+    const db = getDb();
+    const run = getInterruptedRun(db as unknown as SqlDb, runId);
+    if (!run) return { ok: false, error: 'That run was already resumed or dismissed.' };
+    // Claim it first so a double-click can't start two continuations.
+    if (!markInterruptedRun(db as unknown as SqlDb, runId, 'resumed')) {
+      return { ok: false, error: 'That run was already resumed or dismissed.' };
+    }
+    const prompt = buildResumePrompt(run);
+    db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(run.sessionId, prompt);
+    db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(run.sessionId);
+    // The confirmed action ids ride in the run context so email_send refuses
+    // to repeat them in code, not just because the prompt asked nicely.
+    void runWithContext(
+      { actor: 'local', lan: false, resume: { fromRunId: runId, confirmedActionIds: run.confirmedActions.map(a => a.actionId) } },
+      () => orchestrator.handleMessage(run.sessionId, prompt),
+    ).catch((err: unknown) => console.error('[Artha] resume failed:', err));
+    return { ok: true, sessionId: run.sessionId };
+  });
 
   // ── Global search ──────────────────────────────────────────────────────
   // One query across chats, memory, and artifacts. `semantic` opts into an
@@ -2885,6 +2919,15 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     const first = sources[0];
     if (!first) throw new Error('No screen source available.');
     return first.thumbnail.toPNG().toString('base64');
+  });
+  // Keep-awake while a run is active (default off) and whether that also
+  // applies on battery. Applied live via refreshKeepAwake().
+  ipcMain.handle('settings:getKeepAwake', () => readKeepAwakeSettings(JSON.stringify(readSettings())));
+  ipcMain.handle('settings:setKeepAwake', (_e, patch: { keepAwakeWhileRunning?: boolean; keepAwakeOnBattery?: boolean }) => {
+    if (typeof patch?.keepAwakeWhileRunning === 'boolean') writeSetting('keepAwakeWhileRunning', patch.keepAwakeWhileRunning);
+    if (typeof patch?.keepAwakeOnBattery === 'boolean') writeSetting('keepAwakeOnBattery', patch.keepAwakeOnBattery);
+    refreshKeepAwake();
+    return readKeepAwakeSettings(JSON.stringify(readSettings()));
   });
   ipcMain.handle('settings:getDesktopControl', () => !!readSettings().desktop_control_enabled);
   ipcMain.handle('settings:setDesktopControl', (_e, enabled: boolean) => {
