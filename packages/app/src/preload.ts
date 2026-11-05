@@ -300,6 +300,10 @@ const api = {
     /** One page of persisted events after `fromSeq`. */
     events: (runId: string, fromSeq = 0, limit = 500) =>
       ipcRenderer.invoke('run:events', runId, fromSeq, limit) as Promise<RunEventWire[]>,
+    /** The Run Inspector timeline: the run's events plus the plan-review
+     *  events recorded under its workflow id (`linked: 'workflow'`). */
+    timeline: (runId: string) =>
+      ipcRenderer.invoke('run:timeline', runId) as Promise<Array<RunEventWire & { linked?: 'workflow' }>>,
     /** Every event delivered by an active subscription. Removes only this
      *  listener on cleanup, so several views can tail independently. */
     onEvent: (cb: (msg: { event: RunEventWire; replayed: boolean }) => void) => {

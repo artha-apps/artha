@@ -116,6 +116,7 @@ import {
 } from '../tools/memoryImport';
 import { SchedulerService, type TaskInput } from '../scheduler/scheduler';
 import { listActiveRuns, listRunEvents, recordRunEvent } from '../agent/runEvents';
+import { getRunTimeline } from '../agent/runTimeline';
 import { installInteractionRunEvents } from '../agent/interactionRunEvents';
 import { createRunSubscriptions } from '../agent/runEventIpc';
 import { getKillSwitch, triggerStop } from '../desktop/runtime';
@@ -971,6 +972,10 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // One-shot page of persisted events (timeline views, debugging).
   ipcMain.handle('run:events', (_e, runId: string, fromSeq?: number, limit?: number) =>
     listRunEvents(runId, Number(fromSeq) || 0, Number(limit) || 500));
+  // Run Inspector timeline: own events + the workflow's plan-review events
+  // (agent/runTimeline.ts). Read-only.
+  ipcMain.handle('run:timeline', (_e, runId: string) =>
+    typeof runId === 'string' && runId ? getRunTimeline(runId) : []);
 
   // ── Tool-call policies (governance for function calling) ─────────────────
   // CRUD over per-tool trust tiers evaluated before every function call.
