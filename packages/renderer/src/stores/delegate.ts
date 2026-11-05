@@ -12,6 +12,8 @@
  * resting state on load so a task can never get stuck mid-run after a refresh.
  */
 import { create } from 'zustand';
+import { delegatePlanReviewOutcome } from '../lib/delegateParity';
+import type { PlanReview } from '../../../app/src/agent/planReview';
 import {
   delegateEngine,
   pollRunToTerminal,
@@ -51,6 +53,12 @@ interface DelegateState {
   submit: (goal: string) => Promise<void>;
   /** Approve a paused plan and run it. */
   confirm: () => Promise<void>;
+  /** Review a paused plan with S5 semantics: accept, accept with step
+   *  comments (carried into the run as notes), or reject (never runs). */
+  reviewPlan: (review: PlanReview) => Promise<void>;
+  /** Follow a run started for this task outside continueTask (a queued
+   *  follow-up drained by the outbox) and poll it to its honest terminal state. */
+  followRun: (runId: string) => Promise<void>;
   /** Reject a paused plan and return to the input. */
   cancel: () => void;
   /** Stop the RUNNING backend task (not just the local view). */
@@ -168,6 +176,15 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
     await runExecution(plan, set, get);
   },
 
+  reviewPlan: async (review) => {
+    const { plan, status } = get();
+    if (!plan || status !== 'awaiting_confirmation') return;
+    const outcome = delegatePlanReviewOutcome(plan, review);
+    if (outcome.kind === 'reject') { get().cancel(); return; }
+    // The store keeps the plan as shown; only the run gets the notes.
+    await runExecution({ ...plan, goal: outcome.goal }, set, get);
+  },
+
   cancel: () => {
     set({ status: 'idle', plan: null, result: null, error: null });
     persist({ status: 'idle', goal: '', plan: null, result: null, runId: null, sessionId: null });
@@ -208,16 +225,30 @@ export const useDelegateStore = create<DelegateState>((set, get) => ({
     try {
       const res = await window.artha.delegate.continue(sessionId, trimmed);
       if (!res.ok || !res.runId) { set({ status: 'failed', error: res.error ?? 'Could not continue the task.' }); return; }
-      set({ runId: res.runId });
+      await get().followRun(res.runId);
+    } catch (err) {
+      set({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
+      void get().loadThread();
+    }
+  },
+
+  followRun: async (runId) => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    set({ runId, error: null, status: 'executing', result: null });
+    try {
       await get().loadThread();
-      const result = await pollRunToTerminal(res.runId, sessionId, {
-        onStage: (s) => set({ status: s }),
+      const result = await pollRunToTerminal(runId, sessionId, {
+        onStage: (s) => { if (get().runId === runId) set({ status: s }); },
         onStep: () => { /* per-step markers come from the backend trace */ },
       });
+      // A newer run (a drained follow-up) took over the view: don't overwrite it.
+      if (get().runId !== runId) return;
       const terminal: DelegateStatus = result.verified ? 'completed' : 'needs_review';
       set({ result, status: terminal });
       await get().loadThread();
     } catch (err) {
+      if (get().runId !== runId) return;
       set({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
       void get().loadThread();
     }

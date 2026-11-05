@@ -364,6 +364,13 @@ const api = {
   },
 
   delegate: {
+    /** A queued follow-up was drained by the outbox and started a Delegate
+     *  continuation run in `sessionId`; the Delegate view follows `runId`. */
+    onFollowUpStarted: (cb: (p: { sessionId: string; runId: string }) => void) => {
+      const h = (_e: unknown, p: { sessionId: string; runId: string }) => cb(p);
+      ipcRenderer.on('delegate:followUpStarted', h);
+      return () => { ipcRenderer.removeListener('delegate:followUpStarted', h); };
+    },
     /** Non-blocking: kick off a goal, get back the Task id to poll. */
     // `mode` = optional permission mode for the task (ask | accept_edits | auto).
     start: (goal: string, mode?: 'ask' | 'accept_edits' | 'auto' | null) => ipcRenderer.invoke('delegate:start', goal, mode ?? null) as Promise<{

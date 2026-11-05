@@ -627,8 +627,24 @@ function isDelegateMode(m: unknown): m is 'ask' | 'accept_edits' | 'auto' {
   return isPermissionMode(m) && m !== 'plan' && m !== 'unattended';
 }
 
+/** Operator skill for a Delegate follow-up: the operator playbook plus the
+ *  matched capability's task playbook, if any. Shared by `delegate:continue`
+ *  and the outbox drain of a Delegate session, so both continue a task the same way. */
+async function resolveDelegateSkill(message: string): Promise<ReturnType<typeof buildOperatorSkill>> {
+  const registry = new CapabilityRegistry(SkillRegistry.getInstance());
+  const capability = await registry.select(message);
+  let taskPlaybook: { name: string; instructions: string } | null = null;
+  if (capability?.skillSlug) {
+    const resolved = (await SkillRegistry.getInstance().resolve(`/${capability.skillSlug}`)).skill;
+    if (resolved) taskPlaybook = { name: resolved.name, instructions: resolved.instructions };
+  }
+  return buildOperatorSkill(taskPlaybook);
+}
+
 export function registerIpcHandlers(window: BrowserWindow): void {
   orchestrator = new AgentOrchestrator(window);
+  // Queued Delegate follow-ups (outbox drain) resolve their skill like Continue.
+  orchestrator.delegateSkillResolver = resolveDelegateSkill;
 
   // Safe push to the renderer. Guards window AND webContents (a reload destroys
   // webContents while the window lives) and swallows the destroy-mid-send race,
@@ -1126,15 +1142,8 @@ export function registerIpcHandlers(window: BrowserWindow): void {
     if (!exists) return { ok: false, error: 'That task no longer exists.' };
     db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`)
       .run(sessionId, message);
-    const registry = new CapabilityRegistry(SkillRegistry.getInstance());
-    const capability = await registry.select(message);
-    let taskPlaybook: { name: string; instructions: string } | null = null;
-    if (capability?.skillSlug) {
-      const resolved = (await SkillRegistry.getInstance().resolve(`/${capability.skillSlug}`)).skill;
-      if (resolved) taskPlaybook = { name: resolved.name, instructions: resolved.instructions };
-    }
     const runId = orchestrator.startCapability({
-      sessionId, goal: message, skill: buildOperatorSkill(taskPlaybook),
+      sessionId, goal: message, skill: await resolveDelegateSkill(message),
     });
     return { ok: true, runId, sessionId };
   });
