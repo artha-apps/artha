@@ -61,6 +61,8 @@ import { usableApiKey } from '../llm/client';
 import { SkillRegistry, type SkillInput } from '../skills/registry';
 import { CapabilityRegistry, OrchestratorCapabilityExecutor, buildOperatorSkill, getTask, getTaskSteps } from '../bodhi';
 import { listPolicies, createPolicy, updatePolicy, deletePolicy, type PolicyInput } from '../bodhi/policy';
+import { listGrants, revokeGrant } from '../bodhi/grants';
+import { getSessionMode, setSessionMode, isPermissionMode, defaultModeFor, type PermissionMode } from '../agent/modes';
 import { listReceiptRuns, listReceiptsByRun } from '../bodhi/receipts';
 import { deriveDelegateOutcome } from '../bodhi/delegateOutcome';
 import { recordAcceptance } from '../bodhi/acceptance';
@@ -768,8 +770,34 @@ export function registerIpcHandlers(window: BrowserWindow): void {
 
   // Per-tool-call approval (policy `confirm` tier). The renderer answers the
   // `agent:toolApprovalRequest` event with the user's decision.
-  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean) => {
-    orchestrator.respondToolApproval(approvalId, approved);
+  // `always` = the user picked "Always allow (30 days)"; the orchestrator
+  // records a tool grant only when the modal offered it.
+  ipcMain.handle('agent:respondToolApproval', (_e, approvalId: string, approved: boolean, always?: boolean) => {
+    orchestrator.respondToolApproval(approvalId, approved, always === true);
+  });
+
+  // ── Standing grants ("Always allow") ─────────────────────────────────────
+  // Listed (active, expired and revoked) in Settings; revoke is immediate —
+  // the next tool call no longer matches the grant.
+  ipcMain.handle('grants:list', () => listGrants());
+  ipcMain.handle('grants:revoke', (_e, id: string) => typeof id === 'string' && revokeGrant(id));
+
+  // ── Per-chat permission mode (agent/modes.ts) ────────────────────────────
+  // getMode returns the stored mode plus the default it falls back to, so the
+  // header selector can show "Auto (default)". setMode(null) clears it.
+  ipcMain.handle('session:getMode', (_e, sessionId: string) => {
+    let autonomous: boolean | undefined;
+    try {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json: string } | undefined;
+      autonomous = (JSON.parse(row?.settings_json ?? '{}') as { autonomousActions?: boolean }).autonomousActions;
+    } catch { /* default */ }
+    const stored = getSessionMode(sessionId);
+    const fallback = defaultModeFor(autonomous);
+    return { mode: stored ?? fallback, stored, defaultMode: fallback };
+  });
+  ipcMain.handle('session:setMode', (_e, sessionId: string, mode: PermissionMode | null) => {
+    if (mode !== null && !isPermissionMode(mode)) throw new Error('Invalid permission mode');
+    return setSessionMode(sessionId, mode);
   });
 
   // ── Tool-call policies (governance for function calling) ─────────────────
