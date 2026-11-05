@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react';
 import { useToastStore } from './stores/toast';
 import { useChatStore, type Session } from './stores/chat';
+import { applyRunEvent, loadRunCursor, saveRunCursor } from './lib/runResume';
 import Onboarding from './components/Onboarding/Onboarding';
 import ModelStatusBanner from './components/ModelStatusBanner';
 import WorkingIndicator from './components/WorkingIndicator';
@@ -195,6 +196,45 @@ export default function App() {
     window.artha.projects.list().then(setProjects).catch(() => { /* fresh DB */ });
 
     return () => { offToken(); offTool(); offPlan(); offEnd(); offReset(); offWorkflow(); offCitations(); offSkill(); offStatus(); offAutoApproved(); offClarify(); offToolApproval(); offTitle(); offAutoOpen(); };
+  }, []);
+
+  // ── Run event log resume ─────────────────────────────────────────────────
+  // Keep a { runId, lastSeq } cursor for the visible run (lib/runResume.ts).
+  // After a renderer reload, resubscribe from lastSeq: the main process
+  // replays exactly the events we missed, then keeps streaming. Replayed
+  // status/tool events catch the run view up; live ones only advance the
+  // cursor because the agent:* IPC stream above already renders them.
+  useEffect(() => {
+    if (!window.artha.run) return; // older preload — feature absent
+    const storage = window.localStorage;
+    const offEvent = window.artha.run.onEvent(({ event, replayed }) => {
+      const action = applyRunEvent(storage, event, replayed);
+      const chat = useChatStore.getState();
+      if (action.type === 'status') chat.setAgentStatus(action.text);
+      else if (action.type === 'tool') chat.addToolEvent(action.ev);
+      // Replayed terminal event = the run ended while we were reloading, so no
+      // agent:streamEnd will arrive for it. Stop the working UI; whether the
+      // task actually succeeded is shown by the verified task status, not here.
+      else if (action.type === 'ended' && replayed) { chat.setStreaming(false); chat.setAgentStatus(null); }
+    });
+    const offStarted = window.artha.run.onStarted(({ runId }) => {
+      saveRunCursor(storage, { runId, lastSeq: 0 });
+      window.artha.run.subscribe(runId, 0).catch(() => { /* best-effort */ });
+    });
+    // Reload path: a cursor survived, so a run was in flight when we went away.
+    const saved = loadRunCursor(storage);
+    if (saved) {
+      window.artha.run.active()
+        .then((runs) => {
+          const live = runs.find(r => r.runId === saved.runId);
+          if (live) { const chat = useChatStore.getState(); chat.setStreaming(true); chat.setActiveWorkflowId(live.workflowId); }
+          // Subscribe even if it already finished: the replay delivers its
+          // terminal event, which clears the cursor.
+          return window.artha.run.subscribe(saved.runId, saved.lastSeq);
+        })
+        .catch(() => { /* best-effort */ });
+    }
+    return () => { offEvent(); offStarted(); };
   }, []);
 
   // ── Always land on a ready chat ──────────────────────────────────────────

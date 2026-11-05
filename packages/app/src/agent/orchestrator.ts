@@ -69,6 +69,7 @@ import {
 } from '../bodhi/subcapability';
 import { filterToolsByAllowlist, parseSlashInvocation, effectiveAllowedTools } from '../skills/util';
 import { recordSkillRun, type SkillMatchedVia, type SkillRunStatus } from '../skills/metrics';
+import { recordRunEvent, runEventFromChannel, startRunMonitor, markRunActive, markRunInactive } from './runEvents';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -636,8 +637,12 @@ ${envBlock}`,
     toolName: string;
     args: Record<string, unknown>;
     note: string;
+    /** When set, the request and the answer are recorded as `interaction`
+     *  run events (the stall watchdog pauses while one is pending). */
+    runId?: string;
   }): Promise<boolean> {
     const approvalId = crypto.randomUUID();
+    if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'request', approvalId, toolName: req.toolName, note: req.note });
     this.emit('agent:toolApprovalRequest', {
       approvalId,
       workflowId: req.workflowId,
@@ -649,7 +654,11 @@ ${envBlock}`,
     return Promise.race([
       new Promise<boolean>(resolve => { this.toolApprovalResolvers.set(approvalId, { workflowId: req.workflowId, resolve }); }),
       new Promise<boolean>(resolve => setTimeout(() => resolve(false), 120_000)),
-    ]).finally(() => this.toolApprovalResolvers.delete(approvalId));
+    ]).then(approved => {
+      // Logging only — the decision itself (including fail-closed timeout) is unchanged.
+      if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'response', approvalId, approved });
+      return approved;
+    }).finally(() => this.toolApprovalResolvers.delete(approvalId));
   }
 
   /** Ask the LLM whether a goal needs clarification.
@@ -1047,6 +1056,9 @@ Rules:
       INSERT OR IGNORE INTO agent_runs (run_id, session_id, workflow_id, goal, model, status)
       VALUES (?, ?, ?, ?, ?, 'running')
     `).run(runId, plan.sessionId, plan.workflowId, plan.goal, model);
+    // Run event log: the plan this run executes is the first entry of its
+    // replayable timeline (agent/runEvents.ts).
+    recordRunEvent(runId, 'plan', { goal: plan.goal, steps: plan.steps, model });
 
     // Silent runs (e.g. Delegate) must not drive the Chat surface's working UI.
     if (!opts.silent) this.emit('agent:workflowStart', plan.workflowId);
@@ -1275,7 +1287,28 @@ RULES — follow exactly, no exceptions:
    *  Also owns the citation window for this workflow — every web/browser
    *  tool call appends citations that are drained + emitted alongside the
    *  final response. */
-  private async runReactLoop(args: {
+  /** Run-event-log wrapper around the ReAct loop body: registers the run as
+   *  active, runs the 10 s heartbeat / 60 s stall watchdog for its lifetime,
+   *  and records an `error` event if the body throws. Only bookkeeping — the
+   *  loop's own status / verification logic lives untouched in the body. */
+  private async runReactLoop(args: Parameters<AgentOrchestrator['runReactLoopBody']>[0]): Promise<void> {
+    markRunActive({ runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId });
+    // Tell the renderer which run backs this workflow so it can resubscribe
+    // to the run's event log from its last seq after a reload.
+    if (!args.silent) this.emit('run:started', { runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId });
+    const stopMonitor = startRunMonitor(args.runId);
+    try {
+      await this.runReactLoopBody(args);
+    } catch (err) {
+      recordRunEvent(args.runId, 'error', { message: err instanceof Error ? err.message : String(err) });
+      throw err;
+    } finally {
+      stopMonitor();
+      markRunInactive(args.runId);
+    }
+  }
+
+  private async runReactLoopBody(args: {
     workflowId: string;
     runId: string;
     sessionId: string;
@@ -1316,6 +1349,10 @@ RULES — follow exactly, no exceptions:
     let loopModel = resolveRunModel(args.modelOverride, loopTask);
     // Renderer-facing emit gate. Silent child loops still persist to SQLite.
     const emit = (channel: string, data?: unknown): void => {
+      // Run event log: mirror lifecycle channels (status / tool call / tool
+      // result) into the persisted timeline — silent child loops included.
+      const runEv = runEventFromChannel(channel, data);
+      if (runEv) recordRunEvent(args.runId, runEv.kind, runEv.payload);
       if (!args.silent) this.emit(channel, data);
     };
 
@@ -1380,7 +1417,13 @@ RULES — follow exactly, no exceptions:
     // Resolved once for the whole loop: showReasoningEnabled() hits SQLite, so it
     // must not be called per token inside the throttled onReasoning callback.
     const showReasoning = this.showReasoningEnabled();
-    const recordStep = this.makeStepRecorder(args.runId);
+    const persistStep = this.makeStepRecorder(args.runId);
+    // Every agent_steps row also lands in the run event log as a lightweight
+    // `step` marker (tool calls/results carry their own detailed events).
+    const recordStep: typeof persistStep = (idx, kind, payload, snapshot) => {
+      persistStep(idx, kind, payload, snapshot);
+      recordRunEvent(args.runId, 'step', { idx, kind });
+    };
     let stepIdx = 0;
 
     // Begin collecting citations for any web_fetch / web_search calls the
@@ -1667,6 +1710,7 @@ RULES — follow exactly, no exceptions:
               const approved = await this.requestToolApproval({
                 workflowId: args.workflowId, sessionId: args.sessionId,
                 toolName: toolCall.function.name, args: parsedArgs, note: decision.note,
+                runId: args.runId,
               });
               if (!approved) {
                 toolResult = `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
@@ -2209,6 +2253,10 @@ RULES — follow exactly, no exceptions:
       sendNotification(title, goalSnippet);
     }
 
+    // Terminal run event: records that the LOOP ended and the outcome it
+    // recorded. Not a completion claim — task completion is verified from
+    // evidence in bodhi/, never from this event.
+    recordRunEvent(args.runId, 'done', { outcome: terminalOutcome });
     emit('agent:streamEnd');
   }
 
@@ -2431,6 +2479,7 @@ Rules:
       workflowId: args.workflowId, sessionId: args.sessionId,
       toolName: 'email_send', args: fields,
       note: `Send this email to ${fields.to} through your Gmail.`,
+      runId: args.runId,
     });
     if (!approved) return { sent: false, to: fields.to, reason: 'declined' };
     try {
