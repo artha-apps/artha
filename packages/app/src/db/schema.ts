@@ -422,6 +422,27 @@ export async function initDatabase(): Promise<void> {
       created_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    -- Run history for scheduled tasks (automations v2). One row per fire —
+    -- cron, catch-up, folder trigger, webhook or "Run now". status comes from
+    -- the shared honest-outcome projection (never 'ok' unless verified);
+    -- 'held' = a hold state stopped the run before it started. is_read drives
+    -- the Scheduler inbox unread count; summary_hash backs notify=on_change.
+    CREATE TABLE IF NOT EXISTS task_executions (
+      exec_id      TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      task_id      TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'running',
+      trigger_kind TEXT NOT NULL DEFAULT 'schedule',
+      started_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+      ended_at     INTEGER,
+      run_id       TEXT,
+      summary      TEXT,
+      summary_hash TEXT,
+      is_read      INTEGER NOT NULL DEFAULT 0,
+      fail_reason  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_exec_task ON task_executions(task_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_task_exec_unread ON task_executions(is_read);
+
     -- ── Agent Memory ──────────────────────────────────────────────────────
     -- Persistent facts the agent accumulates across sessions.
     -- Injected into the system prompt so the agent "remembers" the user.
@@ -1286,6 +1307,17 @@ export function runMigrations(): void {
     add('last_run_id', 'TEXT');     // the inspectable handle that was missing
     add('last_outcome', 'TEXT');    // projected task status
     add('last_detail', 'TEXT');     // honest one-line explanation
+    // Automations v2 (ops hygiene, notify policy, triggers). All additive.
+    add('next_due_at', 'INTEGER');                              // armed cron slot — basis for catch-up
+    add('last_catchup_slot', 'INTEGER');                        // at most one catch-up per slot
+    add('consecutive_failures', 'INTEGER NOT NULL DEFAULT 0');  // auto-pause at 3
+    add('pause_reason', 'TEXT');                                // visible why-it-paused
+    add('on_hold', 'INTEGER NOT NULL DEFAULT 0');               // re-auth / folder missing / model unavailable
+    add('hold_reason', 'TEXT');
+    add('notify', "TEXT NOT NULL DEFAULT 'always'");            // always | on_change | on_failure
+    add('watch_folder', 'TEXT');                                // folder trigger (must be inside scopes)
+    add('webhook_enabled', 'INTEGER NOT NULL DEFAULT 0');       // local webhook, off by default
+    add('webhook_token', 'TEXT');                               // per-task secret; no token = rejected
   } catch (err) {
     console.warn('[Artha] scheduled_tasks truthfulness migration skipped:', err);
   }
@@ -1359,6 +1391,18 @@ export function runMigrations(): void {
     db.prepare(`UPDATE outbox SET status='ready', updated_at=unixepoch() WHERE status IN ('sending','editing')`).run();
   } catch (err) {
     console.warn('[Artha] outbox reconciliation skipped:', err);
+  }
+
+  // Executions left 'running' by an app quit get the same honest treatment.
+  try {
+    db.prepare(
+      `UPDATE task_executions
+          SET status='unverified', ended_at=unixepoch(),
+              fail_reason='Artha closed while this run was in progress; completion was not verified.'
+        WHERE status='running'`
+    ).run();
+  } catch (err) {
+    console.warn('[Artha] task_executions reconciliation skipped:', err);
   }
 
   console.log('[Artha] Database migrations applied.');

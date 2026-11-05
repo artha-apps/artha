@@ -124,6 +124,7 @@ import { DEFAULT_STOP_ACCELERATOR } from '../desktop/killSwitch';
 const runSubscriptions = createRunSubscriptions();
 /** webContents ids whose teardown hooks are already attached (attach once). */
 const runSubscribedClients = new Set<number>();
+import { exportTaskMarkdown, parseTaskMarkdown } from '../scheduler/taskFile';
 
 // Module-level orchestrator — created once in `registerIpcHandlers` so every
 // IPC channel shares the same ReAct loop and in-flight workflow map.
@@ -386,6 +387,29 @@ async function startLanServer(): Promise<{ running: boolean; url: string | null;
     // comparison in the common case).
     if (!currentEntitlements().lanServer) {
       json(403, { error: 'The hub license has expired or was removed. Ask the hub admin to renew it in Settings → License.' });
+      return;
+    }
+
+    // Local webhook trigger for a scheduled task: POST /hooks/tasks/:taskId
+    // with header `X-Artha-Task-Token: <per-task token>`. Authorised by the
+    // per-task secret (not a member API key) so simple local tools can call it;
+    // it fails CLOSED — webhook off, no token, or a mismatch runs nothing
+    // (SchedulerService.handleWebhook → authorizeWebhook). The run itself goes
+    // through the same unattended path as a cron fire.
+    const hookMatch = /^\/hooks\/tasks\/([A-Za-z0-9-]{1,64})$/.exec(url.pathname);
+    if (hookMatch) {
+      if (req.method !== 'POST') { json(405, { error: 'Use POST.' }); return; }
+      const clientIp = req.socket.remoteAddress ?? 'unknown';
+      if (!lanChatLimiter.take(`hook:${clientIp}`)) {
+        json(429, { error: 'Too many requests. Slow down and retry shortly.' });
+        return;
+      }
+      const header = req.headers['x-artha-task-token'];
+      const token = Array.isArray(header) ? header[0] : header;
+      const result = SchedulerService.getInstance().handleWebhook(hookMatch[1], token);
+      // Drain (and ignore) any body so the socket closes cleanly.
+      req.resume();
+      json(result.status, result.body);
       return;
     }
 
@@ -2733,6 +2757,58 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('scheduler:remove', (_e, taskId: string) => {
     sched.remove(taskId);
     return true;
+  });
+
+  // ── Scheduler v2: inbox, Run now, triggers, notify policy, task files ────
+  ipcMain.handle('scheduler:executions', (_e, limit?: number, taskId?: string) =>
+    sched.listExecutions(limit ?? 50, taskId));
+  ipcMain.handle('scheduler:unreadCount', () => sched.unreadCount());
+  ipcMain.handle('scheduler:markRead', (_e, execId?: string) => { sched.markRead(execId); return true; });
+  ipcMain.handle('scheduler:runNow', (_e, taskId: string) => {
+    if (!currentEntitlements().scheduler) {
+      throw new Error('Scheduled tasks require a Personal (or higher) license — subscribe at artha.space/subscribe.');
+    }
+    return sched.runNow(taskId);
+  });
+  ipcMain.handle('scheduler:sessionForRun', (_e, runId: string) => sched.sessionForRun(runId));
+  ipcMain.handle('scheduler:setNotify', (_e, taskId: string, notify: string) =>
+    sched.update(taskId, { notify: notify as TaskInput['notify'] }));
+  ipcMain.handle('scheduler:setFolderTrigger', (_e, taskId: string, folder: string | null) =>
+    sched.setFolderTrigger(taskId, folder));
+  ipcMain.handle('scheduler:pickFolder', async () => {
+    const r = await dialog.showOpenDialog(window, { properties: ['openDirectory'] });
+    return r.canceled ? null : (r.filePaths[0] ?? null);
+  });
+  // Task files: Markdown + frontmatter (name, schedule, prompt, notify).
+  // Import creates the task through sched.create, so the 15-minute floor and
+  // the license gate apply; triggers are never imported.
+  ipcMain.handle('scheduler:exportFile', async (_e, taskId: string) => {
+    const t = sched.list().find(x => x.task_id === taskId);
+    if (!t) throw new Error('Task not found.');
+    const safe = t.name.replace(/[^A-Za-z0-9 _-]+/g, '').trim().slice(0, 60) || 'task';
+    const r = await dialog.showSaveDialog(window, { defaultPath: `${safe}.md`, filters: [{ name: 'Markdown', extensions: ['md'] }] });
+    if (r.canceled || !r.filePath) return null;
+    const fs = await import('fs');
+    await fs.promises.writeFile(r.filePath, exportTaskMarkdown(t), 'utf8');
+    return r.filePath;
+  });
+  ipcMain.handle('scheduler:importFile', async () => {
+    if (!currentEntitlements().scheduler) {
+      throw new Error('Scheduled tasks require a Personal (or higher) license — subscribe at artha.space/subscribe.');
+    }
+    const r = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'Markdown', extensions: ['md'] }] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const fs = await import('fs');
+    const stat = await fs.promises.stat(r.filePaths[0]);
+    if (stat.size > 64 * 1024) throw new Error('Task file is too large (max 64 KB).');
+    const data = parseTaskMarkdown(await fs.promises.readFile(r.filePaths[0], 'utf8'));
+    return sched.create({ name: data.name, prompt: data.prompt, cron: data.schedule ?? undefined, notify: data.notify });
+  });
+  ipcMain.handle('scheduler:setWebhook', (_e, taskId: string, enabled: boolean) => {
+    const res = sched.setWebhook(taskId, enabled);
+    const lan = lanStatus();
+    // The webhook only listens while the LAN server is running.
+    return { ...res, url: lan.url ? `${lan.url}${res.path}` : null, lanRunning: lan.running };
   });
 
   // ── Artifacts ─────────────────────────────────────────────────────────────

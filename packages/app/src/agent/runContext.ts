@@ -48,3 +48,14 @@ export function runWithContext<T>(ctx: RunContext, fn: () => T): T {
 export function getRunContext(): RunContext | undefined {
   return storage.getStore();
 }
+
+/**
+ * True when a `confirm`-tier tool call in the current run must be BLOCKED
+ * rather than shown to a human: LAN requests and unattended runs (every
+ * scheduler trigger — cron, catch-up, folder, webhook, Run now) have nobody to
+ * answer an approval modal. The orchestrator's policy gate uses this, so the
+ * rule lives in one testable place.
+ */
+export function confirmTierMustFailClosed(rc: RunContext | undefined = getRunContext()): boolean {
+  return !!rc?.lan || !!rc?.unattended;
+}

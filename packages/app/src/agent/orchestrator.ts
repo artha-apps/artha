@@ -27,7 +27,7 @@ import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
 import { noteRunStarted, noteRunEnded } from '../system/keepAwake';
-import { getRunContext } from './runContext';
+import { getRunContext, confirmTierMustFailClosed } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
 import { recordAcceptanceCriteria, deriveCriteriaFromMutations, evaluateCriterion, ensureRunTask } from '../bodhi/criteria';
 import {
@@ -1884,7 +1884,9 @@ RULES — follow exactly, no exceptions:
     // Permission mode for this run (agent/modes.ts). A LAN or scheduled run is
     // always 'unattended', whatever the chat's stored mode says.
     const gateRc = getRunContext();
-    const gateUnattended = !!gateRc?.lan || !!gateRc?.unattended;
+    // One rule for "nobody can answer a prompt" (agent/runContext.ts): LAN and
+    // every scheduler trigger. Unattended runs fail closed on asks.
+    const gateUnattended = confirmTierMustFailClosed(gateRc);
     const permissionMode = resolveEffectiveMode(
       getSessionMode(args.sessionId),
       this.userSettings().autonomousActions as boolean | undefined,
