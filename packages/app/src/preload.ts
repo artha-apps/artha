@@ -201,12 +201,13 @@ const api = {
       ipcRenderer.invoke('agent:clarifyRespond', workflowId, answers),
     // Per-tool-call approval (policy `confirm` tier). The orchestrator pauses a
     // specific function call until the user approves or denies it here.
-    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string }) => void) => {
+    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string; allowAlways?: boolean }) => void) => {
       ipcRenderer.on('agent:toolApprovalRequest', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:toolApprovalRequest');
     },
-    respondToolApproval: (approvalId: string, approved: boolean) =>
-      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved),
+    // `always` records an "Always allow (30 days)" grant when the modal offered it.
+    respondToolApproval: (approvalId: string, approved: boolean, always?: boolean) =>
+      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved, always === true),
     // Decompose a goal into sub-tasks and run them concurrently.
     runParallel: (sessionId: string, goal: string, subTasks: string[]) =>
       ipcRenderer.invoke('agent:runParallel', { sessionId, goal, subTasks }) as Promise<string[]>,
@@ -226,7 +227,8 @@ const api = {
   // final output + artifacts. `steps` reads a Task's step trace for progress.
   delegate: {
     /** Non-blocking: kick off a goal, get back the Task id to poll. */
-    start: (goal: string) => ipcRenderer.invoke('delegate:start', goal) as Promise<{
+    // `mode` = optional permission mode for the task (ask | accept_edits | auto).
+    start: (goal: string, mode?: 'ask' | 'accept_edits' | 'auto' | null) => ipcRenderer.invoke('delegate:start', goal, mode ?? null) as Promise<{
       runId: string;
       sessionId: string;
       capability: string;
@@ -867,6 +869,26 @@ const api = {
     update: (policyId: string, patch: { pattern?: string; tier?: string; scope?: string; note?: string; isEnabled?: boolean }) =>
       ipcRenderer.invoke('policies:update', policyId, patch),
     delete: (policyId: string) => ipcRenderer.invoke('policies:delete', policyId) as Promise<boolean>,
+  },
+
+  // ── Standing grants ("Always allow (30 days)") ────────────────────────────
+  // Settings lists them with a Revoke button; expired/revoked rows stay for audit.
+  grants: {
+    list: () => ipcRenderer.invoke('grants:list') as Promise<{
+      id: string; scope_kind: 'tool' | 'host' | 'folder' | 'app' | 'connector'; scope_value: string;
+      subject: string; created_at: number; expires_at: number | null; revoke_gen: number; active: boolean;
+    }[]>,
+    revoke: (id: string) => ipcRenderer.invoke('grants:revoke', id) as Promise<boolean>,
+  },
+
+  // ── Per-chat permission mode ──────────────────────────────────────────────
+  // ask | accept_edits | plan | auto (unattended is runtime-only). null clears.
+  session: {
+    getMode: (sessionId: string) => ipcRenderer.invoke('session:getMode', sessionId) as Promise<{
+      mode: 'ask' | 'accept_edits' | 'plan' | 'auto' | 'unattended'; stored: string | null; defaultMode: string;
+    }>,
+    setMode: (sessionId: string, mode: 'ask' | 'accept_edits' | 'plan' | 'auto' | null) =>
+      ipcRenderer.invoke('session:setMode', sessionId, mode) as Promise<boolean>,
   },
 
   // ── Verified tool receipts (provenance for function calls) ────────────────

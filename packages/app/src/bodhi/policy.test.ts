@@ -48,3 +48,11 @@ describe('hashResult', () => {
     expect(hashResult('hello')).toHaveLength(16);
   });
 });
+
+describe('isAlwaysConfirmTool', () => {
+  it('email_send is on the floor; ordinary tools are not', async () => {
+    const { isAlwaysConfirmTool } = await import('./policy');
+    expect(isAlwaysConfirmTool('email_send')).toBe(true);
+    expect(isAlwaysConfirmTool('fs_move_file')).toBe(false);
+  });
+});
