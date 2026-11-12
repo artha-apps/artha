@@ -179,10 +179,6 @@ function resolveKeys(nut: any, combo: string): unknown[] {
  *  long `desktop_type` halts promptly instead of finishing the paragraph. */
 const TYPE_CHUNK = 16;
 
-/** Name of the app most recently launched via desktop_open_app — a fallback
- *  target when the frontmost app can't be queried. */
-let lastOpenedApp: string | null = null;
-
 /**
  * Resolve the app a desktop action will land in, for the per-app grant check
  * (desktop/appGrants.ts). desktop_open_app targets the app being opened; every
@@ -204,9 +200,12 @@ export async function resolveDesktopTargetApp(name: string, args: Record<string,
       ], { timeout: 3000 });
       const app = stdout.trim();
       if (app) return app;
-    } catch { /* fall through */ }
+    } catch { /* fall through — unknown, never a guess */ }
   }
-  return lastOpenedApp;
+  // Fail closed: if the frontmost app can't be read, the target is UNKNOWN.
+  // Never fall back to the last app the agent opened — focus may have moved
+  // (e.g. to Terminal) and that app's grant must not cover it.
+  return null;
 }
 
 /** Map a thrown error to the string the ReAct loop sees. A kill-switch stop is
@@ -333,7 +332,6 @@ async function runDesktopTool(name: string, args: Record<string, unknown>, ctl: 
         const { execFile } = await import('child_process');
         const { promisify } = await import('util');
         await promisify(execFile)('open', ['-a', appName]);
-        lastOpenedApp = appName;
         return `Opened "${appName}".`;
       }
 

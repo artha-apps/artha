@@ -66,7 +66,9 @@ describe('goals — model cannot complete', () => {
     expect(() => modelUpdateGoal(db, 's1', { status: 'completed', reason: 'done' })).toThrow(GoalError);
     expect(() => modelUpdateGoal(db, 's1', { status: 'completed', reason: 'done' })).toThrow(/cannot mark a goal completed/);
     expect(() => modelUpdateGoal(db, 's1', { status: 'terminated', reason: 'x' })).toThrow(/only the user/);
-    expect(() => modelUpdateGoal(db, 's1', { status: 'active', reason: 'x' })).toThrow(/blocked" or "paused/);
+    expect(() => modelUpdateGoal(db, 's1', { status: 'active', reason: 'x' })).toThrow(/must be "blocked"/);
+    // Pausing is user-only: a model-set pause would make the stop gate skip the evaluator.
+    expect(() => modelUpdateGoal(db, 's1', { status: 'paused', reason: 'x' })).toThrow(/only the user can pause/);
     expect(getOpenGoal(db, 's1')!.status).toBe('active');
   });
 
@@ -120,14 +122,14 @@ describe('goals — persistence', () => {
     const file = tmpDbFile();
     const db1 = openDb(file);
     freshGoal(asDb(db1));
-    modelUpdateGoal(asDb(db1), 's1', { status: 'paused', reason: 'waiting on data' }, 5_000);
+    modelUpdateGoal(asDb(db1), 's1', { status: 'blocked', reason: 'waiting on data' }, 5_000);
     db1.close();
 
     const db2 = openDb(file); // CREATE TABLE IF NOT EXISTS must not clobber it
     const g = getOpenGoal(asDb(db2), 's1');
     expect(g).not.toBeNull();
     expect(g!.objective).toBe('Write the Q3 report');
-    expect(g!.status).toBe('paused');
+    expect(g!.status).toBe('blocked');
     expect(g!.blockedReason).toBe('waiting on data');
     expect(g!.activeMs).toBe(4_000);
     db2.close();

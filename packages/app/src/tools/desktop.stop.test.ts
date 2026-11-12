@@ -45,5 +45,10 @@ describe('desktop tools under the kill switch', () => {
   it('desktop_open_app targets the app being opened', async () => {
     expect(await resolveDesktopTargetApp('desktop_open_app', { appName: ' Notes ' })).toBe('Notes');
     expect(await resolveDesktopTargetApp('desktop_open_app', {})).toBeNull();
+    // Off macOS (and whenever the frontmost app can't be read) the target is
+    // unknown — never the last app opened — so the gate asks or skips.
+    if (process.platform !== 'darwin') {
+      expect(await resolveDesktopTargetApp('desktop_click', { x: 1, y: 1 })).toBeNull();
+    }
   });
 });
