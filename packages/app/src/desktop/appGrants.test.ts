@@ -82,6 +82,15 @@ describe('isAlwaysConfirmApp', () => {
     expect(isAlwaysConfirmApp('Notes')).toBe(false);
     expect(isAlwaysConfirmApp('Safari')).toBe(false);
   });
+
+  it('catches app paths and the other terminals / script hosts (R2 #3)', () => {
+    expect(isAlwaysConfirmApp('/System/Applications/Utilities/Terminal.app')).toBe(true);
+    expect(isAlwaysConfirmApp('/Applications/iTerm.app')).toBe(true);
+    for (const app of ['Warp', 'Ghostty', 'kitty', 'Alacritty', 'WezTerm', 'Hyper', 'Script Editor', 'Automator', 'Shortcuts']) {
+      expect(isAlwaysConfirmApp(app), app).toBe(true);
+    }
+    expect(isAlwaysConfirmApp('/Applications/Notes.app')).toBe(false);
+  });
 });
 
 describe('applyGrantAnswer', () => {

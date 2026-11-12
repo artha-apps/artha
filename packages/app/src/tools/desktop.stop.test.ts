@@ -42,6 +42,11 @@ describe('desktop tools under the kill switch', () => {
     expect(await invokeDesktopTool('desktop_click', { x: 2, y: 3 })).toMatch(/Clicked/);
   });
 
+  it('desktop_open_app refuses a path instead of a name (R2 #3)', async () => {
+    expect(await invokeDesktopTool('desktop_open_app', { appName: '/System/Applications/Utilities/Terminal.app' }))
+      .toMatch(/not a file path\. Nothing was opened/);
+  });
+
   it('desktop_open_app targets the app being opened', async () => {
     expect(await resolveDesktopTargetApp('desktop_open_app', { appName: ' Notes ' })).toBe('Notes');
     expect(await resolveDesktopTargetApp('desktop_open_app', {})).toBeNull();

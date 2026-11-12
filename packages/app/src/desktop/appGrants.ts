@@ -60,6 +60,9 @@ export const projectSubject = (projectId: string): string => `project:${projectI
 const DEFAULT_DENY_PATTERNS: RegExp[] = [
   /^terminal$/,
   /^iterm2?$/,
+  // Other terminals and script hosts: each can run arbitrary commands.
+  /^warp$/, /^ghostty$/, /^kitty$/, /^alacritty$/, /^wezterm(-gui)?$/, /^hyper$/, /^tabby$/,
+  /^script editor$/, /^automator$/, /^shortcuts$/,
   /^system (settings|preferences)$/,
   /^keychain access$/,
   /^passwords$/,
@@ -71,7 +74,10 @@ const DEFAULT_DENY_PATTERNS: RegExp[] = [
 /** True when the app is on the always-confirm deny list. */
 export function isAlwaysConfirmApp(appName: string): boolean {
   const id = normalizeAppId(appName);
-  return DEFAULT_DENY_PATTERNS.some(re => re.test(id));
+  // A path ("/System/Applications/Utilities/Terminal.app") is judged by its
+  // app name too, so it can't slip past the name-anchored patterns.
+  const base = normalizeAppId(id.split('/').filter(Boolean).pop() ?? id);
+  return DEFAULT_DENY_PATTERNS.some(re => re.test(id) || re.test(base));
 }
 
 /** Desktop tools that act ON an app (move/click/type/launch) and therefore

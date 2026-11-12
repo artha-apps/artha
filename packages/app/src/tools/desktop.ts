@@ -329,6 +329,9 @@ async function runDesktopTool(name: string, args: Record<string, unknown>, ctl: 
       case 'desktop_open_app': {
         const appName = String(args.appName ?? '').trim();
         if (!appName) return 'Error: appName is required.';
+        // Names only: `open -a` also takes a path, which would let a grant
+        // keyed on one string launch a different (or deny-listed) app.
+        if (/[\\/]/.test(appName)) return 'Error: give the app\'s name (e.g. "Notes"), not a file path. Nothing was opened.';
         const { execFile } = await import('child_process');
         const { promisify } = await import('util');
         await promisify(execFile)('open', ['-a', appName]);
