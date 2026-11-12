@@ -1024,6 +1024,21 @@ export function runMigrations(): void {
     console.warn('[Artha] chat_sessions origin migration skipped:', err);
   }
 
+  // lan_owner on chat_sessions — the LAN caller (team member or API key) that
+  // created a session over the network. The LAN /chat endpoint only continues
+  // a session its caller owns, so a teammate can't run inside (and read the
+  // history of) the host's own chats, or another teammate's. NULL = a desktop
+  // chat. Sessions created over LAN before this column existed stay NULL and
+  // are therefore no longer reachable over LAN (fail closed).
+  try {
+    const sessCols = db.prepare(`PRAGMA table_info(chat_sessions)`).all() as { name: string }[];
+    if (sessCols.length && !sessCols.some(c => c.name === 'lan_owner')) {
+      db.exec(`ALTER TABLE chat_sessions ADD COLUMN lan_owner TEXT`);
+    }
+  } catch (err) {
+    console.warn('[Artha] chat_sessions lan_owner migration skipped:', err);
+  }
+
   // Migration v10→v11: origin on memory_entities — distinguishes how a memory got
   // here. 'agent' = written by the ReAct loop (the historical default); 'import'
   // = bulk-loaded by the user via Bring-Your-Own-Memory (paste from another AI).

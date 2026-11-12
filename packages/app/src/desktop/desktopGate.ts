@@ -30,6 +30,11 @@ export interface DesktopGateContext {
   sessionId: string;
   projectId: string | null;
   unattended: boolean;
+  /** The run came from a LAN teammate. Their runs never touch the host's
+   *  desktop: no per-app grant of the host applies to them, and even
+   *  read-only tools (screenshot, find on screen, active window) would show
+   *  the host's screen to someone else. */
+  lan?: boolean;
 }
 
 /** Gate verdict. `status` maps directly onto the receipt status. */
@@ -40,6 +45,12 @@ export type DesktopGateResult =
 /** Run the grant check for one desktop action. Never throws: a failure to
  *  resolve the app is treated as an unknown app (which always asks). */
 export async function gateDesktopAction(deps: DesktopGateDeps, ctx: DesktopGateContext): Promise<DesktopGateResult> {
+  if (ctx.lan) {
+    return {
+      proceed: false, status: 'skipped', appName: 'the host desktop',
+      message: `Skipped: ${ctx.toolName} was not run because requests from teammates over the network can't control or view this computer's desktop. Report this to the user; do not claim the step was done.`,
+    };
+  }
   if (!GRANT_GATED_DESKTOP_TOOLS.has(ctx.toolName)) return { proceed: true, appName: null };
 
   let appName: string | null = null;

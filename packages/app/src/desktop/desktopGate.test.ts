@@ -43,6 +43,18 @@ describe('gateDesktopAction', () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
+  it('a LAN run never rides the host\'s app grants, and cannot view the screen (R2 #6)', async () => {
+    const { d, confirm } = deps('Notes', 'always');
+    // The host granted Notes for this project.
+    expect((await gateDesktopAction(d, ctx)).proceed).toBe(true);
+    confirm.mockClear();
+    const lan = { ...ctx, unattended: true, lan: true };
+    expect(await gateDesktopAction(d, lan)).toMatchObject({ proceed: false, status: 'skipped' });
+    expect(await gateDesktopAction(d, { ...lan, toolName: 'desktop_screenshot' }))
+      .toMatchObject({ proceed: false, status: 'skipped' });
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
   it('deny-listed app asks every time, even after "always"', async () => {
     const { d, confirm } = deps('Terminal', 'always');
     await gateDesktopAction(d, ctx);

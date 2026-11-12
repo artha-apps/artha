@@ -2326,12 +2326,15 @@ RULES — follow exactly, no exceptions:
                 toolName: toolCall.function.name, args: parsedArgs,
                 sessionId: args.sessionId, projectId: this.getSessionProjectId(args.sessionId),
                 unattended: confirmTierMustFailClosed(rcDesk),
+                lan: !!rcDesk?.lan,
               });
               if (!deskGate.proceed) {
                 toolResult = deskGate.message;
                 toolStatus = 'error';
                 receiptStatus = deskGate.status;
-                receiptEffect = deskGate.status === 'skipped'
+                receiptEffect = rcDesk?.lan
+                  ? 'Skipped — requests from the network cannot use this computer\'s desktop'
+                  : deskGate.status === 'skipped'
                   ? `Skipped — ${deskGate.appName} not approved for desktop control (unattended run)`
                   : `Blocked — user did not allow control of ${deskGate.appName}`;
                 // An unattended skip is a refusal, not a tool failure: count it

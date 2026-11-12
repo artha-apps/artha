@@ -40,6 +40,7 @@ import * as http from 'http';
 import * as os from 'os';
 import { app } from 'electron';
 import { AgentOrchestrator } from '../agent/orchestrator';
+import { resolveLanSession } from './lanSession';
 import { runWithContext } from '../agent/runContext';
 import { listUndoable, revert } from '../agent/undo';
 import { rewindRunToStep } from '../agent/checkpoints';
@@ -267,7 +268,12 @@ function hashApiKey(key: string): string {
  *  issued before team-mode (no team_members linkage); role defaults to 'admin'
  *  on the no-keys-registered open-access path so future admin-only routes
  *  remain reachable on a fresh box. */
-export type LanIdentity = { memberId: string | null; memberName: string | null; role: 'admin' | 'member' };
+export type LanIdentity = {
+  memberId: string | null; memberName: string | null; role: 'admin' | 'member';
+  /** Stable owner key for sessions this caller creates: the team member, or
+   *  the API key itself for keys with no member. */
+  ownerKey: string;
+};
 
 function authoriseLanRequest(req: http.IncomingMessage): LanIdentity | null {
   try {
@@ -294,7 +300,8 @@ function authoriseLanRequest(req: http.IncomingMessage): LanIdentity | null {
       memberName = m?.display_name ?? null;
     }
     const role: 'admin' | 'member' = matched.role === 'admin' ? 'admin' : 'member';
-    return { memberId: matched.member_id, memberName, role };
+    const ownerKey = matched.member_id ? `member:${matched.member_id}` : `key:${hash}`;
+    return { memberId: matched.member_id, memberName, role, ownerKey };
   } catch {
     return null; // fail closed
   }
@@ -506,11 +513,11 @@ async function startLanServer(): Promise<{ running: boolean; url: string | null;
             }
           }
 
-          sid = parsed.sessionId ?? '';
-          if (!sid) {
-            sid = crypto.randomUUID();
-            db.prepare(`INSERT INTO chat_sessions (session_id, title) VALUES (?, ?)`).run(sid, `LAN: ${parsed.message.slice(0, 40)}`);
-          }
+          // Only a session this caller created over LAN can be continued
+          // (ipc/lanSession.ts) — never the host's own chats.
+          const session = resolveLanSession(db, parsed.sessionId, identity.ownerKey, parsed.message);
+          if (!session.ok) { json(session.status, { error: session.error }); return; }
+          sid = session.sessionId;
 
           res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
 
