@@ -42,8 +42,7 @@ import OpenAI from 'openai';
 import {
   startCitationCollection,
   drainCitations,
-  setActiveCitationToken,
-  getActiveCitationToken,
+  runWithCitationToken,
 } from '../tools/web';
 import {
   MEMORY_TOOL_SCHEMAS,
@@ -1806,7 +1805,9 @@ RULES — follow exactly, no exceptions:
       },
     });
     try {
-      await this.runReactLoopBody(args);
+      // The loop's citation/workflow token is scoped to it (tools/web.ts), so
+      // concurrent and nested loops never see each other's.
+      await runWithCitationToken(args.workflowId, () => this.runReactLoopBody(args));
     } catch (err) {
       recordRunEvent(args.runId, 'error', { message: err instanceof Error ? err.message : String(err) });
       throw err;
@@ -1952,11 +1953,8 @@ RULES — follow exactly, no exceptions:
 
     // Begin collecting citations for any web_fetch / web_search calls the
     // model makes inside this loop. Drained + emitted at the final response.
-    // Capture the previously-active token so a NESTED loop (a sub-capability)
-    // restores the parent's token on exit instead of clobbering it to null.
-    const prevCitationToken = getActiveCitationToken();
+    // (The active token itself is scoped by runReactLoop.)
     startCitationCollection(args.workflowId);
-    setActiveCitationToken(args.workflowId);
 
     recordStep(stepIdx++, 'system', {
       note: 'loop start', model: loopModel ?? this.activeModelName(),
@@ -2926,11 +2924,6 @@ RULES — follow exactly, no exceptions:
             errorDetail: 'max_iterations',
           });
     }
-
-    // Restore the parent loop's citation token (null at the top level). A bare
-    // setActiveCitationToken(null) here would silence the parent's web/browser
-    // citation collection after it delegated to a sub-capability.
-    setActiveCitationToken(prevCitationToken);
 
     // Notify when a long run ends (> 10 s) — but say what ACTUALLY happened.
     // This sat outside every status branch, so a user who pressed Stop, or
