@@ -85,6 +85,13 @@ export interface AgentPlan {
   blastRadius?: BlastRadius;
   /** Comment-driven planner revisions so far (the planner revises at most once). */
   revisions?: number;
+  /** Who asked for this plan: the desktop user, a LAN teammate, or a
+   *  background (scheduled/webhook/folder) task. Shown on the review card so
+   *  the host never approves a teammate's or a task's plan thinking it is
+   *  their own. */
+  origin?: 'local' | 'lan' | 'scheduled';
+  /** The LAN teammate's identity when origin is 'lan'. */
+  originActor?: string;
 }
 
 /** A per-tool-call approval the orchestrator paused on (policy `confirm` tier)

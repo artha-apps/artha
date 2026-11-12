@@ -5,7 +5,11 @@
  *     plan instead of executing;
  *   - Reject ends the workflow as 'cancelled' (cancelled-by-user) and never
  *     writes 'completed' or starts execution;
- *   - the plan's unified interaction is settled either way.
+ *   - the plan's unified interaction is settled either way;
+ *   - an accepted plan runs once, and a duplicate accept does nothing (R3 #3);
+ *   - an approved plan runs inside the RunContext it was parked under, so a
+ *     LAN or resumed run keeps its actor, isolation and resume guard after
+ *     the host approves it from IPC (R2 #5, R1 #4).
  * Heavy collaborators (Electron, SQLite, LLM, MCP) are faked; the SQL the
  * orchestrator runs is captured for assertions.
  */
@@ -48,6 +52,7 @@ vi.mock('../skills/registry', () => ({
 
 import { AgentOrchestrator, type AgentPlan } from './orchestrator';
 import { getInteractionHub } from './interactions';
+import { runWithContext, getRunContext, type RunContext } from './runContext';
 
 /** Fake window capturing every renderer event. */
 function makeOrchestrator() {
@@ -151,5 +156,48 @@ describe('AgentOrchestrator.reviewPlan', () => {
     await vi.waitFor(() => {
       expect(state.runs.filter(r => /UPDATE agent_states SET status/.test(r.sql)).map(r => r.args[0])).toContain('cancelled');
     });
+  });
+
+  it('runs an accepted plan once; a duplicate accept does nothing (R3 #3)', async () => {
+    const { orch } = makeOrchestrator();
+    seedPlan(orch);
+    const execute = vi.spyOn(orch as unknown as { executePlan: () => Promise<string> }, 'executePlan')
+      .mockResolvedValue('done');
+    await orch.reviewPlan('wf-1', { decision: 'accept' });
+    await orch.approvePlan('wf-1', true);
+    await orch.reviewPlan('wf-1', { decision: 'accept' });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect((orch as unknown as { activePlans: Map<string, AgentPlan> }).activePlans.has('wf-1')).toBe(false);
+  });
+
+  it('an approved plan executes inside the RunContext it was parked under (R2 #5, R1 #4)', async () => {
+    const { orch } = makeOrchestrator();
+    const lanCtx: RunContext = {
+      actor: 'lan:teammate', lan: true, unattended: true,
+      resume: { fromRunId: 'r0', confirmedActionIds: ['A1'] },
+    };
+    // Parked from inside the LAN run…
+    runWithContext(lanCtx, () => { seedPlan(orch); });
+    let seen: RunContext | undefined;
+    vi.spyOn(orch as unknown as { executePlan: () => Promise<string> }, 'executePlan')
+      .mockImplementation(async () => { seen = getRunContext(); return 'done'; });
+
+    // …approved later from an IPC handler with NO run context.
+    expect(getRunContext()).toBeUndefined();
+    await orch.reviewPlan('wf-1', { decision: 'accept' });
+
+    expect(seen).toBe(lanCtx);
+    expect(seen?.resume?.confirmedActionIds).toEqual(['A1']);
+  });
+
+  it('labels the plan card with where the run came from', () => {
+    const { orch } = makeOrchestrator();
+    const open = vi.spyOn(getInteractionHub(), 'open');
+    runWithContext({ actor: 'lan:teammate', lan: true }, () => { seedPlan(orch); });
+    const payload = open.mock.calls.at(-1)![0].payload as { origin: string; actor?: string };
+    expect(payload.origin).toBe('lan');
+    expect(payload.actor).toBe('lan:teammate');
+    open.mockRestore();
+    void orch.reviewPlan('wf-1', { decision: 'reject' });
   });
 });

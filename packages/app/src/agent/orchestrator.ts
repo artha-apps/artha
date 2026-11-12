@@ -27,7 +27,7 @@ import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
 import { noteRunStarted, noteRunEnded } from '../system/keepAwake';
-import { getRunContext, confirmTierMustFailClosed } from './runContext';
+import { getRunContext, confirmTierMustFailClosed, runWithContext, type RunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
 import { recordAcceptanceCriteria, deriveCriteriaFromMutations, evaluateCriterion, ensureRunTask } from '../bodhi/criteria';
 import {
@@ -170,6 +170,13 @@ export interface AgentPlan {
   /** The unified-frame interaction (agent/interactions.ts) this plan's
    *  approval is pending on, when it paused for review. */
   interactionId?: string;
+  /** Who asked for this plan: the desktop user, a LAN teammate, or a
+   *  background (scheduled/webhook/folder) task. Shown on the review card so
+   *  the host never approves a teammate's or a task's plan thinking it is
+   *  their own. */
+  origin?: 'local' | 'lan' | 'scheduled';
+  /** The LAN teammate's identity when origin is 'lan'. */
+  originActor?: string;
 }
 
 /** A per-tool-call approval the orchestrator paused on because a policy assigned
@@ -264,6 +271,13 @@ export class AgentOrchestrator {
   private skills: SkillRegistry;
   /** Plans awaiting user approval, keyed by workflowId. */
   private activePlans = new Map<string, AgentPlan>();
+  /** The RunContext (LAN actor, unattended, resume guard) a plan was parked
+   *  under. Plan review is answered from an IPC handler that runs OUTSIDE the
+   *  original AsyncLocalStorage context, so without this an approved plan from
+   *  a LAN or resumed run would execute as a trusted local run: riding the
+   *  host's grants, seeing private memories, and losing the "never re-send"
+   *  email guard. Kept off AgentPlan because the plan is sent to the renderer. */
+  private parkedRunContexts = new Map<string, RunContext>();
   /** Set of workflow IDs the user has hit Stop on; consulted each loop tick. */
   private cancelledWorkflows = new Set<string>();
   /** Pending clarification requests, keyed by workflowId. */
@@ -629,7 +643,13 @@ export class AgentOrchestrator {
       this.emit('agent:status', auto.reason);
     }
 
-    await this.executePlan(plan);
+    try {
+      await this.executePlan(plan);
+    } finally {
+      // Nothing reviews a plan that is already running; keeping it would leak
+      // it (attachments included) and let a stray approve run it twice.
+      this.activePlans.delete(workflowId);
+    }
   }
 
   /** Session-level skill fallback chain, consulted only when the message
@@ -1069,6 +1089,13 @@ or
    *  interaction. A UI response on the generic channel routes to reviewPlan(). */
   private pausePlanForReview(plan: AgentPlan): void {
     const db = getDb();
+    // A revision re-parks from inside reviewPlan, which already re-entered the
+    // saved context; only record it the first time.
+    const rc = getRunContext();
+    if (rc && !this.parkedRunContexts.has(plan.workflowId)) this.parkedRunContexts.set(plan.workflowId, rc);
+    const origin = this.parkedRunContexts.get(plan.workflowId);
+    plan.origin = origin?.lan ? 'lan' : origin?.unattended ? 'scheduled' : 'local';
+    if (origin?.lan) plan.originActor = origin.actor;
     db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
       .run(JSON.stringify(plan.steps), plan.workflowId);
     const { interaction } = getInteractionHub().open(
@@ -1080,6 +1107,10 @@ or
           workflowId: plan.workflowId, sessionId: plan.sessionId, goal: plan.goal,
           steps: plan.steps, requiresApproval: plan.requiresApproval,
           blastRadius: plan.blastRadius, revisions: plan.revisions ?? 0,
+          // Shown on the card so the host knows a teammate or a background
+          // task asked for this plan, not themselves.
+          origin: plan.origin,
+          ...(plan.originActor ? { actor: plan.originActor } : {}),
         },
       },
       (status, answer) => {
@@ -1103,9 +1134,22 @@ or
   async reviewPlan(workflowId: string, review: PlanReview): Promise<void> {
     const plan = this.activePlans.get(workflowId);
     if (!plan) return;
-    // Only a turn parked on the approval card is settled for the outbox here.
+    // Only a turn parked on the approval card can be reviewed. A second accept
+    // (stale renderer, legacy + unified IPC both firing) or a review of a plan
+    // that auto-ran must not run it again outside the outbox hold.
     // (A revision re-parks it via pausePlanForReview.)
     const parked = this.awaitingPlanApproval.delete(workflowId);
+    if (!parked) return;
+    const saved = this.parkedRunContexts.get(workflowId);
+    if (saved && getRunContext() !== saved) {
+      await runWithContext(saved, () => this.applyPlanReview(workflowId, plan, review));
+      return;
+    }
+    await this.applyPlanReview(workflowId, plan, review);
+  }
+
+  /** reviewPlan() body, run inside the plan's original RunContext. */
+  private async applyPlanReview(workflowId: string, plan: AgentPlan, review: PlanReview): Promise<void> {
     const hub = getInteractionHub();
     const action = decidePlanReview(review, { goal: plan.goal, steps: plan.steps, revisions: plan.revisions ?? 0 });
     if (plan.interactionId) {
@@ -1115,6 +1159,7 @@ or
 
     if (action.kind === 'cancel') {
       this.activePlans.delete(workflowId);
+      this.parkedRunContexts.delete(workflowId);
       // Honest terminal state: the user stopped this run. No agent_runs row
       // exists yet (execution never started), so agent_states carries it.
       try {
@@ -1126,10 +1171,8 @@ or
       this.emit('agent:token', `\n\n_Plan cancelled by user${action.reason ? `: ${action.reason}` : '.'}_`);
       this.emit('agent:streamEnd');
       // Rejecting the plan is a user cancel: the queue pauses, never drains.
-      if (parked) {
-        this.userStoppedSessions.add(plan.sessionId);
-        this.finishOutboxTurn(workflowId, plan.sessionId);
-      }
+      this.userStoppedSessions.add(plan.sessionId);
+      this.finishOutboxTurn(workflowId, plan.sessionId);
       return;
     }
 
@@ -1163,10 +1206,14 @@ or
     // The user approved THIS plan — plan mode unlocks changes for it.
     this.userApprovedWorkflows.add(workflowId);
     plan.reviewNotes = action.reviewNotes;
+    // Accepted: it leaves the review map before running, so a duplicate accept
+    // finds nothing (R3 #3).
+    this.activePlans.delete(workflowId);
+    this.parkedRunContexts.delete(workflowId);
     try {
       await this.executePlan(plan);
     } finally {
-      if (parked) this.finishOutboxTurn(workflowId, plan.sessionId);
+      this.finishOutboxTurn(workflowId, plan.sessionId);
     }
   }
 

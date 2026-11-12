@@ -83,6 +83,17 @@ export default function PlanApproval() {
           </div>
         </div>
 
+        {/* ── Who asked ────────────────────────────────────────────────────
+            A plan from a LAN teammate or a background task is labelled, so the
+            host never approves it believing they asked for it themselves. */}
+        {pendingPlan.origin && pendingPlan.origin !== 'local' && (
+          <div className="mx-6 mt-4 rounded-xl border border-artha-warn/30 bg-artha-warn/10 px-3 py-2 text-xs text-artha-text">
+            {pendingPlan.origin === 'lan'
+              ? `Requested by a teammate over your network${pendingPlan.originActor ? ` (${pendingPlan.originActor})` : ''}, not by you.`
+              : 'Requested by a scheduled or background task, not by you.'}
+          </div>
+        )}
+
         <div className="px-6 py-4">
           <p className="text-xs text-artha-subtle mb-3 font-medium uppercase tracking-wide">Goal</p>
           <p className="text-sm mb-4 text-artha-text">{pendingPlan.goal}</p>
