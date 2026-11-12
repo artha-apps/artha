@@ -217,6 +217,25 @@ export function isFolderWithinScopes(folder: string, scopeFolders: string[]): bo
   return scopeFolders.some(root => root && isWithin(target, path.resolve(root)));
 }
 
+/**
+ * The folder-trigger boundary check used EVERYWHERE a trigger is set, re-armed
+ * or fired: the literal path AND its symlink-resolved path must both be inside
+ * a scope (the scopes resolved too). A link inside a scope that is retargeted
+ * outside it later fails here. Returns the resolved folder to scope the run
+ * to, or null when it is outside, missing or unresolvable (fail closed).
+ */
+export function resolveFolderWithinScopes(
+  folder: string,
+  scopeFolders: string[],
+  realpath: (p: string) => string,
+): string | null {
+  if (!isFolderWithinScopes(folder, scopeFolders)) return null;
+  let real: string;
+  try { real = realpath(folder); } catch { return null; }
+  const realScopes = scopeFolders.map(p => { try { return realpath(p); } catch { return p; } });
+  return isFolderWithinScopes(real, realScopes) ? real : null;
+}
+
 /** Per-task webhook secret: 32 random bytes, hex (256 bits). */
 export function generateWebhookToken(): string {
   return randomBytes(32).toString('hex');

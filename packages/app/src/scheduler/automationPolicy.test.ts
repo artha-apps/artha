@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateSchedule, minCronIntervalSeconds, applyJitter, findMissedSlot, nextFailureState,
-  shouldNotify, summaryHash, isFolderWithinScopes, authorizeWebhook, generateWebhookToken,
+  shouldNotify, summaryHash, isFolderWithinScopes, resolveFolderWithinScopes, authorizeWebhook, generateWebhookToken,
   promptNeedsGoogle, JITTER_SECONDS, type CatchUpFields,
 } from './automationPolicy';
 
@@ -107,6 +107,20 @@ describe('shouldNotify', () => {
     expect(shouldNotify('on_failure', 'unverified', h, null)).toBe(true);
     expect(shouldNotify('on_failure', 'error', h, null)).toBe(true);
     expect(shouldNotify('always', 'ok', h, h)).toBe(true);
+  });
+});
+
+describe('resolveFolderWithinScopes (R2 #7)', () => {
+  const scopes = ['/home/u/Inbox'];
+  it('returns the resolved folder when both the literal and real paths are inside', () => {
+    expect(resolveFolderWithinScopes('/home/u/Inbox/link', scopes, p => p === '/home/u/Inbox/link' ? '/home/u/Inbox/real' : p))
+      .toBe('/home/u/Inbox/real');
+  });
+  it('refuses a link inside a scope that now points outside it', () => {
+    expect(resolveFolderWithinScopes('/home/u/Inbox/link', scopes, p => p === '/home/u/Inbox/link' ? '/etc' : p)).toBeNull();
+  });
+  it('fails closed when the folder cannot be resolved', () => {
+    expect(resolveFolderWithinScopes('/home/u/Inbox/gone', scopes, () => { throw new Error('ENOENT'); })).toBeNull();
   });
 });
 
