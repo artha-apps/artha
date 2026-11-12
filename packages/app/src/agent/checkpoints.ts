@@ -83,6 +83,25 @@ function insertRow(
   ).run(o.runId, o.stepId ?? null, o.stepIdx ?? null, p, r.sha256 ?? null, r.existed ? 1 : 0, r.size ?? null, r.skipped ?? null);
 }
 
+/** Copy `p` into the content-addressed store (if not already there) and
+ *  return its sha256. Throws on any I/O error. */
+async function storeBlob(c: CheckpointStoreConfig, p: string): Promise<string> {
+  const sha = await sha256File(p);
+  await fsp.mkdir(c.dir, { recursive: true });
+  const blob = path.join(c.dir, sha);
+  const have = await fsp.stat(blob).then(() => true).catch(() => false);
+  if (have) {
+    // Touch so a re-used blob counts as recent for oldest-first eviction.
+    const now = new Date();
+    await fsp.utimes(blob, now, now).catch(() => { /* best-effort */ });
+  } else {
+    const tmp = `${blob}.tmp-${process.pid}-${Date.now()}`;
+    await fsp.copyFile(p, tmp);
+    await fsp.rename(tmp, blob); // atomic: a crash never leaves a half blob under the real name
+  }
+  return sha;
+}
+
 /**
  * Snapshot each path's current state before a step mutates it. Call with every
  * path the operation can change — the source of a move (it will vanish), the
@@ -109,19 +128,7 @@ export async function checkpointBeforeMutation(origin: CheckpointOrigin | undefi
         insertRow(c, origin, p, { existed: true, size: st.size, skipped: 'too_large' });
         continue;
       }
-      const sha = await sha256File(p);
-      await fsp.mkdir(c.dir, { recursive: true });
-      const blob = path.join(c.dir, sha);
-      const have = await fsp.stat(blob).then(() => true).catch(() => false);
-      if (have) {
-        // Touch so a re-used blob counts as recent for oldest-first eviction.
-        const now = new Date();
-        await fsp.utimes(blob, now, now).catch(() => { /* best-effort */ });
-      } else {
-        const tmp = `${blob}.tmp-${process.pid}-${Date.now()}`;
-        await fsp.copyFile(p, tmp);
-        await fsp.rename(tmp, blob); // atomic: a crash never leaves a half blob under the real name
-      }
+      const sha = await storeBlob(c, p);
       insertRow(c, origin, p, { sha256: sha, existed: true, size: st.size });
       await enforceStoreCap(sha);
     } catch (err) {
@@ -184,8 +191,17 @@ export interface RewindReport {
   /** External actions (e.g. sent emails) from this run — a file rewind can
    *  never reverse these, so they are listed rather than silently ignored. */
   externalActions: { actionId: string; tool: string; state: string }[];
+  /** Paths whose CURRENT version (e.g. the user's own edits made after the
+   *  run) was backed up before the rewind replaced or removed it. */
+  preserved: string[];
+  /** Pass to rewindRunToStep to undo this rewind (put every file back the
+   *  way it was just before it). Absent when the rewind changed nothing. */
+  undo?: { runId: string; stepId: string };
   error?: string;
 }
+
+/** step_id used for the checkpoints a rewind records about itself. */
+export const REWIND_STEP_ID = 'rewind';
 
 interface CheckpointRow {
   id: number; path: string; sha256: string | null; existed: number;
@@ -198,7 +214,7 @@ interface CheckpointRow {
  * checkpoint of each path at/after the step is its pre-state.
  */
 export async function rewindRunToStep(runId: string, stepId: string): Promise<RewindReport> {
-  const report: RewindReport = { ok: false, runId, stepId, restored: [], removed: [], skipped: [], externalActions: [] };
+  const report: RewindReport = { ok: false, runId, stepId, restored: [], removed: [], skipped: [], externalActions: [], preserved: [] };
   const c = config;
   if (!c) return { ...report, error: 'File checkpoints are not available.' };
   const db = c.db;
@@ -239,18 +255,47 @@ export async function rewindRunToStep(runId: string, stepId: string): Promise<Re
   // Removals first (a move's destination), then restores (its source), so a
   // path that was both created and later replaced ends in its pre-state.
   const entries = [...firstByPath.values()].sort((a, b) => a.existed - b.existed);
+
+  // Never clobber: every file the rewind is about to remove or overwrite is
+  // first backed up as a checkpoint of the rewind ITSELF, so edits the user
+  // made after the run survive and the rewind can be undone
+  // (report.undo). If the backup fails, that file is left in place.
+  const undo: CheckpointOrigin = { runId: `rewind:${runId}:${Date.now()}`, stepId: REWIND_STEP_ID, stepIdx: 0 };
+  let recordedUndo = false;
+  /** Back up `p` as it is now. True = safe to change it. */
+  const preserveCurrent = async (p: string, st: import('fs').Stats | null): Promise<boolean> => {
+    if (!st) { insertRow(c, undo, p, { existed: false }); recordedUndo = true; return true; }
+    const max = c.maxFileBytes ?? MAX_FILE_BYTES;
+    if (st.size > max) return false;
+    const sha = await storeBlob(c, p);
+    insertRow(c, undo, p, { sha256: sha, existed: true, size: st.size });
+    recordedUndo = true;
+    report.preserved.push(p);
+    return true;
+  };
+  const notBackedUp = 'could not back up its current version first; left in place';
+
   for (const r of entries) {
     try {
       if (!r.existed) {
         const st = await fsp.lstat(r.path).catch(() => null);
         if (!st) continue; // already gone — nothing to remove
         if (!st.isFile()) { report.skipped.push({ path: r.path, reason: 'now a folder; left in place' }); continue; }
+        if (!(await preserveCurrent(r.path, st).catch(() => false))) {
+          report.skipped.push({ path: r.path, reason: notBackedUp }); continue;
+        }
         await fsp.unlink(r.path);
         report.removed.push(r.path);
         continue;
       }
       if (r.skipped_reason) { report.skipped.push({ path: r.path, reason: r.skipped_reason }); continue; }
       if (r.evicted_at != null || !r.sha256) { report.skipped.push({ path: r.path, reason: 'snapshot evicted (store cap)' }); continue; }
+      const cur = await fsp.lstat(r.path).catch(() => null);
+      if (cur && !cur.isFile()) { report.skipped.push({ path: r.path, reason: 'now a folder; left in place' }); continue; }
+      if (cur && (await sha256File(r.path)) === r.sha256) { report.restored.push(r.path); continue; } // already as it was
+      if (!(await preserveCurrent(r.path, cur).catch(() => false))) {
+        report.skipped.push({ path: r.path, reason: notBackedUp }); continue;
+      }
       const blob = path.join(c.dir, r.sha256);
       await fsp.mkdir(path.dirname(r.path), { recursive: true });
       const tmp = `${r.path}.artha-restore-${Date.now()}`;
@@ -267,5 +312,10 @@ export async function rewindRunToStep(runId: string, stepId: string): Promise<Re
     }
   }
   report.ok = report.skipped.length === 0;
+  if (recordedUndo) report.undo = { runId: undo.runId!, stepId: REWIND_STEP_ID };
+  // Cap the store once, after every restore has read its blob (evicting
+  // mid-loop could drop a snapshot a later file still needed). The backups
+  // just written are the newest, so they are evicted last.
+  await enforceStoreCap().catch(() => { /* best-effort */ });
   return report;
 }

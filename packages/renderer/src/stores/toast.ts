@@ -64,8 +64,10 @@ export const useToastStore = create<ToastState>((set) => ({
  */
 export const toast = {
   info: (title: string, message?: string) => useToastStore.getState().show({ kind: 'info', title, message }),
-  success: (title: string, message?: string) => useToastStore.getState().show({ kind: 'success', title, message }),
-  warning: (title: string, message?: string) => useToastStore.getState().show({ kind: 'warning', title, message }),
+  success: (title: string, message?: string, action?: ToastAction) =>
+    useToastStore.getState().show({ kind: 'success', title, message, action }),
+  warning: (title: string, message?: string, action?: ToastAction) =>
+    useToastStore.getState().show({ kind: 'warning', title, message, action }),
   error: (title: string, message?: string, action?: ToastAction) =>
     useToastStore.getState().show({ kind: 'error', title, message, action }),
   dismiss: (id: string) => useToastStore.getState().dismiss(id),

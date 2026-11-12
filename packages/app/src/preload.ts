@@ -870,7 +870,12 @@ const api = {
     rewind: (runId: string, stepId: string) => ipcRenderer.invoke('checkpoints:rewind', runId, stepId) as Promise<{
       ok: boolean; runId: string; stepId: string; restored: string[]; removed: string[];
       skipped: { path: string; reason: string }[];
-      externalActions: { actionId: string; tool: string; state: string }[]; error?: string;
+      externalActions: { actionId: string; tool: string; state: string }[];
+      /** Files whose current version was backed up before being replaced/removed. */
+      preserved: string[];
+      /** Rewind these ids to undo this rewind. */
+      undo?: { runId: string; stepId: string };
+      error?: string;
     }>,
   },
 

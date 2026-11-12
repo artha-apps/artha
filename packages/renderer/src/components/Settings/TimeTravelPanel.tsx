@@ -139,16 +139,30 @@ export default function TimeTravelPanel() {
 
   /** Restore every file the run touched to its state before this step.
    *  Explicit + confirmed; the toast reports exactly what was and wasn't
-   *  restored, and that external actions (sent emails) are never undone. */
+   *  restored, and that external actions (sent emails) are never undone.
+   *  The current version of every file it replaces or removes is backed up
+   *  first, so the toast offers "Undo rewind". */
   const rewindFiles = async (stepId: string, idx: number) => {
     if (!selectedRun) return;
-    if (!window.confirm(`Restore files changed from step #${idx} onward to how they were before it? Files created after that point are removed.`)) return;
+    if (!window.confirm(`Restore files changed from step #${idx} onward to how they were before it? Files created after that point are removed. Their current versions are backed up first, so you can undo this.`)) return;
     const r = await window.artha.checkpoints.rewind(selectedRun, stepId);
     if (r.error) { toast.error("Couldn't rewind", r.error); return; }
     const parts = [`${r.restored.length} restored`, `${r.removed.length} removed`];
+    if (r.preserved.length) parts.push(`current versions of ${r.preserved.length} backed up`);
     if (r.skipped.length) parts.push(`${r.skipped.length} not restorable (${r.skipped.slice(0, 2).map(x => x.reason).join(', ')})`);
     if (r.externalActions.length) parts.push(`${r.externalActions.length} external action(s) like sent emails can't be undone`);
-    (r.ok ? toast.success : toast.warning)(r.ok ? 'Files rewound' : 'Partly rewound', parts.join(' · '));
+    const undo = r.undo;
+    const action = undo ? {
+      label: 'Undo rewind',
+      onClick: () => {
+        void window.artha.checkpoints.rewind(undo.runId, undo.stepId).then(u => {
+          if (u.error) toast.error("Couldn't undo the rewind", u.error);
+          else (u.ok ? toast.success : toast.warning)(u.ok ? 'Rewind undone' : 'Rewind partly undone',
+            u.skipped.length ? `${u.skipped.length} file(s) could not be put back` : undefined);
+        });
+      },
+    } : undefined;
+    (r.ok ? toast.success : toast.warning)(r.ok ? 'Files rewound' : 'Partly rewound', parts.join(' · '), action);
   };
 
   const selected = runs.find(r => r.run_id === selectedRun);

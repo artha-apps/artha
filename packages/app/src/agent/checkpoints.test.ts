@@ -83,6 +83,43 @@ describe('checkpoint + rewind', () => {
     expect(report.restored.sort()).toEqual([at('notes.txt'), at('photo.txt'), at('report.txt')].sort());
   });
 
+  it('never destroys edits the user made after the run, and the rewind can be undone (R1 #3)', async () => {
+    await w('a.txt', 'source');
+    await w('report.txt', 'before the run');
+    await w('v2.txt', 'what the run wrote');
+    // Step 1: the run creates b.txt and overwrites report.txt.
+    await step(1, 'fs_copy_file', { source: at('a.txt'), destination: at('b.txt') });
+    await step(2, 'fs_copy_file', { source: at('v2.txt'), destination: at('report.txt') });
+    // Later the USER writes real work into both files.
+    await w('b.txt', 'my real work in b');
+    await w('report.txt', 'my edits to the report');
+
+    const rep = await rewindRunToStep('R1', 'step-1');
+    expect(rep.ok).toBe(true);
+    expect(fs.existsSync(at('b.txt'))).toBe(false);
+    expect(r('report.txt')).toBe('before the run');
+    expect(rep.preserved.sort()).toEqual([at('b.txt'), at('report.txt')].sort());
+    expect(rep.undo).toBeDefined();
+
+    // Undo the rewind: the user's work is back, byte for byte.
+    const back = await rewindRunToStep(rep.undo!.runId, rep.undo!.stepId);
+    expect(back.ok).toBe(true);
+    expect(r('b.txt')).toBe('my real work in b');
+    expect(r('report.txt')).toBe('my edits to the report');
+  });
+
+  it('leaves a file in place when its current version cannot be backed up first', async () => {
+    await w('a.txt', 'small');
+    await step(1, 'fs_copy_file', { source: at('a.txt'), destination: at('b.txt') });
+    await w('b.txt', 'the user later made this much bigger');
+    // The backup would exceed the size limit, so the rewind must not delete it.
+    configureCheckpointStore({ db, dir: store, maxFileBytes: 10, log: (m) => logs.push(m) });
+    const rep = await rewindRunToStep('R1', 'step-1');
+    expect(rep.ok).toBe(false);
+    expect(r('b.txt')).toBe('the user later made this much bigger');
+    expect(rep.skipped).toEqual([{ path: at('b.txt'), reason: 'could not back up its current version first; left in place' }]);
+  });
+
   it('rewinding to a later step leaves earlier steps in place', async () => {
     await w('a.txt', 'v1');
     await w('b.txt', 'keep me');
