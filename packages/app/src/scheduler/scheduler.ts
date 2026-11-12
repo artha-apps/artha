@@ -321,10 +321,20 @@ export class SchedulerService {
     }
   }
 
-  /** Arm the next cron slot (±90 s jitter) and persist it as next_due_at. */
-  private armNextCronSlot(taskId: string, cron: string): void {
+  /**
+   * Arm the next cron slot (±90 s jitter) and persist it as next_due_at.
+   *
+   * `afterSlotSec` is the slot that just fired. Jitter can fire a slot up to
+   * 90 s EARLY, so re-arming from the wall clock would find that same slot
+   * again and run the task twice; re-arming from just past the fired slot
+   * cannot.
+   */
+  private armNextCronSlot(taskId: string, cron: string, afterSlotSec?: number): void {
     const now = new Date();
-    const slot = nextCronFire(cron, now);
+    const from = afterSlotSec != null && afterSlotSec * 1000 >= now.getTime()
+      ? new Date(afterSlotSec * 1000 + 1000)
+      : now;
+    const slot = nextCronFire(cron, from);
     if (!slot) {
       console.warn(`[Artha] Invalid cron expression for task ${taskId}: ${cron}`);
       return;
@@ -334,8 +344,12 @@ export class SchedulerService {
     const job = schedule.scheduleJob(applyJitter(slot, now), () => {
       this.jobs.delete(taskId);
       const t = this.store.get(taskId);
-      // Already covered by a catch-up (wake raced the stale timer) → skip.
+      // Already handled (a catch-up raced the stale timer, or a duplicate
+      // timer for a slot that already ran) → skip. `last_catchup_slot` is the
+      // "last slot handled" marker for both catch-up and normal fires, so each
+      // slot runs at most once.
       const covered = t?.last_catchup_slot != null && t.last_catchup_slot >= slotSec;
+      if (!covered) this.store.patch(taskId, { last_catchup_slot: slotSec });
       // A timer that fired well past its slot (machine slept through it, then
       // resumed before the wake handler) still gets the honest "ran late" note.
       const late = Date.now() / 1000 - slotSec > LATE_THRESHOLD_SECONDS;
@@ -343,7 +357,7 @@ export class SchedulerService {
         : this.engine.fire(taskId, { trigger: 'schedule', ...(late ? { lateSlot: slotSec } : {}) });
       void run.finally(() => {
         const fresh = this.store.get(taskId);
-        if (fresh?.is_enabled && fresh.cron && !this.jobs.has(taskId)) this.armNextCronSlot(taskId, fresh.cron);
+        if (fresh?.is_enabled && fresh.cron && !this.jobs.has(taskId)) this.armNextCronSlot(taskId, fresh.cron, slotSec);
       });
     });
     if (job) this.jobs.set(taskId, job);
