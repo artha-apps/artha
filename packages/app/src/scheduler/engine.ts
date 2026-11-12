@@ -194,7 +194,12 @@ export class AutomationEngine {
     }, this.now());
 
     // ── Failure streak → auto-pause. ────────────────────────────────────────
-    const fail = nextFailureState(task.consecutive_failures ?? 0, result.status);
+    // Re-read the row: `task` was loaded before the hold check and the run
+    // (which can take minutes). If the user resumed the task meanwhile, its
+    // streak was reset to 0 — counting on the stale value could auto-pause
+    // a task the user just resumed.
+    const current = store.get(task.task_id) ?? task;
+    const fail = nextFailureState(current.consecutive_failures ?? 0, result.status);
     store.patch(task.task_id, {
       last_status: result.status === 'cancelled' ? 'cancelled' : result.status,
       last_run_id: result.runId, last_outcome: result.taskStatus, last_detail: result.detail,

@@ -99,6 +99,22 @@ describe('auto-pause after consecutive failures', () => {
     expect(execs[0]).toMatchObject({ status: 'error', failReason: 'boom' });
   });
 
+  it('a user resume during a run resets the streak it counts from (R3 #4)', async () => {
+    const { store, rows } = makeStore([task({ consecutive_failures: 2 })]);
+    const engine = new AutomationEngine({
+      store, notify, holdCheck: async () => null,
+      run: async () => {
+        // The user resumes the task while this (failing) run is in flight.
+        store.patch('t1', { consecutive_failures: 0, is_enabled: 1, pause_reason: null });
+        return failed();
+      },
+    });
+    const r = await engine.fire('t1', { trigger: 'schedule' });
+    expect(r?.paused).toBe(false);
+    expect(rows.get('t1')!.is_enabled).toBe(1);
+    expect(rows.get('t1')!.consecutive_failures).toBe(1);
+  });
+
   it('a success resets the streak', async () => {
     const { store, rows } = makeStore([task({ consecutive_failures: 2 })]);
     const engine = new AutomationEngine({ store, run: async () => ok(), notify, holdCheck: async () => null });
