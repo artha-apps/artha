@@ -164,9 +164,31 @@ function fingerprint(a: { to: string; subject: string; body: string; cc?: string
     .digest('hex');
 }
 
-/** Never store a recipient in the clear in the audit log. */
-function hashIdentity(to: string): string {
-  return 'sha256:' + createHash('sha256').update(to.trim().toLowerCase()).digest('hex').slice(0, 16);
+/** Never store a recipient in the clear in the audit log. One address in,
+ *  one short hash out (the format older rows already use for a bare address). */
+function hashAddress(addr: string): string {
+  return 'sha256:' + createHash('sha256').update(addr.trim().toLowerCase()).digest('hex').slice(0, 16);
+}
+
+/** Every bare, lowercased recipient across to/cc/bcc, de-duplicated and
+ *  sorted ("Bob@x.com, alice@x.com" and "alice@x.com,bob@x.com" are equal). */
+function recipientAddresses(...fields: Array<string | undefined>): string[] {
+  const out = new Set<string>();
+  for (const field of fields) {
+    for (const part of (field ?? '').split(/[,;]/)) {
+      const angle = part.match(/<([^>]+)>/);
+      const addr = (angle ? angle[1] : part).trim().toLowerCase();
+      if (addr) out.add(addr);
+    }
+  }
+  return [...out].sort();
+}
+
+/** The audit identity of a send: one hash per recipient, comma-joined, so the
+ *  resume guard can ask "does this send reach ANYONE the interrupted run
+ *  already emailed?" without ever storing an address in the clear. */
+function hashRecipients(to: string, cc?: string, bcc?: string): string {
+  return recipientAddresses(to, cc, bcc).map(hashAddress).join(',');
 }
 
 // ── Browser path adapter ────────────────────────────────────────────────────
@@ -271,15 +293,19 @@ export async function invokeGmailSendTool(
   // A run resumed after an app restart must never repeat an email the
   // interrupted run already sent (or dispatched with unknown outcome) — even
   // if the model re-words the subject/body so the fingerprint above differs.
-  // Any send to the same recipient as one of those actions is refused.
+  // Any send that reaches ANY recipient of one of those actions (to, cc or
+  // bcc; any order, any case, as part of a longer list) is refused.
   const resumeIds = getRunContext()?.resume?.confirmedActionIds ?? [];
   if (resumeIds.length) {
     const placeholders = resumeIds.map(() => '?').join(',');
-    const repeat = db.prepare(
-      `SELECT action_id, state FROM external_actions
+    const priorSends = db.prepare(
+      `SELECT action_id, state, target_identity FROM external_actions
         WHERE tool='email_send' AND state IN ('dispatching','confirmed')
-          AND target_identity=? AND action_id IN (${placeholders}) LIMIT 1`
-    ).get(hashIdentity(to), ...resumeIds) as { action_id: string; state: string } | undefined;
+          AND action_id IN (${placeholders})`
+    ).all(...resumeIds) as Array<{ action_id: string; state: string; target_identity: string | null }>;
+    const nowReaching = new Set(recipientAddresses(to, cc, bcc).map(hashAddress));
+    const repeat = priorSends.find(p =>
+      (p.target_identity ?? '').split(',').some(h => h && nowReaching.has(h)));
     if (repeat) {
       return JSON.stringify({
         sent: false, duplicate: true, resumed: true,
@@ -297,7 +323,7 @@ export async function invokeGmailSendTool(
        (action_id, task_id, run_id, tool, category, target_system, target_identity,
         fingerprint, state, attempts, dispatched_at)
      VALUES (?, ?, ?, 'email_send', 'send', 'gmail', ?, ?, 'dispatching', 1, unixepoch())`
-  ).run(actionId, ctx?.taskId ?? null, ctx?.runId ?? null, hashIdentity(to), fp);
+  ).run(actionId, ctx?.taskId ?? null, ctx?.runId ?? null, hashRecipients(to, cc, bcc), fp);
 
   const mark = (state: string, patch: Record<string, unknown> = {}) => {
     try {

@@ -143,6 +143,32 @@ describe('resume cannot re-send a confirmed email', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['inside a longer list', { to: 'pat@example.com, jay@example.com' }],
+    ['reordered and re-cased', { to: 'Pat@example.com,JAY@example.com' }],
+    ['only on cc', { to: 'pat@example.com', cc: 'jay@example.com' }],
+    ['only on bcc', { to: 'pat@example.com', bcc: 'Jay@Example.com' }],
+  ])('refuses a send that still reaches the same person %s (R1 #5)', async (_label, recipients) => {
+    const out = JSON.parse(await resumed(() =>
+      invokeGmailSendTool('email_send', { ...recipients, subject: 'Following up', body: 'Again' }, { runId: 'R6' })));
+    expect(out.sent).toBe(false);
+    expect(out.resumed).toBe(true);
+    expect(Number(rows())).toBe(1);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('a multi-recipient send that was interrupted guards every one of its recipients', async () => {
+    // Stored the new way: one hash per recipient.
+    db.prepare(`INSERT INTO external_actions (action_id, run_id, tool, category, target_identity, fingerprint, state)
+                VALUES ('A2', 'R1', 'email_send', 'send', ?, 'fp-x', 'dispatching')`)
+      .run([hashIdentity('amy@example.com'), hashIdentity('bo@example.com')].join(','));
+    const out = JSON.parse(await runWithContext(
+      { actor: 'local', lan: false, resume: { fromRunId: 'R1', confirmedActionIds: ['A2'] } },
+      () => invokeGmailSendTool('email_send', { to: 'bo@example.com', subject: 'x', body: 'y' })));
+    expect(out.resumed).toBe(true);
+    expect(out.message).toMatch(/outcome unknown/);
+  });
+
   it('does not block a different recipient (guard is scoped to confirmed actions)', async () => {
     const out = await resumed(() => invokeGmailSendTool('email_send', { to: 'pat@example.com', subject: 'Hi', body: 'Hello' }));
     // Reaches the normal send path, which fails cleanly here (Google not connected).
