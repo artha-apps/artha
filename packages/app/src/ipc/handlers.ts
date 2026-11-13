@@ -1441,8 +1441,13 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // transient working-indicator could never surface after the fact.
   ipcMain.handle('runs:listRecent', (_e, limit?: number) => {
     return getDb().prepare(`
-      SELECT ar.run_id, ar.session_id, ar.workflow_id, ar.goal, ar.status, ar.model,
-             ar.parent_run_id, ar.created_at,
+      SELECT ar.run_id, ar.session_id, ar.workflow_id, ar.goal,
+             -- A run the app quit or crashed under keeps status='running' in
+             -- the table (startup marks it run_outcome='interrupted'). Never
+             -- show that as still running.
+             CASE WHEN ar.status = 'running' AND ar.run_outcome = 'interrupted'
+                  THEN 'interrupted' ELSE ar.status END AS status,
+             ar.model, ar.parent_run_id, ar.created_at,
              IFNULL(cs.title, '')  AS session_title,
              IFNULL(cs.origin, 'chat') AS session_origin,
              (SELECT COUNT(*) FROM tool_receipts tr WHERE tr.run_id = ar.run_id) AS calls,

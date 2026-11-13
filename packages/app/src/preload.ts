@@ -1090,7 +1090,7 @@ const api = {
   runs: {
     listRecent: (limit?: number) => ipcRenderer.invoke('runs:listRecent', limit) as Promise<{
       run_id: string; session_id: string; workflow_id: string; goal: string;
-      status: 'running' | 'completed' | 'failed' | 'cancelled'; model: string;
+      status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; model: string;
       parent_run_id: string | null; created_at: number;
       session_title: string; session_origin: string; calls: number; mutations: number;
     }[]>,

@@ -7,13 +7,15 @@
  * Inspector (receipts + step trace) for that exact run.
  */
 import { useEffect, useState } from 'react';
-import { Activity, CheckCircle2, XCircle, Loader, Ban, RefreshCw, FileEdit, ChevronRight, CalendarPlus } from 'lucide-react';
+import { Activity, CheckCircle2, XCircle, Loader, Ban, RefreshCw, FileEdit, ChevronRight, CalendarPlus, CircleSlash } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 import { useDraftStore } from '../../stores/draft';
 import { toast } from '../../stores/toast';
 
 interface Run {
-  run_id: string; session_id: string; goal: string; status: 'running' | 'completed' | 'failed' | 'cancelled';
+  run_id: string; session_id: string; goal: string;
+  /** 'interrupted' = the app quit or crashed during the run; it is not running. */
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   parent_run_id: string | null; created_at: number;
   session_title: string; session_origin: string; calls: number; mutations: number;
 }
@@ -23,6 +25,7 @@ const STATUS_META: Record<Run['status'], { icon: typeof CheckCircle2; color: str
   completed: { icon: CheckCircle2, color: 'text-artha-success' },
   failed:    { icon: XCircle,      color: 'text-artha-danger' },
   cancelled: { icon: Ban,          color: 'text-artha-muted' },
+  interrupted: { icon: CircleSlash, color: 'text-artha-warn' },
 };
 
 /** A human label for where a run came from. */
@@ -88,7 +91,7 @@ export default function ActivityPanel() {
         ) : (
           <div className="space-y-2">
             {runs.map(r => {
-              const meta = STATUS_META[r.status];
+              const meta = STATUS_META[r.status] ?? STATUS_META.failed; // unknown status: never a spinner
               const Icon = meta.icon;
               return (
                 <div
@@ -104,6 +107,7 @@ export default function ActivityPanel() {
                       <p className="text-sm text-artha-text truncate">{r.goal || r.session_title || 'Untitled run'}</p>
                       <p className="text-[11px] text-artha-muted">
                         <span className="uppercase tracking-wide">{originLabel(r)}</span>
+                        {r.status === 'interrupted' && <span className="text-artha-warn"> · interrupted (Artha closed mid-run)</span>}
                         {' · '}{r.calls} call{r.calls === 1 ? '' : 's'}
                         {r.mutations > 0 && <span className="text-artha-warn"> · <FileEdit size={9} className="inline -mt-0.5" /> {r.mutations} changed</span>}
                         {' · '}{relativeTime(r.created_at)}
