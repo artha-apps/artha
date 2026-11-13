@@ -99,7 +99,11 @@
 | `src/agent/undo.persist.test.ts` | Vitest — undo entries (`undo_entries`) survive a DB reopen |
 | `src/mcp/toolBudget.ts` | Which MCP tools a run is offered: hides MCP tools that shadow a built-in (`move_file` vs `fs_move_file`), offers a server's tools only when the goal names it / it already worked in this chat / the skill allowlists it; the full set is kept for escalation (`toolBudget.test.ts`) |
 | **ipc/** | |
-| `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, lan, cloud, …) |
+| `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, lan, cloud, doctor, …) |
+| `src/ipc/lanSession.ts` | Which chat a LAN `/chat` request runs in: a caller continues only sessions it created (`chat_sessions.lan_owner`); host chats, other teammates' sessions and unknown ids get the same 404 (`lanSession.test.ts`) |
+| **doctor/** | |
+| `src/doctor/inspect.ts` | Doctor `inspect()` — pure, read-only health report (Ollama, active model, paused MCP servers, stale questions, stuck task runs, disk); fix hints, never auto-fixes (`inspect.test.ts`) |
+| `src/doctor/probes.ts` | Real probes for `inspect()`; exposed over IPC as `doctor:inspect` |
 | **llm/** | |
 | `src/llm/client.ts` | `getActiveLLMClient()` — returns an OpenAI-compat client for the active model; respects context_window |
 | `src/llm/numCtx.ts` | `pickNumCtx()` — sizes Ollama `num_ctx` from the actual request (prompt estimate + reply budget, stable buckets) so a big tool-using prompt is never silently truncated (`numCtx.test.ts`) |
@@ -116,7 +120,8 @@
 | `src/security/secrets.ts` | Connector-credential secret store — encrypts API keys/tokens at rest via Electron `safeStorage` (OS keychain) with a base64 fallback + availability flag |
 | **tools/** | |
 | `src/tools/filesystem.ts` | Built-in fs tools (list/search/read/move/copy/delete) — hard sandbox confines reads/writes to the chat's attached scopes when present |
-| `src/tools/web.ts` | `webSearchImpl` — three-tier search chain (Brave → SearXNG → DuckDuckGo) + citation collection |
+| `src/tools/web.ts` | `webSearchImpl` — three-tier search chain (Brave → SearXNG → DuckDuckGo) + citation collection; the citation/workflow token is scoped per ReAct loop via AsyncLocalStorage (`runWithCitationToken`) |
+| `src/tools/citationToken.test.ts` | Vitest — interleaved and nested loops keep their own citation token and sources |
 | `src/tools/brave.ts` | Brave Search API client (free-tier tier of the search chain) |
 | `src/tools/searxng.ts` | SearXNG JSON search client (self-hosted / public-instance tier) |
 | `src/tools/duckduckgo.ts` | DuckDuckGo HTML scraper (zero-config fallback tier) |
@@ -157,7 +162,8 @@
 | `src/scheduler/automationPolicy.ts` | Pure automation rules — 15-minute schedule floor, ±90 s jitter and the other unattended-safety decisions (`automationPolicy.test.ts`) |
 | `src/scheduler/folderTrigger.ts` | Folder trigger — fires when a new file appears in a watched folder inside the user's attached scopes; pre-existing files never fire (`folderTrigger.test.ts`) |
 | `src/scheduler/taskFile.ts` | Export/import a scheduled task as Markdown with YAML-style frontmatter (`taskFile.test.ts`) |
-| `src/scheduler/scheduler.test.ts` | Vitest — `SchedulerService.handleWebhook` |
+| `src/scheduler/scheduler.test.ts` | Vitest — `SchedulerService.handleWebhook`, folder-trigger prompt quoting |
+| `src/scheduler/scheduler.cron.test.ts` | Vitest — a cron slot fired early by jitter runs exactly once (real node-schedule under fake time) |
 | **desktop/** | |
 | `src/desktop/killSwitch.ts` | Global kill switch — a system-wide hotkey that stops everything Artha is doing, registered only while a run is active (`killSwitch.test.ts`) |
 | `src/desktop/runtime.ts` | Process-wide kill-switch wiring — every ReAct loop registers a cancel callback; a stop press cancels them all (`runtime.test.ts`) |
