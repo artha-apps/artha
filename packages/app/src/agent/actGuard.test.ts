@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   detectsWebAction,
   detectsFileAction,
+  fileGoalVerdict,
   shouldNudgeToAct,
   detectsSendIntent,
   shouldNudgeToSend,
@@ -257,5 +258,25 @@ describe('shouldNudgeToAct — file goals', () => {
   it('still leaves web-goal semantics unchanged (fsToolCalls omitted)', () => {
     expect(shouldNudgeToAct(narratedEmail())).toBe(true);
     expect(shouldNudgeToAct(narratedEmail({ browserToolCalls: 3 }))).toBe(false);
+  });
+});
+
+describe('fileGoalVerdict (live QA finding, 2026-11-12)', () => {
+  const base = { goal: 'Create a new file /tmp/qa/a.txt with the content: hi', isWebGoal: false, anyMutationSucceeded: false };
+
+  it('a "?" after failed tool calls is not a clarifying question: still unmet AND warned', () => {
+    // The exact live case: two failed reads, then "Could you please restate what you'd like me to do?"
+    const v = fileGoalVerdict({ ...base, finalText: 'Could you please restate what you would like me to do?', toolCallErrors: 2 });
+    expect(v).toEqual({ unmet: true, askedClarifyingQuestion: false, warn: true });
+  });
+
+  it('a genuine clarifying question (nothing failed) skips the warning but is still unmet', () => {
+    const v = fileGoalVerdict({ ...base, finalText: 'Which folder should it go in?', toolCallErrors: 0 });
+    expect(v).toEqual({ unmet: true, askedClarifyingQuestion: true, warn: false });
+  });
+
+  it('a successful mutation, or a web goal, is not an unmet file goal', () => {
+    expect(fileGoalVerdict({ ...base, anyMutationSucceeded: true, finalText: 'Done.', toolCallErrors: 0 }).unmet).toBe(false);
+    expect(fileGoalVerdict({ ...base, isWebGoal: true, finalText: 'Done.', toolCallErrors: 0 }).unmet).toBe(false);
   });
 });

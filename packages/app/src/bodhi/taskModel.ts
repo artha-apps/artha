@@ -176,6 +176,11 @@ const plural = (n: number, s: string) => `${n} ${s}${n === 1 ? '' : 's'}`;
  * independently manufacture the words "completed", "successful", "finished"
  * or "done".
  */
+/** run errorDetail for a file task where Artha asked the user a question
+ *  instead of changing anything. Recorded as not done (outcome 'failed') and
+ *  worded as "needs your answer", never as a success. */
+export const AWAITING_USER_ANSWER = 'awaiting_user_answer';
+
 export function userFacingOutcome(f: TaskFacts): UserFacingOutcome {
   const verification = deriveVerification(f);
   const taskStatus = deriveTaskStatus(f, verification);
@@ -211,6 +216,12 @@ export function userFacingOutcome(f: TaskFacts): UserFacingOutcome {
       message = 'You cancelled this run.';
       break;
     case 'failed':
+      if (f.run?.errorDetail === AWAITING_USER_ANSWER) {
+        label = 'Needs your answer';
+        message = 'Artha asked a question instead of changing any files. Nothing was changed yet.';
+        requiredUserAction = 'Answer the question so Artha can continue.';
+        break;
+      }
       label = 'Failed';
       message = f.run?.errorDetail
         ? `The run failed: ${f.run.errorDetail}.`
