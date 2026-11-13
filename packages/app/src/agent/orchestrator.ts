@@ -1928,6 +1928,11 @@ RULES — follow exactly, no exceptions:
     // (unattended runs auto-block confirm-tier tools). Counted separately so a
     // scheduled run that was blocked can say so instead of reporting success.
     let toolCallsBlocked = 0;
+    // Tools the user declined in THIS run. "No" holds for the rest of the run:
+    // a later call to the same tool (a model retry, or the deterministic email
+    // fallback) is refused without asking again (found in live QA 2026-11-12:
+    // a declined send was re-prompted by the fallback).
+    const declinedTools = new Set<string>();
     // Sanitized, bounded per-call evidence for the independent goal check
     // (bodhi/goalEvaluator.ts). Short summaries only — never raw payloads.
     const goalEvidence: Array<Omit<EvaluatorEvidence, 'id'>> = [];
@@ -2273,6 +2278,9 @@ RULES — follow exactly, no exceptions:
             // the run reports it instead of claiming the step happened.
             toolResult = `Error: ${toolCall.function.name} was not executed — ${gate.reason}`;
             toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
+          } else if (gate.action === 'ask' && declinedTools.has(toolCall.function.name)) {
+            toolResult = `Error: The user already declined ${toolCall.function.name} in this run, so it was not asked again or executed. Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
+            toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
           } else if (gate.action === 'ask') {
             // Confirm needs a human to answer; decideToolCall already turned
             // asks on unattended runs (LAN / scheduled) into blocks. NOTE:
@@ -2286,6 +2294,7 @@ RULES — follow exactly, no exceptions:
               runId: args.runId,
             });
             if (!approved) {
+              declinedTools.add(toolCall.function.name);
               toolResult = `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
               toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
             }
@@ -2676,7 +2685,10 @@ RULES — follow exactly, no exceptions:
         // Gmail's DOM, or narrated a fake "sent"), Artha finishes the job
         // deterministically — extract the fields and call email_send itself.
         let det: { sent: boolean; to: string | null; reason?: string } = { sent: false, to: null };
-        if (detectsSendIntent(args.goal) && !sendWasConfirmed()) {
+        if (detectsSendIntent(args.goal) && !sendWasConfirmed() && declinedTools.has('email_send')) {
+          // The user already said no to this send — never ask a second time.
+          det = { sent: false, to: null, reason: 'declined' };
+        } else if (detectsSendIntent(args.goal) && !sendWasConfirmed()) {
           det = await this.deterministicEmailSend(
             { goal: args.goal, workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId },
             recordStep, stepIdx++,
