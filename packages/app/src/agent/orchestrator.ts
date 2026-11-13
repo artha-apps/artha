@@ -26,6 +26,7 @@ import { getPackContextBlock, getPackSkillId } from './contextPacks';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
+import { AWAITING_USER_ANSWER } from '../bodhi/taskModel';
 import { getRunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
 import { recordAcceptanceCriteria } from '../bodhi/criteria';
@@ -49,7 +50,7 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
-import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, detectsFileAction, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
+import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, fileGoalVerdict, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
 import { dropEchoedGoal } from './historyDedupe';
 import { clampToolResult } from './toolResultBudget';
 import { resolveAgentRoute, agentRouteInput } from '../router/agentRouter';
@@ -1935,11 +1936,18 @@ RULES — follow exactly, no exceptions:
         }
         // A file-action goal that ends with NOTHING mutated is not done, however
         // confident the prose sounds. State that deterministically (the model's
-        // text often reads like a completed task). Skipped when the model is
-        // asking a genuine clarifying question.
-        const fileGoalUnfulfilled =
-          detectsFileAction(args.goal) && !detectsWebAction(args.goal) &&
-          !mutations.some(m => m.success) && !rawContent.includes('?');
+        // text often reads like a completed task). The warning is skipped when
+        // the model is asking a genuine clarifying question — one that comes
+        // before anything failed. A "?" after failed tool calls (e.g. "could you
+        // restate the task?" from a model that lost the thread) is not one.
+        // Either way the run is NEVER recorded as succeeded (see below).
+        const verdict = fileGoalVerdict({
+          goal: args.goal, isWebGoal: detectsWebAction(args.goal),
+          anyMutationSucceeded: mutations.some(m => m.success), finalText: rawContent, toolCallErrors,
+        });
+        const fileGoalUnmet = verdict.unmet;
+        const askedClarifyingQuestion = verdict.askedClarifyingQuestion;
+        const fileGoalUnfulfilled = verdict.warn;
         if (fileGoalUnfulfilled) {
           finalText = `${finalText}\n\n⚠️ Nothing was changed on disk in this run — no file was moved, copied, created or deleted. The task is NOT complete.`;
         }
@@ -2049,10 +2057,12 @@ RULES — follow exactly, no exceptions:
             mutationsFailed: mutations.filter(m => !m.success).length,
             errorDetail: 'email_not_sent',
           });
-        } else if (fileGoalUnfulfilled) {
+        } else if (fileGoalUnmet) {
           // The user asked for a change on disk and none happened (attempted
           // mutations all failed, or none were attempted). Never record that as
           // a success — the founder's completion doctrine: system-verified only.
+          // A genuine clarifying question is recorded as waiting on the user
+          // (shown as "Needs your answer"), not as a success.
           db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
           db.prepare(`UPDATE agent_states SET status='failed' WHERE workflow_id=?`).run(args.workflowId);
           terminalOutcome = 'failed';
@@ -2060,7 +2070,7 @@ RULES — follow exactly, no exceptions:
             outcome: 'failed', toolCallsTotal, toolCallsFailed: toolCallErrors,
             toolCallsBlocked, mutationsTotal: mutations.length,
             mutationsFailed: mutations.filter(m => !m.success).length,
-            errorDetail: 'file_action_not_performed',
+            errorDetail: askedClarifyingQuestion ? AWAITING_USER_ANSWER : 'file_action_not_performed',
           });
         } else {
         // `status='completed'` means ONLY that the executor finished. Whether

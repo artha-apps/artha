@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   userFacingOutcome, deriveVerification, deriveTaskStatus, legacyStatusToOutcome,
-  isVerifiablePredicate, type TaskFacts, type Criterion, type RunFacts,
+  isVerifiablePredicate, AWAITING_USER_ANSWER, type TaskFacts, type Criterion, type RunFacts,
 } from './taskModel';
 
 const run = (o: Partial<RunFacts> = {}): RunFacts => ({
@@ -199,5 +199,14 @@ describe('illegal combinations are unreachable', () => {
     const out = userFacingOutcome(facts({ criteria: [predicate('passed'), predicate('not_evaluated', 'summary.pdf exists')] }));
     expect(out.isComplete).toBe(false);
     expect(out.remainingWork).toContain('summary.pdf exists');
+  });
+});
+
+describe('a file task where Artha asked a question instead of acting', () => {
+  it('reads "Needs your answer", never complete', () => {
+    const out = assertNotComplete(facts({ run: run({ outcome: 'failed', errorDetail: AWAITING_USER_ANSWER }) }));
+    expect(out.label).toBe('Needs your answer');
+    expect(out.message).toMatch(/Nothing was changed yet/);
+    expect(out.requiredUserAction).toMatch(/Answer the question/);
   });
 });
