@@ -192,7 +192,7 @@ const CATEGORY_ORDER = ['Web', 'Search', 'Memory', 'Dev', 'Communication', 'Brow
 // ── Built-in tool names ───────────────────────────────────────────────────────
 const BUILTIN_TOOLS = [
   'fs_list_directory', 'fs_search_files', 'fs_create_directory',
-  'fs_move_file', 'fs_copy_file', 'fs_read_file',
+  'fs_move_file', 'fs_copy_file', 'fs_write_file', 'fs_read_file',
   'fs_get_file_info', 'fs_delete_file',
   'web_fetch', 'web_search',
   'browser_navigate', 'browser_click', 'browser_type', 'browser_wait_for',

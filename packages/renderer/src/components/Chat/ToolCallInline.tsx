@@ -29,6 +29,7 @@ export function describeTool(name: string, rawArgs?: string): string {
       return `Organising ${n} file${n === 1 ? '' : 's'}`;
     }
     case 'fs_copy_file': return `Copying ${base(s('source') || s('src'))}`;
+    case 'fs_write_file': return `Writing ${base(s('path'))}`;
     case 'fs_read_file': return `Reading ${base(s('path'))}`;
     case 'fs_get_file_info': return `Checking ${base(s('path'))}`;
     case 'fs_delete_file': return `${a.permanent ? 'Deleting' : 'Moving to Trash'} ${base(s('path'))}`;

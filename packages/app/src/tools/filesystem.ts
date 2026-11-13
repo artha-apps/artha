@@ -14,6 +14,7 @@ import * as os from 'os';
 import OpenAI from 'openai';
 import type { ScopeRoot } from '../db/scopes';
 import { recordFilesystemEffect } from '../agent/undo';
+import { checkpointBeforeMutation, type CheckpointOrigin } from '../agent/checkpoints';
 
 const HOME = os.homedir();
 
@@ -224,6 +225,28 @@ export const FILESYSTEM_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['moves'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fs_write_file',
+      description:
+        'Create a plain-text file with the given content (txt, md, csv, json, code, notes). ' +
+        'Refuses to replace an existing file unless overwrite is true. ' +
+        'For Word/Excel/PowerPoint/PDF documents use docs_generate instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path of the file to write' },
+          content: { type: 'string', description: 'The full text content of the file' },
+          overwrite: {
+            type: 'boolean',
+            description: 'Set true only to replace a file that already exists. Default false.',
+          },
+        },
+        required: ['path', 'content'],
       },
     },
   },
@@ -462,10 +485,15 @@ export async function resolveDestination(src: string, dst: string): Promise<stri
   );
 }
 
-async function moveFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null): Promise<string> {
+/** Called with every path an operation can change, right before it changes
+ *  them — lets the checkpoint store snapshot the pre-state. */
+type BeforeMutate = (paths: string[]) => Promise<void>;
+
+async function moveFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null, before?: BeforeMutate): Promise<string> {
   const srcRaw = safePath(expandTilde(source), roots);
   const { path: src, repaired } = await resolveExistingSource(srcRaw);
   const dst = safePath(await resolveDestination(src, safePath(expandTilde(destination), roots)), roots);
+  await before?.([src, dst]); // source vanishes, destination may be overwritten
   await fsp.mkdir(path.dirname(dst), { recursive: true }); // parent verified to exist; creates at most one leaf
   await fsp.rename(src, dst);
   return JSON.stringify({ moved: src, to: dst, success: true, ...(repaired ? { note: `source resolved from "${path.basename(srcRaw)}"` } : {}) });
@@ -477,6 +505,7 @@ async function moveFileImpl(source: string, destination: string, roots?: ScopeRo
 async function moveBatchImpl(
   moves: Array<{ source?: string; src?: string; destination?: string; dst?: string; dest?: string }>,
   roots?: ScopeRoot[] | null,
+  before?: BeforeMutate,
 ): Promise<string> {
   if (!Array.isArray(moves) || moves.length === 0) {
     return JSON.stringify({ error: 'fs_move_batch requires a non-empty "moves" array of { source, destination } pairs.' });
@@ -489,6 +518,7 @@ async function moveBatchImpl(
     try {
       const { path: src } = await resolveExistingSource(safePath(expandTilde(source), roots));
       const dst = safePath(await resolveDestination(src, safePath(expandTilde(destination), roots)), roots);
+      await before?.([src, dst]);
       await fsp.mkdir(path.dirname(dst), { recursive: true });
       await fsp.rename(src, dst);
       results.push({ source: src, to: dst, ok: true });
@@ -500,12 +530,48 @@ async function moveBatchImpl(
   return JSON.stringify({ success: moved > 0, moved, failed: moves.length - moved, results });
 }
 
-async function copyFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null): Promise<string> {
+async function copyFileImpl(source: string, destination: string, roots?: ScopeRoot[] | null, before?: BeforeMutate): Promise<string> {
   const { path: src } = await resolveExistingSource(safePath(expandTilde(source), roots));
   const dst = safePath(await resolveDestination(src, safePath(expandTilde(destination), roots)), roots);
+  await before?.([dst]); // only the destination changes (overwritten or created)
   await fsp.mkdir(path.dirname(dst), { recursive: true });
   await fsp.copyFile(src, dst);
   return JSON.stringify({ copied: src, to: dst, success: true });
+}
+
+/** Largest text fs_write_file will write (the model produces it token by
+ *  token, so anything bigger is a mistake or a runaway). */
+export const MAX_WRITE_BYTES = 1024 * 1024;
+
+/**
+ * Write a plain-text file. Never replaces an existing file unless the caller
+ * says so, snapshots whatever is there first (so rewind restores it), and
+ * writes through a temp file + rename so a crash can't leave half a file.
+ */
+async function writeFileImpl(
+  filePath: string, content: unknown, overwrite: boolean,
+  roots?: ScopeRoot[] | null, before?: BeforeMutate,
+): Promise<string> {
+  if (typeof content !== 'string') throw new Error('fs_write_file needs "content" as text.');
+  const bytes = Buffer.byteLength(content, 'utf8');
+  if (bytes > MAX_WRITE_BYTES) throw new Error(`Content is too large to write (${bytes} bytes; the limit is ${MAX_WRITE_BYTES}).`);
+  const dst = safePath(expandTilde(filePath), roots);
+  const st = await fsp.stat(dst).catch(() => null);
+  if (st?.isDirectory()) throw new Error(`"${dst}" is a folder. Give the full path of the file to write.`);
+  if (st && !overwrite) {
+    throw new Error(`"${dst}" already exists and was NOT changed. To replace it, call fs_write_file again with overwrite: true.`);
+  }
+  await before?.([dst]); // snapshot the old version (or record "did not exist")
+  await fsp.mkdir(path.dirname(dst), { recursive: true });
+  const tmp = `${dst}.artha-write-${process.pid}-${Date.now()}`;
+  try {
+    await fsp.writeFile(tmp, content, 'utf8');
+    await fsp.rename(tmp, dst);
+  } catch (err) {
+    await fsp.unlink(tmp).catch(() => { /* nothing to clean up */ });
+    throw err;
+  }
+  return JSON.stringify({ written: dst, bytes, created: !st, success: true });
 }
 
 async function readFileImpl(filePath: string, roots?: ScopeRoot[] | null): Promise<string> {
@@ -534,8 +600,9 @@ async function getFileInfoImpl(filePath: string, roots?: ScopeRoot[] | null): Pr
   });
 }
 
-async function deleteFileImpl(filePath: string, permanent = false, roots?: ScopeRoot[] | null): Promise<string> {
+async function deleteFileImpl(filePath: string, permanent = false, roots?: ScopeRoot[] | null, before?: BeforeMutate): Promise<string> {
   const resolved = safePath(expandTilde(filePath), roots);
+  await before?.([resolved]); // snapshot before a permanent delete OR a trash move
   if (permanent) {
     const stat = await fsp.stat(resolved);
     if (stat.isDirectory()) {
@@ -551,6 +618,9 @@ async function deleteFileImpl(filePath: string, permanent = false, roots?: Scope
   // for a Phase-1 agent; permanent=true is gated behind explicit user intent.
   const trashDir = path.join(HOME, '.Trash');
   const trashPath = path.join(trashDir, path.basename(resolved));
+  // A same-named file already in the Trash is overwritten by the rename —
+  // snapshot it too so that loss is recoverable.
+  await before?.([trashPath]);
   await fsp.rename(resolved, trashPath);
   return JSON.stringify({ trashed: resolved, location: trashPath });
 }
@@ -561,22 +631,38 @@ async function deleteFileImpl(filePath: string, permanent = false, roots?: Scope
  *  (`source`/`src`, `destination`/`dst`/`dest`) accommodates the way
  *  smaller / quantised models often shorten field names — preventing a
  *  retry loop where the agent re-issues the call with a different alias. */
+/** Which run/session/step is invoking a filesystem tool. Drives durable undo
+ *  attribution and pre-mutation file checkpoints; optional so direct callers
+ *  (no agent run) behave exactly as before. */
+export interface FsToolOrigin extends CheckpointOrigin {
+  sessionId?: string | null;
+}
+
 export async function invokeFilesystemTool(
   name: string,
   args: Record<string, unknown>,
-  allowedRoots?: ScopeRoot[] | null
+  allowedRoots?: ScopeRoot[] | null,
+  origin?: FsToolOrigin,
 ): Promise<string> {
-  const result = await dispatchFilesystemTool(name, args, allowedRoots);
+  // Snapshot hook: only when a run is attributed (checkpoints are per run).
+  // checkpointBeforeMutation never throws, so it can't break the tool call.
+  const before: BeforeMutate | undefined = origin?.runId
+    ? (paths) => checkpointBeforeMutation(origin, paths)
+    : undefined;
+  const result = await dispatchFilesystemTool(name, args, allowedRoots, before);
   // Record reversible mutations so the user can Undo them. Wrapped so undo
   // bookkeeping can never break a tool call.
-  try { recordFilesystemEffect(name, result); } catch { /* non-fatal */ }
+  try {
+    recordFilesystemEffect(name, result, origin && { runId: origin.runId, sessionId: origin.sessionId, stepId: origin.stepId });
+  } catch { /* non-fatal */ }
   return result;
 }
 
 async function dispatchFilesystemTool(
   name: string,
   args: Record<string, unknown>,
-  allowedRoots?: ScopeRoot[] | null
+  allowedRoots?: ScopeRoot[] | null,
+  before?: BeforeMutate,
 ): Promise<string> {
   switch (name) {
     case 'fs_list_directory':
@@ -589,25 +675,33 @@ async function dispatchFilesystemTool(
       return moveFileImpl(
         (args.source ?? args.src) as string,
         (args.destination ?? args.dst ?? args.dest) as string,
-        allowedRoots
+        allowedRoots,
+        before,
       );
     case 'fs_move_batch':
       return moveBatchImpl(
         (args.moves ?? []) as Array<{ source?: string; destination?: string }>,
-        allowedRoots
+        allowedRoots,
+        before,
       );
     case 'fs_copy_file':
       return copyFileImpl(
         (args.source ?? args.src) as string,
         (args.destination ?? args.dst ?? args.dest) as string,
-        allowedRoots
+        allowedRoots,
+        before,
+      );
+    case 'fs_write_file':
+      return writeFileImpl(
+        (args.path ?? args.destination ?? args.filename) as string,
+        args.content, args.overwrite === true, allowedRoots, before,
       );
     case 'fs_read_file':
       return readFileImpl(args.path as string, allowedRoots);
     case 'fs_get_file_info':
       return getFileInfoImpl(args.path as string, allowedRoots);
     case 'fs_delete_file':
-      return deleteFileImpl(args.path as string, args.permanent as boolean, allowedRoots);
+      return deleteFileImpl(args.path as string, args.permanent as boolean, allowedRoots, before);
     default:
       throw new Error(`Unknown filesystem tool: ${name}`);
   }

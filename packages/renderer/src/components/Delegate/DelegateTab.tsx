@@ -13,29 +13,81 @@
  * is presentational wiring only.
  */
 import { useState, useEffect } from 'react';
-import { Send, RotateCcw, AlertTriangle, Square, CornerDownLeft, Loader2 } from 'lucide-react';
+import { Send, RotateCcw, AlertTriangle, Square, CornerDownLeft, Loader2, ListPlus } from 'lucide-react';
 import { useDelegateStore } from '../../stores/delegate';
 import { tabTheme } from '../../lib/tabTheme';
 import DelegateTaskInput from './DelegateTaskInput';
 import DelegateProgressTimeline from './DelegateProgressTimeline';
 import DelegatePlanView from './DelegatePlanView';
 import DelegateResultView from './DelegateResultView';
+import DelegateModeSelector from './DelegateModeSelector';
+import GoalChip from './GoalChip';
+import AskUserCards from '../Chat/AskUserCard';
+import OutboxPanel from '../Chat/OutboxPanel';
+import type { OutboxSnapshot } from '../../../../app/src/preload';
+import { toast } from '../../stores/toast';
+import {
+  isDelegateRunning, delegateComposerMode, delegateComposerPlaceholder, shouldFollowRun,
+} from '../../lib/delegateParity';
 
 export default function DelegateTab() {
   const {
-    status, goal, plan, result, error, thread, stopping, runId, tasks,
-    submit, confirm, cancel, reset, stop, continueTask, openTask, loadTasks, decide,
+    status, goal, plan, result, error, thread, stopping, runId, sessionId, tasks,
+    submit, reset, stop, continueTask, openTask, loadTasks, decide, reviewPlan, followRun,
   } = useDelegateStore();
 
   // Refresh the reachable task history whenever we return to the idle screen.
   useEffect(() => { if (status === 'idle') void loadTasks(); }, [status, loadTasks]);
   const theme = tabTheme('delegate');
   const [followUp, setFollowUp] = useState('');
-  const isRunning = !['idle', 'completed', 'needs_review', 'failed', 'awaiting_confirmation'].includes(status);
+  const isRunning = isDelegateRunning(status);
+
+  // ── Outbox (same queue, drain and holds as Chat) ─────────────────────────
+  // The task session's queue snapshot, loaded when the task changes and kept
+  // fresh from `outbox:updated`.
+  const [outbox, setOutbox] = useState<OutboxSnapshot | null>(null);
+  useEffect(() => {
+    setOutbox(null);
+    if (!sessionId || !window.artha?.outbox) return;
+    let live = true;
+    window.artha.outbox.list(sessionId).then(s => { if (live) setOutbox(s); }).catch(() => {});
+    return () => { live = false; };
+  }, [sessionId]);
+  useEffect(() => {
+    if (!window.artha?.outbox) return;
+    const offUpdated = window.artha.outbox.onUpdated(snap => {
+      if (snap.sessionId === useDelegateStore.getState().sessionId) setOutbox(snap);
+    });
+    // A drained item became a user turn: refresh the conversation.
+    const offSent = window.artha.outbox.onSent(({ sessionId: sid }) => {
+      if (sid === useDelegateStore.getState().sessionId) void useDelegateStore.getState().loadThread();
+    });
+    const offFailed = window.artha.outbox.onTurnFailed(({ sessionId: sid, error: err }) => {
+      if (sid === useDelegateStore.getState().sessionId) toast.error('Queued follow-up failed', err);
+    });
+    // The drain started a Delegate continuation: follow that run.
+    const offFollow = window.artha.delegate?.onFollowUpStarted?.((ev) => {
+      const st = useDelegateStore.getState();
+      if (shouldFollowRun({ sessionId: st.sessionId, runId: st.runId }, ev)) void followRun(ev.runId);
+    });
+    return () => { offUpdated(); offSent(); offFailed(); offFollow?.(); };
+  }, [followRun]);
+
+  const composer = delegateComposerMode(status, sessionId, outbox);
 
   const sendFollowUp = async () => {
     const text = followUp.trim();
-    if (!text) return;
+    if (!text || composer === 'disabled') return;
+    if (composer === 'queue' && sessionId) {
+      try {
+        const r = await window.artha.outbox.enqueue(sessionId, text);
+        setOutbox(r.snapshot);
+        setFollowUp('');
+      } catch (err) {
+        toast.error('Couldn’t queue follow-up', err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
     setFollowUp('');
     await continueTask(text);
   };
@@ -46,6 +98,9 @@ export default function DelegateTab() {
   if (status === 'idle') {
     return (
       <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-8 pt-4 flex justify-end">
+          <DelegateModeSelector />
+        </div>
         <DelegateTaskInput onSubmit={submit} />
         {tasks.length > 0 && (
           <div className="max-w-2xl mx-auto px-8 pb-10">
@@ -119,6 +174,9 @@ export default function DelegateTab() {
           </div>
         </div>
 
+        {/* Persistent goal (objective, status, elapsed, Pause/Resume/Stop). */}
+        <GoalChip sessionId={sessionId} />
+
         {/* Failure state — lead with the agent's own honest explanation (the
             backend already wrote the truthful reason, e.g. "the email was NOT
             sent…") rather than a generic "something went wrong". */}
@@ -136,8 +194,11 @@ export default function DelegateTab() {
 
         {/* Plan (with the approval gate when paused) */}
         {plan && (
-          <DelegatePlanView plan={plan} status={status} onConfirm={confirm} onCancel={cancel} />
+          <DelegatePlanView plan={plan} status={status} onReview={(r) => void reviewPlan(r)} />
         )}
+
+        {/* ask_user — a delegated run paused on a question for the user. */}
+        <AskUserCards />
 
         {/* Result — shown for a verified completion AND for a finished-but-
             unverified run (needs_review); the view itself renders the honest
@@ -177,6 +238,10 @@ export default function DelegateTab() {
             instead of silently starting an unrelated run. */}
         {/* Reached only in the working view — idle returns earlier. */}
         <div className="pt-2">
+            {/* Follow-ups typed while Artha works (reorder, edit, steer now). */}
+            {outbox && outbox.sessionId === sessionId && (
+              <div className="mb-2"><OutboxPanel snapshot={outbox} onSnapshot={setOutbox} /></div>
+            )}
             <div className="flex items-end gap-2">
               <textarea
                 value={followUp}
@@ -185,21 +250,17 @@ export default function DelegateTab() {
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendFollowUp(); }
                 }}
                 rows={2}
-                disabled={isRunning}
-                placeholder={
-                  isRunning
-                    ? 'Artha is working — stop the task to send a follow-up.'
-                    : 'Continue this task: "that\'s not complete", "you missed X", "retry the failed step"…'
-                }
+                disabled={composer === 'disabled'}
+                placeholder={delegateComposerPlaceholder(composer)}
                 className="flex-1 resize-none rounded-xl bg-artha-surface border border-artha-border px-3 py-2 text-sm text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none disabled:opacity-50"
               />
               <button
                 onClick={() => void sendFollowUp()}
-                disabled={isRunning || !followUp.trim()}
-                title="Continue this task"
+                disabled={composer === 'disabled' || !followUp.trim()}
+                title={composer === 'queue' ? 'Queue this follow-up — it sends when Artha finishes' : 'Continue this task'}
                 className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium bg-artha-accent hover:bg-artha-accent/80 disabled:opacity-40 text-artha-on-accent transition-colors"
               >
-                <CornerDownLeft size={12} /> Continue
+                {composer === 'queue' ? <><ListPlus size={12} /> Queue</> : <><CornerDownLeft size={12} /> Continue</>}
               </button>
             </div>
         </div>

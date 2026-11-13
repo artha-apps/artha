@@ -13,6 +13,7 @@
  */
 import OpenAI from 'openai';
 import { desktopCapturer } from 'electron';
+import { desktopActionQueue, StoppedByUserError, STOPPED_BY_USER, type ActionControl } from '../desktop/actionQueue';
 
 export const DESKTOP_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
   {
@@ -174,12 +175,115 @@ function resolveKeys(nut: any, combo: string): unknown[] {
   }).filter((k): k is unknown => k !== undefined);
 }
 
+/** Characters typed per chunk; the kill switch is checked between chunks so a
+ *  long `desktop_type` halts promptly instead of finishing the paragraph. */
+const TYPE_CHUNK = 16;
+
+/**
+ * JXA: the owner app of the topmost normal window (layer 0) containing the
+ * point argv[0], argv[1] in global screen points — the same space nut-js
+ * moves the mouse in. Prints '' when no app window is there (desktop, menu
+ * bar, Dock). Owner names need no Screen Recording permission.
+ */
+const WINDOW_OWNER_AT_JXA = `
+ObjC.import('CoreGraphics'); ObjC.import('Foundation');
+function run(argv) {
+  const x = Number(argv[0]), y = Number(argv[1]);
+  const list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo(
+    $.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID));
+  for (let i = 0; i < list.count; i++) {
+    const w = list.objectAtIndex(i);
+    if (ObjC.unwrap(w.objectForKey('kCGWindowLayer')) !== 0) continue;
+    const b = ObjC.deepUnwrap(w.objectForKey('kCGWindowBounds'));
+    if (x >= b.X && x < b.X + b.Width && y >= b.Y && y < b.Y + b.Height) {
+      return ObjC.unwrap(w.objectForKey('kCGWindowOwnerName')) || '';
+    }
+  }
+  return '';
+}`;
+
+/** Runs a command and returns its stdout (injectable for tests). */
+export type ExecText = (cmd: string, args: string[]) => Promise<string>;
+
+const execText: ExecText = async (cmd, args) => {
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  return (await promisify(execFile)(cmd, args, { timeout: 3000 })).stdout;
+};
+
+/**
+ * Resolve the app a desktop action will land in, for the per-app grant check
+ * (desktop/appGrants.ts):
+ *   - desktop_open_app → the app being opened;
+ *   - desktop_click / desktop_move_mouse → the app that owns the window under
+ *     (x, y). Gating clicks on the FRONTMOST app let a click pass under the
+ *     front app's grant while landing in a window beside or behind it, e.g.
+ *     System Settings or a password manager (bug-hunt R2 #2);
+ *   - keyboard actions → the frontmost app, which receives the keys.
+ * Returns null when the app can't be determined — the gate then treats it as
+ * unknown and asks, or skips on unattended runs (fail closed).
+ */
+export async function resolveDesktopTargetApp(
+  name: string, args: Record<string, unknown>, exec: ExecText = execText,
+): Promise<string | null> {
+  if (name === 'desktop_open_app') {
+    const app = String(args.appName ?? '').trim();
+    return app || null;
+  }
+  if (name === 'desktop_click' || name === 'desktop_move_mouse') {
+    const x = Number(args.x), y = Number(args.y);
+    if (process.platform !== 'darwin' || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    try {
+      const owner = (await exec('osascript', ['-l', 'JavaScript', '-e', WINDOW_OWNER_AT_JXA, String(x), String(y)])).trim();
+      return owner || null;
+    } catch {
+      return null; // never fall back to the frontmost app for a pointer action
+    }
+  }
+  if (process.platform === 'darwin') {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const { stdout } = await promisify(execFile)('osascript', [
+        '-e', 'tell application "System Events" to get name of first application process whose frontmost is true',
+      ], { timeout: 3000 });
+      const app = stdout.trim();
+      if (app) return app;
+    } catch { /* fall through — unknown, never a guess */ }
+  }
+  // Fail closed: if the frontmost app can't be read, the target is UNKNOWN.
+  // Never fall back to the last app the agent opened — focus may have moved
+  // (e.g. to Terminal) and that app's grant must not cover it.
+  return null;
+}
+
+/** Map a thrown error to the string the ReAct loop sees. A kill-switch stop is
+ *  reported with the machine-readable `stopped_by_user` reason. */
+function errorResult(err: unknown): string {
+  if (err instanceof StoppedByUserError) {
+    return `Error: ${STOPPED_BY_USER} — the user pressed the stop shortcut. This desktop action was stopped (if it had already started, its effect is unknown). Do not retry.`;
+  }
+  return `Error: ${err instanceof Error ? err.message : String(err)}`;
+}
+
 /**
  * Dispatch a desktop tool call. All errors are caught and returned as
  * `"Error: ..."` strings rather than thrown, so the ReAct loop can relay the
  * message to the model and retry or gracefully stop without crashing.
+ *
+ * Every call runs through the serial `desktopActionQueue`, so the global kill
+ * switch can reject queued actions and stop the in-flight one.
  */
 export async function invokeDesktopTool(name: string, args: Record<string, unknown>): Promise<string> {
+  try {
+    return await desktopActionQueue.enqueue((ctl) => runDesktopTool(name, args, ctl));
+  } catch (err) {
+    return errorResult(err);
+  }
+}
+
+/** The actual nut-js / Electron work for one desktop tool call. */
+async function runDesktopTool(name: string, args: Record<string, unknown>, ctl: ActionControl): Promise<string> {
   try {
     switch (name) {
       case 'desktop_screenshot': {
@@ -205,7 +309,10 @@ export async function invokeDesktopTool(name: string, args: Record<string, unkno
       case 'desktop_type': {
         const nut = await loadNut();
         const text = String(args.text ?? '');
-        await nut.keyboard.type(text);
+        for (let i = 0; i < text.length; i += TYPE_CHUNK) {
+          if (ctl.isStopped()) throw new StoppedByUserError();
+          await nut.keyboard.type(text.slice(i, i + TYPE_CHUNK));
+        }
         return `Typed ${text.length} character${text.length === 1 ? '' : 's'}.`;
       }
 
@@ -271,6 +378,9 @@ export async function invokeDesktopTool(name: string, args: Record<string, unkno
       case 'desktop_open_app': {
         const appName = String(args.appName ?? '').trim();
         if (!appName) return 'Error: appName is required.';
+        // Names only: `open -a` also takes a path, which would let a grant
+        // keyed on one string launch a different (or deny-listed) app.
+        if (/[\\/]/.test(appName)) return 'Error: give the app\'s name (e.g. "Notes"), not a file path. Nothing was opened.';
         const { execFile } = await import('child_process');
         const { promisify } = await import('util');
         await promisify(execFile)('open', ['-a', appName]);
@@ -281,6 +391,8 @@ export async function invokeDesktopTool(name: string, args: Record<string, unkno
         return `Unknown desktop tool: ${name}`;
     }
   } catch (err) {
-    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    // Let a stop propagate so the queue rejects the caller with stopped_by_user.
+    if (err instanceof StoppedByUserError || ctl.isStopped()) throw new StoppedByUserError();
+    return errorResult(err);
   }
 }

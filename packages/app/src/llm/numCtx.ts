@@ -34,3 +34,49 @@ export function pickNumCtx(
   const bucket = NUM_CTX_BUCKETS.find(b => b >= needed) ?? NUM_CTX_BUCKETS[NUM_CTX_BUCKETS.length - 1];
   return Math.max(floor, bucket);
 }
+
+// ── Per-model prompt-size calibration ─────────────────────────────────────
+//
+// `estimateTokens` counts characters, which matches Qwen/Llama templates. Some
+// chat templates render the same request far larger: muse-glimmer's "glimmer"
+// renderer turned an 8.8k-token conversation into ~35k (Ollama log 2026-11-12,
+// "truncating input prompt limit=16387 prompt=35089"), so a model escalated
+// to mid-run lost the head of its prompt — the system prompt and the user's
+// request — and answered "I don't have a current task". Ollama reports the
+// real size back (prompt_eval_count), so learn each model's ratio from it.
+
+/** model → real prompt tokens per estimated token (≥ 1; only ever grows —
+ *  over-sizing the window is cheap, under-sizing truncates). */
+const learnedScale = new Map<string, number>();
+
+/** A prompt this close to the window filled it: Ollama truncated it. */
+export const TRUNCATION_MARGIN = 16;
+
+/** The estimate scaled by what this model's template has been seen to cost. */
+export function scaledEstimate(model: string, estimate: number): number {
+  return Math.ceil(estimate * (learnedScale.get(model) ?? 1));
+}
+
+/**
+ * Record what Ollama actually evaluated for a request. Returns true when the
+ * prompt filled the window (Ollama dropped its head), so the caller must not
+ * trust the reply. On truncation the real size is unknown (only that it
+ * exceeded num_ctx), so the scale at least doubles past what would have fit.
+ * Note: prompt_eval_count excludes tokens served from Ollama's prompt cache,
+ * so a cached request can only under-report — which never lowers the scale.
+ */
+export function notePromptSize(model: string, estimate: number, promptEvalCount: number, numCtx: number): boolean {
+  if (!(estimate > 0) || !(promptEvalCount > 0)) return false;
+  const current = learnedScale.get(model) ?? 1;
+  if (promptEvalCount >= numCtx - TRUNCATION_MARGIN) {
+    learnedScale.set(model, Math.max(current, (numCtx / estimate) * 2));
+    return true;
+  }
+  learnedScale.set(model, Math.max(current, promptEvalCount / estimate));
+  return false;
+}
+
+/** Test hook: forget every learned scale. */
+export function resetPromptScales(): void {
+  learnedScale.clear();
+}

@@ -24,6 +24,16 @@ function notificationsEnabled(): boolean {
   }
 }
 
+/** True when an Artha window has keyboard focus (the user is looking at the
+ *  app). Unknown counts as not focused. */
+export function appHasFocus(): boolean {
+  try {
+    return BrowserWindow.getAllWindows().some(w => !w.isDestroyed() && w.isFocused());
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Fire a native OS notification.
  *

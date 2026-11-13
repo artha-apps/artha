@@ -17,7 +17,7 @@
 import { BrowserWindow } from 'electron';
 import * as os from 'os';
 import * as fs from 'fs';
-import { sendNotification } from '../notify';
+import { sendNotification, appHasFocus } from '../notify';
 import { getActiveLLMClient, resolveRunModel, type StreamedMessage, type TaskType } from '../llm/client';
 import { MCPRegistry, type ToolContext } from '../mcp/registry';
 import { SkillRegistry, toActive, type ActiveSkill } from '../skills/registry';
@@ -26,17 +26,24 @@ import { getPackContextBlock, getPackSkillId } from './contextPacks';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
+import { noteRunStarted, noteRunEnded, noteRunWaiting } from '../system/keepAwake';
 import { AWAITING_USER_ANSWER } from '../bodhi/taskModel';
-import { getRunContext } from './runContext';
+import { getRunContext, confirmTierMustFailClosed, runWithContext, type RunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
-import { recordAcceptanceCriteria } from '../bodhi/criteria';
+import { recordAcceptanceCriteria, deriveCriteriaFromMutations, evaluateCriterion, ensureRunTask } from '../bodhi/criteria';
+import {
+  GOAL_TOOL_SCHEMAS, isGoalTool, getOpenGoal, createGoal, modelUpdateGoal, userStatedOutcome, GoalError,
+} from '../bodhi/goals';
+import {
+  evaluateGoal, applyStopGate, addGoalGapCriteria, numberEvidence, MAX_GOAL_FEEDBACK_ROUNDS, shouldRecheckBlockedGoal,
+  type EvaluatorEvidence, type JudgeFn,
+} from '../bodhi/goalEvaluator';
 import { classifyToolResult, isFailure, countsAsCompletedMutation } from './toolOutcome';
 import OpenAI from 'openai';
 import {
   startCitationCollection,
   drainCitations,
-  setActiveCitationToken,
-  getActiveCitationToken,
+  runWithCitationToken,
 } from '../tools/web';
 import {
   MEMORY_TOOL_SCHEMAS,
@@ -50,17 +57,25 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
-import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, fileGoalVerdict, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
+import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, fileGoalVerdict, parseEmailFieldsFromGoal, compactStaleDomDumps, taskOwnText } from './actGuard';
 import { dropEchoedGoal } from './historyDedupe';
 import { clampToolResult } from './toolResultBudget';
 import { resolveAgentRoute, agentRouteInput } from '../router/agentRouter';
 import { ensureAgentModel } from '../router/modelProvisioner';
 import { selectToolsForRun } from '../mcp/toolBudget';
 import { nextEscalation, escalationLadder } from './escalation';
-import { decideAutoApprove } from './autoApprove';
+import { getInteractionHub } from './interactions';
+import { ASK_USER_TOOL_NAME, ASK_USER_TOOL_SCHEMA, runAskUser } from './askUser';
+import { decidePlanReview, buildExecutorReviewBlock, type PlanReview, type PlanStepComment } from './planReview';
 import { noteDesktopControlActive } from '../controlOverlay';
+import { trackRun, wasStoppedByUser, getKillSwitch } from '../desktop/runtime';
+import { gateDesktopAction } from '../desktop/desktopGate';
+import { GrantStoreAppGrantAdapter, type GrantAnswer } from '../desktop/appGrants';
+import { resolveDesktopTargetApp } from '../tools/desktop';
 import { estimateBlastRadius, type BlastRadius } from './blastRadius';
-import { evaluatePolicy } from '../bodhi/policy';
+import { evaluatePolicy, isAlwaysConfirmTool } from '../bodhi/policy';
+import { decideToolCall, decidePlanGate, defaultModeFor, getSessionMode, modeRequiresPlanApproval, resolveEffectiveMode } from './modes';
+import { addGrant, getGrantStore, DEFAULT_GRANT_TTL_SECONDS } from '../bodhi/grants';
 import { recordReceipt, RECEIPT_MUTATION_TOOLS, type ReceiptStatus } from '../bodhi/receipts';
 import {
   isSubcapabilityTool,
@@ -70,6 +85,9 @@ import {
 } from '../bodhi/subcapability';
 import { filterToolsByAllowlist, parseSlashInvocation, effectiveAllowedTools } from '../skills/util';
 import { recordSkillRun, type SkillMatchedVia, type SkillRunStatus } from '../skills/metrics';
+import { recordRunEvent, runEventFromChannel, startRunMonitor, markRunActive, markRunInactive } from './runEvents';
+import { OutboxDriver, injectSteerAtBoundary } from './outboxDriver';
+import * as outboxStore from './outbox';
 
 const MAX_RETRIES = 3; // kept for future retry logic
 void MAX_RETRIES;
@@ -143,7 +161,34 @@ export interface AgentPlan {
    *  writes/web/reversibility/token cost). Shown in the approval card so the user
    *  approves with the consequences in view, not on faith. */
   blastRadius?: BlastRadius;
+  /** How many comment-driven planner revisions this plan has had (planReview.ts
+   *  caps it at one). */
+  revisions?: number;
+  /** Step comments the user approved the plan with; injected into the
+   *  executor's system prompt so they are honoured while running. */
+  reviewNotes?: string | null;
+  /** Step comments that made the planner revise this plan. Kept so the
+   *  executor is told about them too (planReview.buildExecutorReviewBlock). */
+  revisionComments?: PlanStepComment[];
+  /** The unified-frame interaction (agent/interactions.ts) this plan's
+   *  approval is pending on, when it paused for review. */
+  interactionId?: string;
+  /** Who asked for this plan: the desktop user, a LAN teammate, or a
+   *  background (scheduled/webhook/folder) task. Shown on the review card so
+   *  the host never approves a teammate's or a task's plan thinking it is
+   *  their own. */
+  origin?: 'local' | 'lan' | 'scheduled';
+  /** The LAN teammate's identity when origin is 'lan'. */
+  originActor?: string;
 }
+
+/**
+ * Approval prompts on attended runs wait until the user answers; there is no
+ * timeout (founder decision 2026-11-13: a 2-minute limit failed the task when
+ * the user stepped away). After this long unanswered, and only if Artha is not
+ * the focused app, ONE notification says it is waiting.
+ */
+export const APPROVAL_NUDGE_MS = 30_000;
 
 /** A per-tool-call approval the orchestrator paused on because a policy assigned
  *  the call the `confirm` tier. The renderer shows a modal and answers via
@@ -157,6 +202,19 @@ export interface ToolApprovalRequest {
   argsPreview: string;
   /** Note from the policy rule that triggered this prompt. */
   note: string;
+  /** Whether the modal may offer "Always allow (30 days)". False for the
+   *  always-confirm floor (email_send), which keeps asking every time. */
+  allowAlways?: boolean;
+  /** Present when this is a per-app desktop-control grant prompt ("Allow
+   *  Artha to control {App}?"). The renderer then offers Once / Always for
+   *  this project / Deny and answers with `scope`. */
+  appGrant?: {
+    appName: string;
+    /** False when "Always" can't be offered (no project, deny-listed app). */
+    alwaysAllowed: boolean;
+    /** Deny-listed app (shell, settings, credential store) — always asks. */
+    alwaysConfirm: boolean;
+  };
 }
 
 // ── Anti-hallucination tracker ───────────────────────────────────────────────
@@ -174,7 +232,8 @@ interface TrackedMutation {
  * run may describe them as done.
  *
  * This set previously covered filesystem tools only — and two of its entries
- * (`fs_write_file`, `fs_rename_file`) do not exist. That left the features
+ * did not exist then (`fs_rename_file` still doesn't; `fs_write_file` was
+ * added 2026-11-13). That left the features
  * users actually run outside verification entirely: "I created your Q3
  * report", "I submitted the form" and "I clicked through and booked it" were
  * unverified model prose, while desktop control — the highest-blast-radius
@@ -186,6 +245,7 @@ const MUTATION_TOOLS = new Set([
   'fs_move_file',
   'fs_move_batch',
   'fs_copy_file',
+  'fs_write_file',
   'fs_delete_file',
   'fs_create_directory',
   // Deliverables — the flagship "Artha made me a document" claim
@@ -224,6 +284,13 @@ export class AgentOrchestrator {
   private skills: SkillRegistry;
   /** Plans awaiting user approval, keyed by workflowId. */
   private activePlans = new Map<string, AgentPlan>();
+  /** The RunContext (LAN actor, unattended, resume guard) a plan was parked
+   *  under. Plan review is answered from an IPC handler that runs OUTSIDE the
+   *  original AsyncLocalStorage context, so without this an approved plan from
+   *  a LAN or resumed run would execute as a trusted local run: riding the
+   *  host's grants, seeing private memories, and losing the "never re-send"
+   *  email guard. Kept off AgentPlan because the plan is sent to the renderer. */
+  private parkedRunContexts = new Map<string, RunContext>();
   /** Set of workflow IDs the user has hit Stop on; consulted each loop tick. */
   private cancelledWorkflows = new Set<string>();
   /** Pending clarification requests, keyed by workflowId. */
@@ -231,12 +298,176 @@ export class AgentOrchestrator {
   /** Pending per-tool-call approvals (policy `confirm` tier), keyed by approvalId.
    *  The workflowId is kept so cancelWorkflow() can promptly deny any approval
    *  the user is mid-decision on when they hit Stop. */
-  private toolApprovalResolvers = new Map<string, { workflowId: string; resolve: (approved: boolean) => void }>();
+  private toolApprovalResolvers = new Map<string, { workflowId: string; resolve: (approved: boolean, always?: boolean) => void }>();
+  /** Child workflow → the workflow that invoked it (sub-capability loops get
+   *  their own workflow id). Stop on a workflow must also release prompts its
+   *  children are waiting on — they wait until answered, so nothing else would. */
+  private workflowParents = new Map<string, string>();
+  /** Workflows whose plan the user explicitly approved on the plan card. Plan
+   *  mode unlocks state-changing tools only for these; auto mode lets a delete
+   *  that was in an approved plan run without a second prompt. */
+  private userApprovedWorkflows = new Set<string>();
+  /** Scope the user picked on an app-grant prompt ('always' vs 'once'),
+   *  keyed by approvalId; read once the approval resolves. */
+  private approvalScopes = new Map<string, 'once' | 'always'>();
+  /** Per-app desktop-control grants, stored in the generic expiring/revocable
+   *  grants table (bodhi/grants.ts) via an adapter — so they are listed and
+   *  revocable in Settings → Grants. See desktop/appGrants.ts. */
+  private appGrants = new GrantStoreAppGrantAdapter(() => getGrantStore());
+  /** Chat-turn workflows (from handleMessage) → their session, so the outbox
+   *  can tell whether an approval/clarification is pending in a session. */
+  private workflowSessions = new Map<string, string>();
+  /** Workflows whose plan is waiting on the Plan Approval card. The session's
+   *  turn is still "active" for the outbox until approvePlan() settles it. */
+  private awaitingPlanApproval = new Set<string>();
+  /** Sessions whose current chat turn the user stopped (Stop button or plan
+   *  rejection). Unlike cancelledWorkflows (consumed by the loop), this
+   *  survives to the end of the turn so the outbox pauses instead of draining. */
+  private userStoppedSessions = new Set<string>();
+  /** Sessions whose current turn the GLOBAL stop shortcut (kill switch)
+   *  stopped — their queue pauses with reason 'stop' ("Queue paused after stop"). */
+  private killStoppedSessions = new Set<string>();
+  /** Sessions with a goal stop-gate evaluation in flight (count). The outbox
+   *  never drains past one. */
+  private goalGateInFlight = new Map<string, number>();
+  /** Outbox (type while Artha works): drains queued messages when a turn ends
+   *  and supplies "steer now" messages at ReAct tool-call boundaries. */
+  readonly outbox: OutboxDriver;
 
   constructor(window: BrowserWindow) {
     this.window = window;
     this.registry = MCPRegistry.getInstance();
     this.skills = SkillRegistry.getInstance();
+    this.outbox = new OutboxDriver({
+      persistUserMessage: (sessionId, content) => this.persistUserMessage(sessionId, content),
+      // Delegate sessions continue the task through the Delegate (operator)
+      // path; every other session gets a normal chat turn.
+      startTurn: (sessionId, content, attachments) =>
+        this.isDelegateSession(sessionId)
+          ? this.startDelegateFollowUp(sessionId, content)
+          : this.handleMessage(sessionId, content, attachments.length ? attachments : undefined),
+      hasPendingApproval: (sessionId) => this.hasPendingApproval(sessionId),
+      emit: (channel, payload) => this.emit(channel, payload),
+    });
+  }
+
+  /** Write a user message row for an outbox hand-off (the same row
+   *  agent:sendMessage writes before calling handleMessage). */
+  private persistUserMessage(sessionId: string, content: string): void {
+    const db = getDb();
+    db.prepare(`INSERT INTO messages (session_id, sender_type, content) VALUES (?, 'user', ?)`).run(sessionId, content);
+    db.prepare(`UPDATE chat_sessions SET last_activity=unixepoch() WHERE session_id=?`).run(sessionId);
+  }
+
+  /** Resolves the operator skill for a Delegate follow-up message (the same
+   *  capability routing `delegate:continue` uses). Set by the IPC layer, which
+   *  owns the capability registry; null ⇒ the follow-up runs skill-less. */
+  delegateSkillResolver: ((message: string) => Promise<ActiveSkill | null>) | null = null;
+
+  /** True for a Delegate task's backing session (origin='delegate'). */
+  private isDelegateSession(sessionId: string): boolean {
+    try {
+      const row = getDb().prepare(`SELECT origin FROM chat_sessions WHERE session_id=?`).get(sessionId) as { origin?: string } | undefined;
+      return row?.origin === 'delegate';
+    } catch { return false; }
+  }
+
+  /** Outbox drain for a Delegate session: start the queued follow-up as a
+   *  Delegate continuation (startCapability), exactly like the composer's
+   *  Continue button. The session is marked busy BEFORE the first await (the
+   *  driver's contract) and that hold is handed over to the capability run,
+   *  which settles the outbox turn when it ends. Tells the renderer the new
+   *  run id so the Delegate view follows it. */
+  private async startDelegateFollowUp(sessionId: string, content: string): Promise<void> {
+    this.outbox.runStarted(sessionId);
+    let handedOver = false;
+    try {
+      const skill = this.delegateSkillResolver ? await this.delegateSkillResolver(content) : null;
+      const runId = this.startCapability({ sessionId, goal: content, skill }, { outboxHeld: true });
+      handedOver = true;
+      this.emit('delegate:followUpStarted', { sessionId, runId });
+    } finally {
+      // Skill resolution or run creation failed: release the hold so the
+      // queue is not stuck behind a turn that never started.
+      if (!handedOver) this.outbox.runEnded(sessionId);
+    }
+  }
+
+  /** Outbox bookkeeping for a capability (Delegate) run: the session is busy
+   *  for the run's lifetime, so follow-ups typed meanwhile queue and drain
+   *  when it ends — and Stop / the kill switch pause the queue like chat. */
+  private holdOutboxForCapability(workflowId: string, sessionId: string, alreadyHeld = false): void {
+    this.workflowSessions.set(workflowId, sessionId);
+    if (!alreadyHeld) this.outbox.runStarted(sessionId);
+  }
+
+  /** True while the user owes this session a decision: a confirm-tier tool
+   *  approval, a Plan Approval card, or a clarification question. Queued
+   *  outbox items never auto-send past one of these. */
+  hasPendingApproval(sessionId: string): boolean {
+    for (const wf of this.awaitingPlanApproval) {
+      if (this.workflowSessions.get(wf) === sessionId) return true;
+    }
+    for (const [, entry] of this.toolApprovalResolvers) {
+      if (this.workflowSessions.get(entry.workflowId) === sessionId) return true;
+    }
+    for (const wf of this.clarifyResolvers.keys()) {
+      if (this.workflowSessions.get(wf) === sessionId) return true;
+    }
+    // Any live unified interaction (ask_user card, plan review, confirm,
+    // browser hand-off) of this session — by session id, or via its workflow.
+    for (const i of getInteractionHub().livePending()) {
+      if (i.sessionId === sessionId) return true;
+      if (i.workflowId && this.workflowSessions.get(i.workflowId) === sessionId) return true;
+    }
+    // A goal stop-gate evaluation is in progress for this session.
+    if (this.goalGateInFlight.has(sessionId)) return true;
+    return false;
+  }
+
+  /** Global stop shortcut stopped a run in this session: hold the queue now
+   *  (so no steer or drain slips out) and make the turn's end keep it paused
+   *  with reason 'stop'. Mirrors the chat-Stop rule: only pauses when
+   *  something is queued; a later Resume is the user's call. */
+  private pauseOutboxForKillSwitch(sessionId: string): void {
+    try {
+      if (this.outbox.isActive(sessionId)) this.killStoppedSessions.add(sessionId);
+      if (outboxStore.list(sessionId).length > 0) {
+        outboxStore.pause(sessionId, 'stop');
+        this.outbox.notify(sessionId);
+      }
+    } catch (err) {
+      console.warn('[Artha] outbox pause after stop failed (non-critical):', err);
+    }
+  }
+
+  /** Session of a workflow not started by handleMessage (fan-out / fork), via
+   *  its agent_states or agent_runs row. Null when unknown. */
+  private sessionOfWorkflow(workflowId: string): string | null {
+    try {
+      const db = getDb();
+      const row = (db.prepare(`SELECT session_id FROM agent_states WHERE workflow_id=?`).get(workflowId)
+        ?? db.prepare(`SELECT session_id FROM agent_runs WHERE workflow_id=?`).get(workflowId)) as
+        { session_id: string } | undefined;
+      return row?.session_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Close out a chat turn for the outbox: forget the workflow and tell the
+   *  driver how it ended (a user stop pauses the queue; anything else drains). */
+  private finishOutboxTurn(workflowId: string, sessionId: string): void {
+    this.workflowSessions.delete(workflowId);
+    const userStopped = this.userStoppedSessions.delete(sessionId);
+    const killStopped = this.killStoppedSessions.delete(sessionId);
+    const cancelled = userStopped || killStopped;
+    this.awaitingPlanApproval.delete(workflowId);
+    try {
+      this.outbox.runEnded(sessionId, { cancelled, reason: killStopped ? 'stop' : 'cancel' });
+    } catch (err) {
+      console.warn('[Artha] outbox drain failed (non-critical):', err);
+    }
   }
 
   /** Entry point: receive a user message and start the ReAct loop.
@@ -254,8 +485,29 @@ export class AgentOrchestrator {
     attachments?: Attachment[],
     opts: { modelOverride?: string } = {},
   ): Promise<void> {
-    const db = getDb();
     const workflowId = crypto.randomUUID();
+    // Outbox lifecycle: mark the session busy BEFORE the first await so a
+    // racing drain can't start a second turn, and settle it in `finally` so
+    // every terminal path (reply, error, stop) reaches the drain. A plan left
+    // on the approval card keeps the turn open until approvePlan() runs.
+    this.workflowSessions.set(workflowId, sessionId);
+    this.outbox.runStarted(sessionId);
+    try {
+      await this.handleMessageTurn(workflowId, sessionId, userContent, attachments, opts);
+    } finally {
+      if (!this.awaitingPlanApproval.has(workflowId)) this.finishOutboxTurn(workflowId, sessionId);
+    }
+  }
+
+  /** The body of a chat turn (see handleMessage for the flow). */
+  private async handleMessageTurn(
+    workflowId: string,
+    sessionId: string,
+    userContent: string,
+    attachments: Attachment[] | undefined,
+    opts: { modelOverride?: string },
+  ): Promise<void> {
+    const db = getDb();
 
     // Resolve a skill (explicit "/slug" or auto-match). `goal` has any leading
     // "/slug" stripped, so the rest of the loop never sees the invocation prefix.
@@ -389,18 +641,18 @@ export class AgentOrchestrator {
       return;
     }
 
-    if (plan.requiresApproval) {
+    // Permission mode (agent/modes.ts) for the plan gate. Plan mode shows the
+    // plan card for EVERY plan; the per-call gate keeps it read-only until then.
+    const planMode = getSessionMode(sessionId) ?? defaultModeFor(this.userSettings().autonomousActions as boolean | undefined);
+    if (plan.requiresApproval || modeRequiresPlanApproval(planMode)) {
       // Reversible plans run without a modal (agent/autoApprove.ts); the user
       // reviews the outcome with Undo instead of the intent with a click.
-      // Deletes and anything not provably reversible still ask.
-      const auto = decideAutoApprove({
-        autonomous: this.userSettings().autonomousActions as boolean | undefined,
-        blast: plan.blastRadius,
-      });
+      // Deletes and anything not provably reversible still ask. Ask and plan
+      // modes always show the card (decidePlanGate). With no stored mode the
+      // default comes from autonomousActions, so this is today's behaviour.
+      const auto = decidePlanGate(planMode, plan.blastRadius);
       if (!auto.auto) {
-        db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
-          .run(JSON.stringify(plan.steps), workflowId);
-        this.emit('agent:planReady', plan);
+        this.pausePlanForReview(plan);
         return;
       }
       plan.autoApproved = auto.reason;
@@ -408,7 +660,13 @@ export class AgentOrchestrator {
       this.emit('agent:status', auto.reason);
     }
 
-    await this.executePlan(plan);
+    try {
+      await this.executePlan(plan);
+    } finally {
+      // Nothing reviews a plan that is already running; keeping it would leak
+      // it (attachments included) and let a stray approve run it twice.
+      this.activePlans.delete(workflowId);
+    }
   }
 
   /** Session-level skill fallback chain, consulted only when the message
@@ -622,35 +880,168 @@ ${envBlock}`,
 
   /** Called by the IPC handler when the user approves or denies a policy-gated
    *  tool call (the `confirm` tier). Resolves the awaiting ReAct loop. */
-  respondToolApproval(approvalId: string, approved: boolean): void {
+  respondToolApproval(approvalId: string, approved: boolean, scope?: 'once' | 'always'): void {
     const entry = this.toolApprovalResolvers.get(approvalId);
-    if (entry) entry.resolve(approved);
+    if (!entry) return;
+    // App-grant prompts read the chosen scope back via approvalScopes; tool
+    // prompts turn 'always' into a standing grant (only when it was offered).
+    if (approved && scope) this.approvalScopes.set(approvalId, scope);
+    entry.resolve(approved, scope === 'always');
   }
 
   /** Emit a tool-approval request to the renderer and block until the user
-   *  answers (or a safety timeout denies it). Used when a policy assigns a tool
-   *  call the `confirm` tier. Defaults to DENY on timeout — a governance gate
-   *  must fail closed. */
-  private requestToolApproval(req: {
+   *  answers. There is no timeout: an attended run waits (Stop, or quitting
+   *  the app, releases it). A run nobody is watching is never asked — the
+   *  call is refused up front, so the gate still fails closed. */
+  private async requestToolApproval(req: {
     workflowId: string;
     sessionId: string;
     toolName: string;
     args: Record<string, unknown>;
     note: string;
+    /** When set, the request and the answer are recorded as `interaction`
+     *  run events (the stall watchdog pauses while one is pending), and the
+     *  run id is stored on the unified interaction row. */
+    runId?: string;
+    /** Offer "Always allow (30 days)". Never for the always-confirm floor. */
+    allowAlways?: boolean;
+    appGrant?: ToolApprovalRequest['appGrant'];
+    /** Receives the approvalId so a caller can read the chosen scope. */
+    onId?: (approvalId: string) => void;
+    /** Called when the prompt was NOT shown because nobody is watching this
+     *  run (the result is then false, but nobody actually said no). */
+    onNotAsked?: () => void;
   }): Promise<boolean> {
+    // Fail closed before anything is shown. Every caller already blocks an
+    // unattended run earlier (decideToolCall, the desktop gate, the goal and
+    // email guards); this is the backstop, and it matters more now that a
+    // prompt waits forever: a scheduled or LAN run must never park on one.
+    if (confirmTierMustFailClosed(getRunContext())) {
+      console.warn(`[Artha] approval for ${req.toolName} not requested: nobody is watching this run.`);
+      try { req.onNotAsked?.(); } catch { /* caller bookkeeping only */ }
+      return false;
+    }
     const approvalId = crypto.randomUUID();
-    this.emit('agent:toolApprovalRequest', {
+    req.onId?.(approvalId);
+    // App-grant prompts manage their own (per-app) grant; they never record a
+    // generic tool grant from this path.
+    const allowAlways = !!req.allowAlways && !req.appGrant && !isAlwaysConfirmTool(req.toolName);
+    if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'request', approvalId, toolName: req.toolName, note: req.note });
+    const request: ToolApprovalRequest = {
       approvalId,
       workflowId: req.workflowId,
       sessionId: req.sessionId,
       toolName: req.toolName,
       argsPreview: JSON.stringify(req.args, null, 2).slice(0, 800),
       note: req.note,
-    } satisfies ToolApprovalRequest);
-    return Promise.race([
-      new Promise<boolean>(resolve => { this.toolApprovalResolvers.set(approvalId, { workflowId: req.workflowId, resolve }); }),
-      new Promise<boolean>(resolve => setTimeout(() => resolve(false), 120_000)),
-    ]).finally(() => this.toolApprovalResolvers.delete(approvalId));
+      allowAlways,
+      ...(req.appGrant ? { appGrant: req.appGrant } : {}),
+    };
+    this.emit('agent:toolApprovalRequest', request);
+    // Unified frame (additive): record the confirm as an interaction so it
+    // survives a renderer reload. The legacy resolver below stays the single
+    // source of truth for the decision; a generic UI response is routed to it.
+    // Only an explicit `approved: true` approves — anything else denies. The
+    // generic channel never carries a scope, so it can never create a grant.
+    const hub = getInteractionHub();
+    hub.open(
+      { id: approvalId, runId: req.runId ?? req.workflowId, workflowId: req.workflowId, kind: 'confirm', payload: { ...request } },
+      (status, answer) => this.respondToolApproval(
+        approvalId, status === 'answered' && (answer as { approved?: unknown } | null)?.approved === true,
+      ),
+    );
+    // If the user is elsewhere, tell them once that a task is waiting. (With
+    // the old 2-minute limit they at least got "task failed"; a silent wait
+    // would be worse.) No tool arguments in the text: it may show on a lock
+    // screen. A notification must never affect the run.
+    const nudge = setInterval(() => {
+      try {
+        if (appHasFocus()) return; // they are looking at the prompt
+        clearInterval(nudge);
+        sendNotification(
+          'Artha is waiting for your approval',
+          req.appGrant
+            ? `A task is paused until you allow or deny control of ${req.appGrant.appName}.`
+            : `A task is paused until you approve or deny one step (${req.toolName}).`,
+        );
+      } catch { clearInterval(nudge); }
+    }, APPROVAL_NUDGE_MS);
+    (nudge as { unref?: () => void }).unref?.();
+
+    return new Promise<boolean>(resolve => {
+      this.toolApprovalResolvers.set(approvalId, {
+        workflowId: req.workflowId,
+        resolve: (approved, always) => {
+          // "Always allow" records an expiring tool grant so the same tool
+          // stops asking (bodhi/grants.ts). Only when offered and approved.
+          if (approved && always && allowAlways) this.recordStandingGrant(req.sessionId, req.toolName);
+          resolve(approved);
+        },
+      });
+    }).then(approved => {
+      hub.settle(approvalId, approved ? 'answered' : 'declined', { approved });
+      // Logging only — the decision itself is unchanged.
+      if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'response', approvalId, approved });
+      return approved;
+    }).finally(() => {
+      clearInterval(nudge);
+      this.toolApprovalResolvers.delete(approvalId);
+      // Only app-grant callers read the scope back (requestAppGrant); drop it
+      // for every other prompt so the map can't grow.
+      if (!req.appGrant) this.approvalScopes.delete(approvalId);
+    });
+  }
+
+  /** Grant subjects that apply to a run in this session, most specific first.
+   *  LAN runs get none — a teammate's request never rides the host's grants. */
+  private grantSubjects(sessionId: string, lan: boolean): string[] {
+    if (lan) return [];
+    const subjects = [`session:${sessionId}`];
+    const projectId = this.getSessionProjectId(sessionId);
+    if (projectId) subjects.push(`project:${projectId}`);
+    subjects.push('global');
+    return subjects;
+  }
+
+  /** Persist an "Always allow (30 days)" answer as a tool grant, scoped to the
+   *  chat's project when it has one, otherwise global. Never throws. */
+  private recordStandingGrant(sessionId: string, toolName: string): void {
+    if (isAlwaysConfirmTool(toolName)) return; // the floor is never granted from the modal
+    try {
+      const projectId = this.getSessionProjectId(sessionId);
+      addGrant({
+        scopeKind: 'tool',
+        scopeValue: toolName,
+        subject: projectId ? `project:${projectId}` : 'global',
+        ttlSeconds: DEFAULT_GRANT_TTL_SECONDS,
+      });
+    } catch (err) {
+      console.warn('[Artha] recording standing grant failed:', err);
+    }
+  }
+
+  /** Ask "Allow Artha to control {App}?" through the existing tool-approval
+   *  flow and map the answer to Once / Always / Deny. Timeout = Deny. */
+  private async requestAppGrant(req: {
+    workflowId: string; sessionId: string; toolName: string; args: Record<string, unknown>;
+    appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean;
+    /** The run asking: records the prompt on its timeline and pauses its stall watchdog. */
+    runId?: string;
+  }): Promise<GrantAnswer> {
+    let id = '';
+    const approved = await this.requestToolApproval({
+      workflowId: req.workflowId, sessionId: req.sessionId, toolName: req.toolName, args: req.args,
+      runId: req.runId,
+      note: req.alwaysConfirm
+        ? `${req.appName} is sensitive (shell, settings or credentials), so Artha asks every time.`
+        : `Allow Artha to control ${req.appName}?`,
+      appGrant: { appName: req.appName, alwaysAllowed: req.alwaysAllowed, alwaysConfirm: req.alwaysConfirm },
+      onId: (x) => { id = x; },
+    });
+    const scope = this.approvalScopes.get(id);
+    this.approvalScopes.delete(id);
+    if (!approved) return 'deny';
+    return scope === 'always' && req.alwaysAllowed ? 'always' : 'once';
   }
 
   /** Ask the LLM whether a goal needs clarification.
@@ -733,26 +1124,178 @@ or
 
   /** Called when user approves or rejects a plan in Planning Mode. */
   async approvePlan(workflowId: string, approved: boolean): Promise<void> {
+    // Legacy boolean API — expressed as a review so both paths share one
+    // implementation (and Reject is always recorded as cancelled-by-user).
+    await this.reviewPlan(workflowId, { decision: approved ? 'accept' : 'reject' });
+  }
+
+  /** Persist + emit a plan that needs the user's review, and open its unified
+   *  interaction. A UI response on the generic channel routes to reviewPlan(). */
+  private pausePlanForReview(plan: AgentPlan): void {
+    const db = getDb();
+    // A revision re-parks from inside reviewPlan, which already re-entered the
+    // saved context; only record it the first time.
+    const rc = getRunContext();
+    if (rc && !this.parkedRunContexts.has(plan.workflowId)) this.parkedRunContexts.set(plan.workflowId, rc);
+    const origin = this.parkedRunContexts.get(plan.workflowId);
+    plan.origin = origin?.lan ? 'lan' : origin?.unattended ? 'scheduled' : 'local';
+    if (origin?.lan) plan.originActor = origin.actor;
+    db.prepare(`UPDATE agent_states SET status='awaiting_approval', plan_json=? WHERE workflow_id=?`)
+      .run(JSON.stringify(plan.steps), plan.workflowId);
+    const { interaction } = getInteractionHub().open(
+      {
+        runId: plan.workflowId,
+        workflowId: plan.workflowId,
+        kind: 'plan',
+        payload: {
+          workflowId: plan.workflowId, sessionId: plan.sessionId, goal: plan.goal,
+          steps: plan.steps, requiresApproval: plan.requiresApproval,
+          blastRadius: plan.blastRadius, revisions: plan.revisions ?? 0,
+          // Shown on the card so the host knows a teammate or a background
+          // task asked for this plan, not themselves.
+          origin: plan.origin,
+          ...(plan.originActor ? { actor: plan.originActor } : {}),
+        },
+      },
+      (status, answer) => {
+        const review: PlanReview = status === 'answered' && answer && typeof answer === 'object'
+          ? answer as PlanReview
+          : { decision: 'reject', reason: 'dismissed' };
+        void this.reviewPlan(plan.workflowId, review).catch(err => console.error('[Artha] plan review failed:', err));
+      },
+    );
+    plan.interactionId = interaction.id;
+    // The session's chat turn stays "active" for the outbox until reviewPlan()
+    // settles it (accept → after execution; reject → paused, never drained).
+    this.awaitingPlanApproval.add(plan.workflowId);
+    this.emit('agent:planReady', plan);
+  }
+
+  /** Apply the user's plan review: Accept runs it; Accept with comments sends
+   *  the step comments to the planner for ONE revision and asks again (later
+   *  comments ride along into execution); Reject ends the run as
+   *  cancelled-by-user — never completed. Decision logic: agent/planReview.ts. */
+  async reviewPlan(workflowId: string, review: PlanReview): Promise<void> {
     const plan = this.activePlans.get(workflowId);
     if (!plan) return;
-    if (!approved) {
-      this.activePlans.delete(workflowId);
-      this.emit('agent:token', '\n\n_Plan cancelled by user._');
-      this.emit('agent:streamEnd');
+    // Only a turn parked on the approval card can be reviewed. A second accept
+    // (stale renderer, legacy + unified IPC both firing) or a review of a plan
+    // that auto-ran must not run it again outside the outbox hold.
+    // (A revision re-parks it via pausePlanForReview.)
+    const parked = this.awaitingPlanApproval.delete(workflowId);
+    if (!parked) return;
+    const saved = this.parkedRunContexts.get(workflowId);
+    if (saved && getRunContext() !== saved) {
+      await runWithContext(saved, () => this.applyPlanReview(workflowId, plan, review));
       return;
     }
-    await this.executePlan(plan);
+    await this.applyPlanReview(workflowId, plan, review);
+  }
+
+  /** reviewPlan() body, run inside the plan's original RunContext. */
+  private async applyPlanReview(workflowId: string, plan: AgentPlan, review: PlanReview): Promise<void> {
+    const hub = getInteractionHub();
+    const action = decidePlanReview(review, { goal: plan.goal, steps: plan.steps, revisions: plan.revisions ?? 0 });
+    if (plan.interactionId) {
+      hub.settle(plan.interactionId, action.kind === 'cancel' ? 'declined' : 'answered', review);
+      plan.interactionId = undefined;
+    }
+
+    if (action.kind === 'cancel') {
+      this.activePlans.delete(workflowId);
+      this.parkedRunContexts.delete(workflowId);
+      // Honest terminal state: the user stopped this run. No agent_runs row
+      // exists yet (execution never started), so agent_states carries it.
+      try {
+        getDb().prepare(`UPDATE agent_states SET status=?, context_json=json_set(COALESCE(context_json,'{}'), '$.cancelReason', ?) WHERE workflow_id=?`)
+          .run(action.status, action.reason || 'rejected by user', workflowId);
+      } catch (err) {
+        console.warn('[Artha] recording plan rejection failed:', err);
+      }
+      this.emit('agent:token', `\n\n_Plan cancelled by user${action.reason ? `: ${action.reason}` : '.'}_`);
+      this.emit('agent:streamEnd');
+      // Rejecting the plan is a user cancel: the queue pauses, never drains.
+      this.userStoppedSessions.add(plan.sessionId);
+      this.finishOutboxTurn(workflowId, plan.sessionId);
+      return;
+    }
+
+    if (action.kind === 'revise') {
+      this.emit('agent:status', 'Revising the plan with your comments…');
+      let revised: AgentPlan;
+      try {
+        const history = this.getSessionHistory(plan.sessionId, plan.goal);
+        revised = await this.generatePlan(workflowId, plan.sessionId, action.revisionPrompt, history, plan.skill);
+      } catch (err) {
+        // Planner failed: do not silently run the un-revised plan — ask again
+        // with the original steps so the user decides.
+        console.warn('[Artha] plan revision failed:', err);
+        revised = { ...plan };
+      }
+      const next: AgentPlan = {
+        ...plan,
+        steps: revised.steps.length ? revised.steps : plan.steps,
+        blastRadius: revised.steps.length ? revised.blastRadius : plan.blastRadius,
+        // Keep the user's own goal (not the revision instruction) for execution.
+        goal: plan.goal,
+        requiresApproval: true,
+        revisions: (plan.revisions ?? 0) + 1,
+        revisionComments: [...(plan.revisionComments ?? []), ...action.comments],
+        interactionId: undefined,
+      };
+      this.activePlans.set(workflowId, next);
+      this.pausePlanForReview(next);
+      return;
+    }
+
+    // The user approved THIS plan — plan mode unlocks changes for it.
+    this.userApprovedWorkflows.add(workflowId);
+    plan.reviewNotes = action.reviewNotes;
+    // Accepted: it leaves the review map before running, so a duplicate accept
+    // finds nothing (R3 #3).
+    this.activePlans.delete(workflowId);
+    this.parkedRunContexts.delete(workflowId);
+    try {
+      await this.executePlan(plan);
+    } finally {
+      this.finishOutboxTurn(workflowId, plan.sessionId);
+    }
   }
 
   /** Called when user hits the Stop button in the UI. */
   cancelWorkflow(workflowId: string): void {
     this.cancelledWorkflows.add(workflowId);
-    // If the user is mid-decision on a tool-approval modal for this workflow,
-    // deny it immediately so the loop unblocks now instead of after the 120s
-    // timeout — otherwise Stop feels broken while an approval is pending.
+    // This workflow plus every sub-capability loop running under it. Their
+    // prompts wait until answered, so Stop has to release them explicitly.
+    const targets = this.withChildWorkflows(workflowId);
+    // Unified frame: decline any pending ask_user card (and any other pending
+    // interaction) of these workflows so the awaiting calls unblock now.
+    for (const wf of targets) getInteractionHub().declineForWorkflow(wf);
+    // Remembered until the chat turn ends so the outbox pauses ("Queue paused
+    // after cancel") instead of auto-sending the next queued message.
+    const stoppedSession = this.workflowSessions.get(workflowId) ?? this.sessionOfWorkflow(workflowId);
+    // Only while that session's turn is live — a late Stop after the turn
+    // ended must not pause the NEXT turn's queue.
+    if (stoppedSession && this.outbox.isActive(stoppedSession)) this.userStoppedSessions.add(stoppedSession);
+    // If the user is mid-decision on a tool-approval modal for this workflow
+    // (or one of its sub-capability loops), deny it now so the loop unblocks.
+    // Approval prompts have no timeout, so this is what makes Stop work.
     for (const [, entry] of this.toolApprovalResolvers) {
-      if (entry.workflowId === workflowId) entry.resolve(false);
+      if (targets.has(entry.workflowId)) entry.resolve(false);
     }
+  }
+
+  /** `workflowId` and every workflow running under it (transitively). */
+  private withChildWorkflows(workflowId: string): Set<string> {
+    const out = new Set<string>([workflowId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [child, parent] of this.workflowParents) {
+        if (out.has(parent) && !out.has(child)) { out.add(child); grew = true; }
+      }
+    }
+    return out;
   }
 
   /** Decompose a goal into independent sub-tasks and run them concurrently.
@@ -768,6 +1311,8 @@ or
     const db = getDb();
     const workflowId = crypto.randomUUID();
     const results: string[] = new Array(subTasks.length).fill('');
+    // Lets cancelWorkflow(fan-out id) find the session for the outbox pause.
+    this.workflowSessions.set(workflowId, sessionId);
 
     this.emit('agent:workflowStart', workflowId);
     this.emit('agent:parallelStart', { goal, subTasks });
@@ -841,6 +1386,7 @@ Rules:
     }
     this.emit('agent:token', combined);
     this.emit('agent:streamEnd');
+    this.workflowSessions.delete(workflowId);
 
     return results;
   }
@@ -1048,12 +1594,22 @@ Rules:
       INSERT OR IGNORE INTO agent_runs (run_id, session_id, workflow_id, goal, model, status)
       VALUES (?, ?, ?, ?, ?, 'running')
     `).run(runId, plan.sessionId, plan.workflowId, plan.goal, model);
+    // Run event log: the plan this run executes is the first entry of its
+    // replayable timeline (agent/runEvents.ts).
+    recordRunEvent(runId, 'plan', { goal: plan.goal, steps: plan.steps, model });
 
     // Silent runs (e.g. Delegate) must not drive the Chat surface's working UI.
     if (!opts.silent) this.emit('agent:workflowStart', plan.workflowId);
 
     const history = this.getSessionHistory(plan.sessionId, plan.goal);
-    const destHint = this.extractDestination(plan.goal, homeDir);
+    // What the user changed through plan review (agent/planReview.ts). When
+    // they commented, the destination guessed from the ORIGINAL wording is
+    // dropped: a comment may have changed it, and that hint says "use no
+    // other location".
+    const reviewText = buildExecutorReviewBlock({
+      steps: plan.steps, revisionComments: plan.revisionComments ?? [], reviewNotes: plan.reviewNotes ?? null,
+    });
+    const destHint = reviewText ? null : this.extractDestination(plan.goal, homeDir);
     const skill = plan.skill ?? null;
     const skillBlock = skill
       ? `ACTIVE SKILL — "${skill.name}". This is your operating playbook for this task; follow it:\n${skill.instructions}\n\n`
@@ -1066,6 +1622,7 @@ Rules:
     const mentionBlock = resolveMentionBlock(plan.goal, plan.sessionId);
     // Context Pack pinned memories (by-reference; '' when no pack).
     const packBlock = getPackContextBlock(plan.sessionId);
+    const reviewBlock = reviewText ? `${reviewText}\n\n` : '';
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {
@@ -1078,7 +1635,7 @@ The SAME act-don't-describe rule governs the browser. When the user asks you to 
 
 Only write a plain-English reply once the task is COMPLETE (or you are genuinely blocked and must ask one specific question).
 
-${mentionBlock}${memoryBlock}${packBlock}${skillBlock}${projectBlock}
+${mentionBlock}${memoryBlock}${packBlock}${skillBlock}${reviewBlock}${projectBlock}
 
 ${envBlock}
 
@@ -1224,7 +1781,12 @@ RULES — follow exactly, no exceptions:
       skill: args.skill ?? null,
       matchedVia: 'invoke',
     };
-    return this.executePlan(plan, { silent: true });
+    this.holdOutboxForCapability(workflowId, args.sessionId);
+    try {
+      return await this.executePlan(plan, { silent: true });
+    } finally {
+      this.finishOutboxTurn(workflowId, args.sessionId);
+    }
   }
 
   /** Non-blocking variant of {@link runCapability}: synchronously create the
@@ -1232,7 +1794,11 @@ RULES — follow exactly, no exceptions:
    *  and return the run id right away. This is how goal-driven surfaces like
    *  Delegate execute — the UI polls the Task's status/steps instead of blocking
    *  on the whole run, which is what makes long tasks observable and resumable. */
-  startCapability(args: { sessionId: string; goal: string; skill?: ActiveSkill | null }): string {
+  startCapability(
+    args: { sessionId: string; goal: string; skill?: ActiveSkill | null },
+    /** `outboxHeld`: the caller (an outbox drain) already marked the session busy. */
+    opts: { outboxHeld?: boolean } = {},
+  ): string {
     const db = getDb();
     const workflowId = crypto.randomUUID();
     const runId = crypto.randomUUID();
@@ -1259,10 +1825,11 @@ RULES — follow exactly, no exceptions:
     // 'tool_args' routes the loop to the router's fast model (smallest installed
     // when un-benchmarked) so Delegate's many turns aren't all on the heavy
     // active model — the #1 cause of slow delegated runs on local hardware.
+    this.holdOutboxForCapability(workflowId, args.sessionId, opts.outboxHeld);
     void this.executePlan(plan, { silent: true, runId, taskType: 'tool_args' }).catch((err) => {
       console.error('[Artha] delegate capability run failed:', err);
       try { getDb().prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(runId); } catch { /* ignore */ }
-    });
+    }).finally(() => this.finishOutboxTurn(workflowId, args.sessionId));
 
     return runId;
   }
@@ -1276,7 +1843,53 @@ RULES — follow exactly, no exceptions:
    *  Also owns the citation window for this workflow — every web/browser
    *  tool call appends citations that are drained + emitted alongside the
    *  final response. */
-  private async runReactLoop(args: {
+  /** Run-event-log wrapper around the ReAct loop body: registers the run as
+   *  active, runs the 10 s heartbeat / 60 s stall watchdog for its lifetime,
+   *  records an `error` event if the body throws, holds the keep-awake
+   *  blocker (when the user enabled it) and registers with the global kill
+   *  switch (the stop hotkey is held only while some run is active, and a
+   *  press cancels this run through the same path as the chat's Stop button).
+   *  Everything is released in `finally`. Only bookkeeping — the loop's own
+   *  status / verification logic lives untouched in the body. */
+  private async runReactLoop(args: Parameters<AgentOrchestrator['runReactLoopBody']>[0]): Promise<void> {
+    markRunActive({ runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId });
+    // Tell the renderer which run backs this workflow so it can resubscribe
+    // to the run's event log from its last seq after a reload.
+    if (!args.silent) this.emit('run:started', { runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId });
+    const awake = noteRunStarted(args.runId);
+    // While the run waits on the user (approval prompt, question card) it does
+    // not hold the machine awake; the monitor reports each change.
+    const stopMonitor = startRunMonitor(args.runId, { onAwaitingUser: (waiting) => noteRunWaiting(awake, waiting) });
+    try {
+      const s = JSON.parse((getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json?: string } | undefined)?.settings_json ?? '{}');
+      if (typeof s.desktop_stop_shortcut === 'string' && s.desktop_stop_shortcut) getKillSwitch()?.setAccelerator(s.desktop_stop_shortcut);
+    } catch { /* settings are optional */ }
+    const untrack = trackRun({
+      workflowId: args.workflowId, runId: args.runId, sessionId: args.sessionId,
+      // Only the global kill switch calls this (the chat Stop button goes
+      // straight to cancelWorkflow), so record it in the run event log.
+      cancel: () => {
+        recordRunEvent(args.runId, 'status', { source: 'kill_switch', reason: 'stopped_by_user' });
+        this.pauseOutboxForKillSwitch(args.sessionId);
+        this.cancelWorkflow(args.workflowId);
+      },
+    });
+    try {
+      // The loop's citation/workflow token is scoped to it (tools/web.ts), so
+      // concurrent and nested loops never see each other's.
+      await runWithCitationToken(args.workflowId, () => this.runReactLoopBody(args));
+    } catch (err) {
+      recordRunEvent(args.runId, 'error', { message: err instanceof Error ? err.message : String(err) });
+      throw err;
+    } finally {
+      untrack();
+      noteRunEnded(awake);
+      stopMonitor();
+      markRunInactive(args.runId);
+    }
+  }
+
+  private async runReactLoopBody(args: {
     workflowId: string;
     runId: string;
     sessionId: string;
@@ -1317,6 +1930,10 @@ RULES — follow exactly, no exceptions:
     let loopModel = resolveRunModel(args.modelOverride, loopTask);
     // Renderer-facing emit gate. Silent child loops still persist to SQLite.
     const emit = (channel: string, data?: unknown): void => {
+      // Run event log: mirror lifecycle channels (status / tool call / tool
+      // result) into the persisted timeline — silent child loops included.
+      const runEv = runEventFromChannel(channel, data);
+      if (runEv) recordRunEvent(args.runId, runEv.kind, runEv.payload);
       if (!args.silent) this.emit(channel, data);
     };
 
@@ -1353,12 +1970,18 @@ RULES — follow exactly, no exceptions:
     let modelEscalated = false;
     const extraTools = [
       ...MEMORY_TOOL_SCHEMAS,
+      // Structured mid-run questions (agent/askUser.ts). Offered everywhere —
+      // unattended runs get an immediate fail-closed "unanswered" result.
+      ASK_USER_TOOL_SCHEMA,
       // Desktop control (mouse/keyboard/screenshot) is opt-in and dangerous, so
       // it's only offered to the model when the user has enabled it in Settings.
       ...(this.desktopControlEnabled() ? DESKTOP_TOOL_SCHEMAS : []),
       // Composable sub-capabilities — let this run delegate a self-contained
       // step to a trusted, pre-scoped capability (bounded by depth + scope).
       ...(mayDelegate ? getSubcapabilityToolSchemas() : []),
+      // Persistent goals (bodhi/goals.ts) are a top-level concern: a nested
+      // capability works for its parent's goal and must not set its own.
+      ...(depth === 0 ? GOAL_TOOL_SCHEMAS : []),
     ];
     let tools = [...filterToolsByAllowlist(budget.tools, effectiveAllowed), ...extraTools];
     const fullTools = [...filterToolsByAllowlist(budget.full, effectiveAllowed), ...extraTools];
@@ -1374,6 +1997,29 @@ RULES — follow exactly, no exceptions:
     // (unattended runs auto-block confirm-tier tools). Counted separately so a
     // scheduled run that was blocked can say so instead of reporting success.
     let toolCallsBlocked = 0;
+    // Tools the user declined in THIS run. "No" holds for the rest of the run:
+    // a later call to the same tool (a model retry, or the deterministic email
+    // fallback) is refused without asking again (found in live QA 2026-11-12:
+    // a declined send was re-prompted by the fallback).
+    const declinedTools = new Set<string>();
+    // The subset of those that were never asked about, because nobody is
+    // watching this run (nobody said no; worded differently below).
+    const notAskedTools = new Set<string>();
+    // The text intent detection reads (file task? send? web action?). On a
+    // scheduler run the prompt also carries trigger details (file names from
+    // a watched folder, …) that someone else chose; only the task the user
+    // wrote may decide what kind of run this is. Chat and LAN goals are used
+    // whole (a typed marker never hides intent there).
+    const rcIntent = getRunContext();
+    const intentGoal = rcIntent?.unattended === true && !rcIntent.lan ? taskOwnText(args.goal) : args.goal;
+    // Turns re-asked because the prompt overflowed num_ctx (see below).
+    let truncatedRetries = 0;
+    // Sanitized, bounded per-call evidence for the independent goal check
+    // (bodhi/goalEvaluator.ts). Short summaries only — never raw payloads.
+    const goalEvidence: Array<Omit<EvaluatorEvidence, 'id'>> = [];
+    const MAX_GOAL_EVIDENCE = 30;
+    // Stop-gate feedback rounds already spent on an unmet goal this run.
+    let goalRounds = 0;
     /** Which terminal path the loop actually took — drives the end-of-run
      *  notification so it can never claim completion for a stopped run. */
     let terminalOutcome: 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'interrupted' = 'interrupted';
@@ -1381,16 +2027,21 @@ RULES — follow exactly, no exceptions:
     // Resolved once for the whole loop: showReasoningEnabled() hits SQLite, so it
     // must not be called per token inside the throttled onReasoning callback.
     const showReasoning = this.showReasoningEnabled();
-    const recordStep = this.makeStepRecorder(args.runId);
+    const persistStep = this.makeStepRecorder(args.runId);
+    // Every agent_steps row also lands in the run event log as a lightweight
+    // `step` marker (tool calls/results carry their own detailed events).
+    // Returns the persisted step_id (used for file checkpoints / rewind).
+    const recordStep: typeof persistStep = (idx, kind, payload, snapshot) => {
+      const stepId = persistStep(idx, kind, payload, snapshot);
+      recordRunEvent(args.runId, 'step', { idx, kind, stepId });
+      return stepId;
+    };
     let stepIdx = 0;
 
     // Begin collecting citations for any web_fetch / web_search calls the
     // model makes inside this loop. Drained + emitted at the final response.
-    // Capture the previously-active token so a NESTED loop (a sub-capability)
-    // restores the parent's token on exit instead of clobbering it to null.
-    const prevCitationToken = getActiveCitationToken();
+    // (The active token itself is scoped by runReactLoop.)
     startCitationCollection(args.workflowId);
-    setActiveCitationToken(args.workflowId);
 
     recordStep(stepIdx++, 'system', {
       note: 'loop start', model: loopModel ?? this.activeModelName(),
@@ -1454,6 +2105,20 @@ RULES — follow exactly, no exceptions:
     // the filesystem tools to them (hard sandbox) and default generated docs to
     // the primary folder. Empty roots ⇒ unscoped chat, historical behaviour.
     const allowedRoots = getSessionAllowedRoots(args.sessionId);
+
+    // Permission mode for this run (agent/modes.ts). A LAN or scheduled run is
+    // always 'unattended', whatever the chat's stored mode says.
+    const gateRc = getRunContext();
+    // One rule for "nobody can answer a prompt" (agent/runContext.ts): LAN and
+    // every scheduler trigger. Unattended runs fail closed on asks.
+    const gateUnattended = confirmTierMustFailClosed(gateRc);
+    const permissionMode = resolveEffectiveMode(
+      getSessionMode(args.sessionId),
+      this.userSettings().autonomousActions as boolean | undefined,
+      gateRc,
+    );
+    const grantSubjects = this.grantSubjects(args.sessionId, !!gateRc?.lan);
+    const rootPaths = (allowedRoots ?? []).map(r => r.path);
     const fsCtx: ToolContext = {
       allowedRoots,
       primaryDir: getSessionPrimaryFolder(args.sessionId),
@@ -1471,7 +2136,7 @@ RULES — follow exactly, no exceptions:
     // Small local models otherwise try to hand-drive Gmail's DOM (browser_click
     // on Compose), which times out. If they ignore this, the deterministic
     // rescue at the terminal still finishes the job.
-    if (detectsSendIntent(args.goal)) {
+    if (detectsSendIntent(intentGoal)) {
       messages.push({
         role: 'system',
         content:
@@ -1546,6 +2211,22 @@ RULES — follow exactly, no exceptions:
         break;
       }
 
+      // Outbox "steer now": at a tool-call boundary (between iterations) of a
+      // top-level visible run, inject any messages the user asked to steer
+      // with. Never on the first iteration (nothing has happened yet; the drain
+      // covers that) and never past a pending approval (the driver checks).
+      if (iterations > 1 && !args.silent && depth === 0) {
+        try {
+          const steered = injectSteerAtBoundary(this.outbox, args.sessionId, messages);
+          if (steered.length) {
+            recordStep(stepIdx++, 'user', { steer: steered.map(i => ({ id: i.id, content: i.content })) });
+            emit('agent:status', 'Taking your new message into account…');
+          }
+        } catch (err) {
+          console.warn('[Artha] outbox steer injection failed (continuing):', err);
+        }
+      }
+
       // Keep only the most recent browser_read_dom payload in context; stub the
       // rest. Stale ~12k-char DOM dumps otherwise re-send on every turn and are
       // the main driver of slow/expensive browser-action runs.
@@ -1602,6 +2283,19 @@ RULES — follow exactly, no exceptions:
       // Aborted mid-stream — bounce to the top so the cancel handler finalises.
       if (isCancelled()) continue;
 
+      // The prompt overflowed the model's window, so Ollama cut off its head
+      // (the system prompt and the user's request) and this reply answers a
+      // mutilated prompt. Never act on it, and don't count it as the model
+      // failing (which would escalate): retry the same turn — the client has
+      // already grown this model's window (llm/numCtx.ts).
+      if (msg.truncated && truncatedRetries < 3) {
+        truncatedRetries++;
+        if (streamedLive) emit('agent:streamReset');
+        recordStep(stepIdx++, 'system', { note: 'prompt-truncated-retry', model: loopModel, attempt: truncatedRetries });
+        emit('agent:status', 'The request was too large for the model\'s window — retrying with a larger one…');
+        continue;
+      }
+
       messages.push({
         role: 'assistant',
         content: msg.content ?? null,
@@ -1624,7 +2318,8 @@ RULES — follow exactly, no exceptions:
             name: toolCall.function.name,
             args: toolCall.function.arguments,
           });
-          recordStep(stepIdx++, 'tool_call', {
+          const toolStepIdx = stepIdx++;
+          const toolStepId = recordStep(toolStepIdx, 'tool_call', {
             name: toolCall.function.name,
             args: toolCall.function.arguments,
             id: toolCall.id,
@@ -1643,50 +2338,137 @@ RULES — follow exactly, no exceptions:
           // approval; auto runs silently. Local-first — rules never leave the
           // device. (See bodhi/policy.ts.)
           const decision = evaluatePolicy(toolCall.function.name, parsedArgs, { allowedRoots });
+          // Permission-mode gate (agent/modes.ts). Order: forbid > always-
+          // confirm floor (email_send) > dry_run > mode rules > active grant >
+          // the policy tier. It never returns 'ask' for an unattended run —
+          // that becomes 'block', so nothing hangs on a modal nobody sees.
+          const gate = await decideToolCall({
+            toolName: toolCall.function.name,
+            args: parsedArgs,
+            mode: permissionMode,
+            policy: decision,
+            isFloor: isAlwaysConfirmTool(toolCall.function.name),
+            attended: !gateUnattended,
+            roots: rootPaths,
+            planApproved: this.userApprovedWorkflows.has(args.workflowId),
+            subjects: grantSubjects,
+            connector: this.registry.serverForTool(toolCall.function.name)?.id,
+            grants: getGrantStore(),
+          });
           let receiptStatus: ReceiptStatus = 'ok';
+          /** Overrides the receipt's generic effect text when we know better
+           *  (e.g. a desktop action skipped for lack of an app grant). */
+          let receiptEffect: string | undefined;
           let policyHandled = false;
-          if (decision.tier === 'forbid') {
+          if (gate.action === 'block' && gate.source === 'policy-forbid') {
             toolResult = `Error: Blocked by your tool policy${decision.matchedPattern ? ` (rule "${decision.matchedPattern}")` : ''} — this call was not executed.${decision.note ? ` ${decision.note}` : ''}`;
             toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
-          } else if (decision.tier === 'dry_run') {
+          } else if (gate.action === 'dry_run') {
             toolResult = `Dry run (policy): would call ${toolCall.function.name} with ${JSON.stringify(parsedArgs)}. It was NOT executed — describe this to the user as a preview of what would happen.`;
             receiptStatus = 'skipped'; policyHandled = true;
-          } else if (decision.tier === 'confirm') {
-            // Confirm needs a human to answer. Only truly unattended runs — LAN
-            // requests and scheduled tasks (which set rc.unattended, see
-            // main.ts) — fail closed. NOTE: `silent` does NOT mean unattended:
-            // Delegate and sub-capability runs are silent (fast model, no verbose
-            // streaming) but a desktop user IS watching and can approve via the
-            // app-level ToolApprovalModal. Treating silent as unattended blocked
-            // email_send in Delegate — the exact "it won't send" bug.
-            const rc = getRunContext();
-            const unattended = !!rc?.lan || !!rc?.unattended;
-            if (unattended) {
-              toolResult = `Error: ${toolCall.function.name} needs interactive approval (policy rule "${decision.matchedPattern}") but this run is unattended, so it was blocked.`;
+          } else if (gate.action === 'block') {
+            // Mode block (e.g. plan mode before approval) or an ask that nobody
+            // can answer (unattended). Not executed; the model is told why so
+            // the run reports it instead of claiming the step happened.
+            toolResult = `Error: ${toolCall.function.name} was not executed — ${gate.reason}`;
+            toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
+          } else if (gate.action === 'ask' && declinedTools.has(toolCall.function.name)) {
+            toolResult = notAskedTools.has(toolCall.function.name)
+              ? `Error: ${toolCall.function.name} needs approval and nobody is watching this run to give it, so it was NOT executed (as before). Do not retry it — say plainly that this step needs the user's approval.`
+              : `Error: The user already declined ${toolCall.function.name} in this run, so it was not asked again or executed. Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
+            toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
+          } else if (gate.action === 'ask') {
+            // Confirm needs a human to answer; decideToolCall already turned
+            // asks on unattended runs (LAN / scheduled) into blocks. NOTE:
+            // `silent` does NOT mean unattended — Delegate runs are silent but
+            // a desktop user approves via the app-level ToolApprovalModal.
+            let notAsked = false;
+            const approved = await this.requestToolApproval({
+              workflowId: args.workflowId, sessionId: args.sessionId,
+              toolName: toolCall.function.name, args: parsedArgs,
+              note: decision.note || gate.reason,
+              allowAlways: gate.source !== 'floor',
+              runId: args.runId,
+              onNotAsked: () => { notAsked = true; },
+            });
+            if (!approved) {
+              // Not asked again in this run either way. The prompt itself has
+              // no timeout, so a false here is a real "no" (or Stop) — except
+              // the backstop case where nobody is watching, worded truthfully.
+              declinedTools.add(toolCall.function.name);
+              if (notAsked) notAskedTools.add(toolCall.function.name);
+              toolResult = notAsked
+                ? `Error: ${toolCall.function.name} needs approval and nobody is watching this run to give it, so it was NOT executed. Nobody declined it. Do not retry it — finish what you can and say plainly that this step needs the user's approval.`
+                : `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
               toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
-            } else {
-              const approved = await this.requestToolApproval({
-                workflowId: args.workflowId, sessionId: args.sessionId,
-                toolName: toolCall.function.name, args: parsedArgs, note: decision.note,
-              });
-              if (!approved) {
-                toolResult = `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
-                toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
-              }
-              // approved → fall through to normal execution below.
             }
+            // approved → fall through to normal execution below.
+          } else if (gate.source === 'grant') {
+            emit('agent:status', gate.reason);
           }
 
           if (!policyHandled) {
           try {
-            if (isMemoryTool(toolCall.function.name)) {
+            if (toolCall.function.name === ASK_USER_TOOL_NAME) {
+              // Resolves THIS tool call with the user's answers (no new turn).
+              const rcAsk = getRunContext();
+              toolResult = await runAskUser(parsedArgs, {
+                unattended: confirmTierMustFailClosed(rcAsk),
+                runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId,
+                hub: getInteractionHub(),
+              });
+            } else if (isMemoryTool(toolCall.function.name)) {
               toolResult = invokeMemoryTool(toolCall.function.name, parsedArgs, args.sessionId);
             } else if (isDesktopTool(toolCall.function.name)) {
-              // Artha is about to drive the REAL cursor/keyboard — paint the
-              // full-screen "Artha is in control" overlay so the takeover is
-              // obvious. Auto-hides shortly after the last desktop action.
-              noteDesktopControlActive();
-              toolResult = await invokeDesktopTool(toolCall.function.name, parsedArgs);
+              // Per-app grant: resolve the app this action lands in and make
+              // sure the user has allowed Artha to control it (Once / Always
+              // for this project / Deny). Unattended runs skip and report.
+              const rcDesk = getRunContext();
+              const deskGate = await gateDesktopAction({
+                store: this.appGrants,
+                resolveApp: resolveDesktopTargetApp,
+                confirm: (q) => this.requestAppGrant({
+                  workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId,
+                  toolName: toolCall.function.name, args: parsedArgs,
+                  appName: q.appName, alwaysAllowed: q.alwaysAllowed,
+                  alwaysConfirm: q.reason === 'always_confirm',
+                }),
+                nowSec: () => Math.floor(Date.now() / 1000),
+              }, {
+                toolName: toolCall.function.name, args: parsedArgs,
+                sessionId: args.sessionId, projectId: this.getSessionProjectId(args.sessionId),
+                unattended: confirmTierMustFailClosed(rcDesk),
+                lan: !!rcDesk?.lan,
+              });
+              if (!deskGate.proceed) {
+                toolResult = deskGate.message;
+                toolStatus = 'error';
+                receiptStatus = deskGate.status;
+                receiptEffect = rcDesk?.lan
+                  ? 'Skipped — requests from the network cannot use this computer\'s desktop'
+                  : deskGate.status === 'skipped'
+                  ? `Skipped — ${deskGate.appName} not approved for desktop control (unattended run)`
+                  : `Blocked — user did not allow control of ${deskGate.appName}`;
+                // An unattended skip is a refusal, not a tool failure: count it
+                // with blocked calls so the run's honest status says so.
+                if (deskGate.status === 'skipped') toolCallsBlocked++;
+              } else if (isCancelled()) {
+                // Stop arrived while the grant prompt was open — don't act.
+                toolResult = 'Error: stopped_by_user — the user stopped Artha before this desktop action ran.';
+                toolStatus = 'error'; receiptStatus = 'blocked'; receiptEffect = 'Stopped by user — not executed.';
+              } else {
+                // Artha is about to drive the REAL cursor/keyboard — paint the
+                // full-screen "Artha is in control" overlay so the takeover is
+                // obvious. Auto-hides shortly after the last desktop action.
+                noteDesktopControlActive();
+                toolResult = await invokeDesktopTool(toolCall.function.name, parsedArgs);
+              }
+            } else if (isGoalTool(toolCall.function.name)) {
+              // goal_set / goal_update — persisted goal state; goal_set may
+              // pause for the user's approval (see invokeGoalTool).
+              toolResult = await this.invokeGoalTool(toolCall.function.name, parsedArgs, {
+                workflowId: args.workflowId, sessionId: args.sessionId, userGoal: args.goal, runId: args.runId,
+              });
             } else if (isSubcapabilityTool(toolCall.function.name)) {
               // Composable sub-capability: delegate a self-contained step to a
               // trusted capability whose tool scope is clamped to this loop's own
@@ -1699,7 +2481,11 @@ RULES — follow exactly, no exceptions:
                 depth,
               });
             } else {
-              toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs, fsCtx);
+              // Per-call identity: durable undo + file checkpoints are
+              // attributed to this exact step so a rewind can target it.
+              toolResult = await this.registry.invokeTool(toolCall.function.name, parsedArgs, {
+                ...fsCtx, sessionId: args.sessionId, stepId: toolStepId, stepIdx: toolStepIdx,
+              });
             }
 
             // Self-correction: small models often pass a bare folder name
@@ -1763,6 +2549,14 @@ RULES — follow exactly, no exceptions:
             }
           }
           if (receiptStatus === 'blocked') toolCallsBlocked++;
+          if (depth === 0 && !isGoalTool(toolCall.function.name)) {
+            goalEvidence.push({
+              kind: 'tool_result',
+              status: outcome.status,
+              summary: `${toolCall.function.name}: ${toolResult.replace(/\s+/g, ' ').slice(0, 240)}`,
+            });
+            if (goalEvidence.length > MAX_GOAL_EVIDENCE) goalEvidence.shift();
+          }
 
           // Anti-hallucination: only count a mutation as having happened when
           // it FULLY succeeded — blocked, dry-run and partial batches (e.g.
@@ -1791,6 +2585,7 @@ RULES — follow exactly, no exceptions:
             tier: decision.tier,
             isMutation: RECEIPT_MUTATION_TOOLS.has(toolCall.function.name),
             durationMs: Date.now() - toolStart,
+            effect: receiptEffect,
           });
 
           try {
@@ -1845,7 +2640,7 @@ RULES — follow exactly, no exceptions:
         // genuine clarifying question, reject the narration, tell it to act, and
         // loop again. Capped so we never trap a model that truly can't proceed.
         if (shouldNudgeToAct({
-          goal: args.goal,
+          goal: intentGoal,
           browserToolCalls,
           fsToolCalls,
           mutationCount: mutations.length,
@@ -1855,7 +2650,7 @@ RULES — follow exactly, no exceptions:
         })) {
           if (streamedLive) emit('agent:streamReset');
           actNudges++;
-          const webNarrated = detectsWebAction(args.goal) && browserToolCalls === 0;
+          const webNarrated = detectsWebAction(intentGoal) && browserToolCalls === 0;
           const fsNames = tools.map(t => t.function.name).filter(n => n.startsWith('fs_')).join(', ');
           messages.push({
             role: 'system',
@@ -1881,7 +2676,7 @@ RULES — follow exactly, no exceptions:
         // send. This is what turns "drafted" into "delivered" instead of a
         // false completion.
         if (shouldNudgeToSend({
-          goal: args.goal,
+          goal: intentGoal,
           sendConfirmed: sendWasConfirmed(),
           nudges: sendNudges,
           maxNudges: MAX_SEND_NUDGES,
@@ -1902,6 +2697,44 @@ RULES — follow exactly, no exceptions:
           recordStep(stepIdx++, 'system', { note: 'send-nudge', nudge: sendNudges });
           emptyCount = 0;
           continue;
+        }
+
+        // ── Goal stop gate ─────────────────────────────────────────────────
+        // A final answer is a CLAIM of completion. When this session has an
+        // open goal, an independent evaluator decides from evidence whether
+        // its condition is met (bodhi/goalEvaluator.ts): met → goal completed;
+        // unmet → back to work with the gaps (bounded); otherwise the run ends
+        // as "needs you" with the gaps listed. The model can't skip this.
+        let goalNote: string | null = null;
+        // A stopped run (chat Stop or the global kill switch) never reaches the
+        // evaluator: stop/kill must never mark a goal completed. The run is
+        // recorded as cancelled further down; the goal stays open.
+        const stoppedNow = (): boolean => isCancelled() || wasStoppedByUser(args.workflowId);
+        if (depth === 0 && !stoppedNow()) {
+          const gate = await this.runGoalStopGate({
+            runId: args.runId, sessionId: args.sessionId, goal: args.goal,
+            finalAnswer: rawContent, mutations, goalEvidence, goalRounds,
+            toolCallsTotal, toolCallErrors, actorModel: loopModel,
+            stopped: stoppedNow,
+          });
+          if (gate) {
+            recordRunEvent(args.runId, 'status', {
+              source: 'goal_gate', action: gate.action, gaps: gate.gaps, round: goalRounds,
+            });
+          }
+          if (gate?.action === 'continue' && gate.feedback) {
+            if (streamedLive) emit('agent:streamReset');
+            goalRounds++;
+            messages.push({ role: 'system', content: gate.feedback });
+            recordStep(stepIdx++, 'system', { note: 'goal-gate', action: 'continue', round: goalRounds, gaps: gate.gaps });
+            emit('agent:status', 'Goal not met yet — continuing…');
+            emptyCount = 0;
+            continue;
+          }
+          if (gate) {
+            recordStep(stepIdx++, 'system', { note: 'goal-gate', action: gate.action, gaps: gate.gaps });
+            goalNote = gate.note;
+          }
         }
 
         let finalText: string;
@@ -1942,7 +2775,7 @@ RULES — follow exactly, no exceptions:
         // restate the task?" from a model that lost the thread) is not one.
         // Either way the run is NEVER recorded as succeeded (see below).
         const verdict = fileGoalVerdict({
-          goal: args.goal, isWebGoal: detectsWebAction(args.goal),
+          goal: intentGoal, isWebGoal: detectsWebAction(intentGoal),
           anyMutationSucceeded: mutations.some(m => m.success), finalText: rawContent, toolCallErrors,
         });
         const fileGoalUnmet = verdict.unmet;
@@ -1956,15 +2789,18 @@ RULES — follow exactly, no exceptions:
         // Gmail's DOM, or narrated a fake "sent"), Artha finishes the job
         // deterministically — extract the fields and call email_send itself.
         let det: { sent: boolean; to: string | null; reason?: string } = { sent: false, to: null };
-        if (detectsSendIntent(args.goal) && !sendWasConfirmed()) {
+        if (detectsSendIntent(intentGoal) && !sendWasConfirmed() && declinedTools.has('email_send')) {
+          // The user already said no to this send — never ask a second time.
+          det = { sent: false, to: null, reason: 'declined' };
+        } else if (detectsSendIntent(intentGoal) && !sendWasConfirmed()) {
           det = await this.deterministicEmailSend(
-            { goal: args.goal, workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId },
+            { goal: intentGoal, workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId },
             recordStep, stepIdx++,
           );
         }
         // Recompute AFTER the deterministic attempt — email_send logs its own
         // confirmed external_action, so this reflects whether it actually sent.
-        const sendUnfulfilled = detectsSendIntent(args.goal) && !sendWasConfirmed();
+        const sendUnfulfilled = detectsSendIntent(intentGoal) && !sendWasConfirmed();
         if (!sendUnfulfilled && det.sent) {
           // Deterministic send succeeded — the model's prose is irrelevant now.
           finalText = `✅ Email sent${det.to ? ` to ${det.to}` : ''} through your Gmail (confirmed by Gmail's “Message sent”).`;
@@ -1983,6 +2819,9 @@ RULES — follow exactly, no exceptions:
             `To send it: open Artha's browser, sign in to Gmail once, then ask me again — I'll deliver it ` +
             `through your Gmail (you approve once, then I send it).`;
         }
+
+        // Deterministic goal outcome line — written by the gate, not the model.
+        if (goalNote) finalText = `${finalText}\n\n${goalNote}`;
 
         // The raw content was already streamed live. Only re-emit if the final
         // text differs (verified summary, or cleaning changed it) — otherwise
@@ -2045,7 +2884,21 @@ RULES — follow exactly, no exceptions:
             });
           }
         } catch { /* bookkeeping must never break a run */ }
-        if (sendUnfulfilled) {
+        if (isCancelled() || wasStoppedByUser(args.workflowId)) {
+          // The user hit Stop (chat button or global kill switch) while the
+          // final turn was in flight. A stopped run is NEVER completed, even if
+          // the model produced a wrap-up — record it as cancelled.
+          this.cancelledWorkflows.delete(args.workflowId);
+          db.prepare(`UPDATE agent_runs SET status='cancelled' WHERE run_id=?`).run(args.runId);
+          db.prepare(`UPDATE agent_states SET status='cancelled' WHERE workflow_id=?`).run(args.workflowId);
+          terminalOutcome = 'cancelled';
+          persistRunFacts(db, args.runId, {
+            outcome: 'cancelled', toolCallsTotal, toolCallsFailed: toolCallErrors,
+            toolCallsBlocked, mutationsTotal: mutations.length,
+            mutationsFailed: mutations.filter(m => !m.success).length,
+            errorDetail: wasStoppedByUser(args.workflowId) ? 'stopped_by_user' : 'cancelled_by_user',
+          });
+        } else if (sendUnfulfilled) {
           // A requested send never happened — this is NOT a completion. Report
           // it honestly so Delegate can't show a green "completed".
           db.prepare(`UPDATE agent_runs SET status='failed' WHERE run_id=?`).run(args.runId);
@@ -2198,11 +3051,6 @@ RULES — follow exactly, no exceptions:
           });
     }
 
-    // Restore the parent loop's citation token (null at the top level). A bare
-    // setActiveCitationToken(null) here would silence the parent's web/browser
-    // citation collection after it delegated to a sub-capability.
-    setActiveCitationToken(prevCitationToken);
-
     // Notify when a long run ends (> 10 s) — but say what ACTUALLY happened.
     // This sat outside every status branch, so a user who pressed Stop, or
     // whose run stalled or errored, still got "task complete" (audit C3).
@@ -2219,6 +3067,10 @@ RULES — follow exactly, no exceptions:
       sendNotification(title, goalSnippet);
     }
 
+    // Terminal run event: records that the LOOP ended and the outcome it
+    // recorded. Not a completion claim — task completion is verified from
+    // evidence in bodhi/, never from this event.
+    recordRunEvent(args.runId, 'done', { outcome: terminalOutcome });
     emit('agent:streamEnd');
   }
 
@@ -2324,6 +3176,8 @@ Rules:
     ];
 
     const startMs = Date.now();
+    // Linked for its lifetime so Stop on the caller reaches this loop's prompts.
+    this.workflowParents.set(workflowId, args.parentWorkflowId);
     try {
       await this.runReactLoop({
         workflowId,
@@ -2344,6 +3198,7 @@ Rules:
       ).get(childSessionId) as { content: string } | undefined;
       return row?.content?.trim() || '(the capability finished but produced no summary)';
     } finally {
+      this.workflowParents.delete(workflowId);
       // A composed sub-capability is a real skill execution — record it (tagged
       // 'invoke') so the dashboard reflects delegated work too. Tool counts use
       // the CHILD runId, so they never double-count against the parent skill.
@@ -2353,6 +3208,159 @@ Rules:
       // Drop the throwaway session (cascades its messages); the agent_run row and
       // its receipts persist so the sub-task stays auditable and in lineage.
       try { db.prepare(`DELETE FROM chat_sessions WHERE session_id=?`).run(childSessionId); } catch { /* ignore */ }
+    }
+  }
+
+  /** Dispatch goal_set / goal_update. Never throws — rejections come back as
+   *  an `Error:` tool result the model can react to. goal_set needs the
+   *  user's approval (existing tool-approval modal) unless the user's own
+   *  message already stated this outcome; unattended runs fail closed. */
+  private async invokeGoalTool(
+    name: string,
+    parsedArgs: Record<string, unknown>,
+    /** `runId`: the run asking, so the goal_set approval lands on its timeline. */
+    ctx: { workflowId: string; sessionId: string; userGoal: string; runId?: string },
+  ): Promise<string> {
+    const db = getDb();
+    try {
+      if (name === 'goal_update') {
+        const g = modelUpdateGoal(db, ctx.sessionId, { status: parsedArgs.status, reason: parsedArgs.reason });
+        return JSON.stringify({ ok: true, goal_id: g.goalId, status: g.status, reason: g.blockedReason });
+      }
+      const objective = typeof parsedArgs.objective === 'string' ? parsedArgs.objective : '';
+      const condition = typeof parsedArgs.condition === 'string' ? parsedArgs.condition : '';
+      if (!objective.trim() || !condition.trim()) {
+        return 'Error: goal_set needs both "objective" and "condition".';
+      }
+      // Fail fast (before prompting the user) if a goal already exists.
+      if (getOpenGoal(db, ctx.sessionId)) {
+        createGoal(db, { sessionId: ctx.sessionId, objective, condition }); // throws the clear GoalError
+      }
+      if (!userStatedOutcome(ctx.userGoal, objective, condition)) {
+        const rc = getRunContext();
+        if (rc?.lan || rc?.unattended) {
+          return 'Error: goal_set needs the user\'s approval, but this run is unattended, so no goal was set.';
+        }
+        const approved = await this.requestToolApproval({
+          workflowId: ctx.workflowId, sessionId: ctx.sessionId, toolName: 'goal_set', runId: ctx.runId,
+          args: { objective, condition },
+          note: 'Artha wants to make this the goal for this task. It will keep working until an independent check confirms the condition from evidence.',
+        });
+        if (!approved) return 'Error: The user declined this goal. Do not set it again; continue with the task as asked.';
+      }
+      const g = createGoal(db, { sessionId: ctx.sessionId, objective, condition });
+      return JSON.stringify({
+        ok: true, goal_id: g.goalId, status: g.status,
+        note: 'Goal recorded. When you finish, an independent check will verify the condition from evidence.',
+      });
+    } catch (err) {
+      if (err instanceof GoalError) return `Error: ${err.message}`;
+      return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /** The judge for the goal evaluator: a separate, tool-less completion call.
+   *  Prefers a different model from the actor when the router resolves one
+   *  for another phase, so the checker isn't the same model grading itself. */
+  private goalJudge(actorModel: string | null): JudgeFn | null {
+    let taskType: TaskType = 'synthesis';
+    for (const t of ['plan', 'synthesis'] as TaskType[]) {
+      const m = resolveRunModel(undefined, t);
+      if (m && m !== actorModel) { taskType = t; break; }
+    }
+    let client: ReturnType<typeof getActiveLLMClient>;
+    try { client = getActiveLLMClient(undefined, taskType); } catch { return null; }
+    return async (msgs) => {
+      const resp = await client.complete(msgs); // no tools offered — judgement only
+      return resp.choices[0]?.message?.content ?? '';
+    };
+  }
+
+  /** Run the stop gate for a session's open goal. Returns null when there is
+   *  no goal to gate (none, or paused by the user). Never throws. */
+  private async runGoalStopGate(a: {
+    runId: string; sessionId: string; goal: string; finalAnswer: string;
+    mutations: TrackedMutation[]; goalEvidence: Array<Omit<EvaluatorEvidence, 'id'>>;
+    goalRounds: number; toolCallsTotal: number; toolCallErrors: number; actorModel: string | null;
+    /** True once the user stopped the run. Checked again after the (async)
+     *  judge call so a stop that lands mid-evaluation can't complete the goal. */
+    stopped?: () => boolean;
+  }): Promise<{ action: 'complete' | 'continue' | 'needs_review'; gaps: string[]; feedback?: string; note: string | null } | null> {
+    // While the gate evaluates, the outbox holds this session's queue: a
+    // queued message must not start a new turn mid-evaluation.
+    this.goalGateInFlight.set(a.sessionId, (this.goalGateInFlight.get(a.sessionId) ?? 0) + 1);
+    try {
+      return await this.runGoalStopGateInner(a);
+    } finally {
+      const n = (this.goalGateInFlight.get(a.sessionId) ?? 1) - 1;
+      if (n > 0) this.goalGateInFlight.set(a.sessionId, n); else this.goalGateInFlight.delete(a.sessionId);
+      // The gate may have been the only thing holding a drain back.
+      if (!this.outbox.isActive(a.sessionId)) void this.outbox.tryDrain(a.sessionId).catch(() => {});
+    }
+  }
+
+  private async runGoalStopGateInner(a: Parameters<AgentOrchestrator['runGoalStopGate']>[0]): Promise<{ action: 'complete' | 'continue' | 'needs_review'; gaps: string[]; feedback?: string; note: string | null } | null> {
+    try {
+      const db = getDb();
+      const goal = getOpenGoal(db, a.sessionId);
+      if (!goal || goal.status === 'paused') return null;
+      // A goal blocked BEFORE this run, in a run that then did real work, is
+      // checked again below (bodhi/goalEvaluator.shouldRecheckBlockedGoal).
+      let runStartedAtMs: number | null = null;
+      try {
+        const row = db.prepare(`SELECT created_at FROM agent_runs WHERE run_id=?`).get(a.runId) as { created_at?: number } | undefined;
+        if (typeof row?.created_at === 'number') runStartedAtMs = row.created_at * 1000;
+      } catch { /* unknown start ⇒ no re-check */ }
+      const recheckBlocked = goal.status === 'blocked' && shouldRecheckBlockedGoal({
+        goalUpdatedAtMs: goal.updatedAt, runStartedAtMs,
+        succeededWork: a.mutations.some(m => m.success) || a.goalEvidence.some(e => e.status === 'succeeded'),
+      });
+      if (goal.status === 'blocked' && !recheckBlocked) {
+        // The model (or an earlier gate) said it can't proceed — honest, not a
+        // false completion. Surface the reason and end as needs review — the
+        // reason becomes a prose criterion so the run can't project as verified.
+        try {
+          const taskId = ensureRunTask(db, { runId: a.runId, sessionId: a.sessionId, goal: a.goal });
+          addGoalGapCriteria(db, taskId, 'awaiting_user_review', [`Blocked: ${goal.blockedReason ?? 'no reason given'}`]);
+        } catch { /* bookkeeping must never break a run */ }
+        return { action: 'needs_review', gaps: [], note: `⏸️ Goal blocked — needs you: ${goal.blockedReason ?? 'no reason given'}` };
+      }
+      // Deterministic criteria from the run's concrete claims, checked on disk.
+      const criteria = deriveCriteriaFromMutations(a.mutations).map(d => ({
+        description: d.description, required: d.required,
+        outcome: evaluateCriterion(d, (p: string) => fs.existsSync(p)),
+      }));
+      const verdict = await evaluateGoal({
+        objective: goal.objective, condition: goal.condition,
+        runFacts: {
+          toolCallsTotal: a.toolCallsTotal, toolCallsFailed: a.toolCallErrors,
+          mutationsTotal: a.mutations.length, mutationsFailed: a.mutations.filter(m => !m.success).length,
+        },
+        criteria,
+        evidence: numberEvidence(a.goalEvidence),
+        finalAnswer: a.finalAnswer,
+      }, this.goalJudge(a.actorModel));
+      if (a.stopped?.()) return null; // stopped while judging — never complete
+      const r = applyStopGate(db, {
+        // A re-check of a blocked goal gets no further feedback rounds: it
+        // either completes on this run's evidence or stays "needs you".
+        goal, verdict, roundsUsed: recheckBlocked ? MAX_GOAL_FEEDBACK_ROUNDS : a.goalRounds,
+        runId: a.runId, sessionId: a.sessionId, objective: a.goal,
+      });
+      const gapList = r.gaps.map(g => `- ${g}`).join('\n');
+      const note = r.action === 'complete'
+        ? `🎯 Goal met — confirmed by an independent check: ${goal.condition}`
+        : r.action === 'needs_review'
+          ? verdict.verdict === 'unmet'
+            ? recheckBlocked
+              ? `⏸️ Goal still not met after this run — needs you. Still missing:\n${gapList}`
+              : `⚠️ Goal not met after ${MAX_GOAL_FEEDBACK_ROUNDS} more attempts — needs you. Still missing:\n${gapList}`
+            : `⚠️ Goal could not be verified automatically — needs your review.${gapList ? `\n${gapList}` : ''}`
+          : null;
+      return { action: r.action, gaps: r.gaps, feedback: r.feedback, note };
+    } catch (err) {
+      console.warn('[Artha] goal stop gate skipped:', (err as Error)?.name ?? 'Error');
+      return null;
     }
   }
 
@@ -2431,6 +3439,10 @@ Rules:
     recordStep: (idx: number, kind: string, payload: unknown) => void,
     stepIdx: number,
   ): Promise<{ sent: boolean; to: string | null; reason?: string }> {
+    // Unattended (scheduled / trigger) and LAN runs never prompt and never
+    // send: the main loop's floor already blocked email_send, so this
+    // fallback must not raise a send approval on the desktop user's screen.
+    if (confirmTierMustFailClosed(getRunContext())) return { sent: false, to: null, reason: 'unattended' };
     // Deterministic first (no model): parse the fields straight from the goal.
     // Only fall back to an LLM for genuinely free-form phrasing — so a structured
     // "email X, subject "Y", body "Z"" works identically on ANY model, or none.
@@ -2441,6 +3453,7 @@ Rules:
       workflowId: args.workflowId, sessionId: args.sessionId,
       toolName: 'email_send', args: fields,
       note: `Send this email to ${fields.to} through your Gmail.`,
+      runId: args.runId,
     });
     if (!approved) return { sent: false, to: fields.to, reason: 'declined' };
     try {
@@ -2462,15 +3475,18 @@ Rules:
       `INSERT INTO agent_steps (step_id, run_id, idx, kind, payload, messages_snapshot)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
+    // Returns the new step_id so a tool call can attribute its undo entry
+    // and file checkpoints to the exact step (rewindRunToStep target).
     return (
       idx: number,
       kind: string,
       payload: unknown,
       snapshot?: OpenAI.ChatCompletionMessageParam[]
-    ): void => {
+    ): string => {
+      const stepId = crypto.randomUUID();
       try {
         insert.run(
-          crypto.randomUUID(),
+          stepId,
           runId,
           idx,
           kind,
@@ -2480,6 +3496,7 @@ Rules:
       } catch (err) {
         console.warn('[Artha] step record failed:', err);
       }
+      return stepId;
     };
   }
 

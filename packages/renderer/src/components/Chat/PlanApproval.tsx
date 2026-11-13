@@ -2,9 +2,13 @@
  * PlanApproval — modal shown when the orchestrator pauses a workflow with
  * `requiresApproval=true` (typically because the plan includes destructive
  * filesystem mutations). Renders nothing when there's no pending plan.
+ *
+ * Structured review: the user can comment on any step and choose Accept,
+ * Accept with comments (the planner revises the plan once and asks again),
+ * or Reject with an optional reason (the run ends cancelled-by-user).
  */
-import { useEffect } from 'react';
-import { CheckCircle, XCircle, ListChecks, Trash2, FolderInput, FilePlus2, Globe, Workflow, RotateCcw, AlertTriangle, Coins } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckCircle, XCircle, ListChecks, Trash2, FolderInput, FilePlus2, Globe, Workflow, RotateCcw, AlertTriangle, Coins, MessageSquare } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
 /** A single blast-radius chip (icon + label), colour-coded by severity. */
@@ -24,13 +28,27 @@ function ImpactChip({ icon, label, tone }: { icon: React.ReactNode; label: strin
 
 export default function PlanApproval() {
   const { pendingPlan, setPendingPlan } = useChatStore();
+  /** Per-step comment drafts, keyed by step index. */
+  const [comments, setComments] = useState<Record<number, string>>({});
+  /** Which step's comment box is open. */
+  const [openComment, setOpenComment] = useState<number | null>(null);
+  /** Reject flow: null = not rejecting; string = reason draft. */
+  const [rejectReason, setRejectReason] = useState<string | null>(null);
+
+  // A new (or revised) plan starts with a clean review.
+  useEffect(() => {
+    setComments({}); setOpenComment(null); setRejectReason(null);
+  }, [pendingPlan]);
 
   // Keyboard parity with the other gates: Enter approves, Esc cancels. Hook is
   // declared before the early return so the order is stable across renders.
+  // Ignored while typing a comment/reason so Enter doesn't approve mid-sentence.
   useEffect(() => {
     if (!pendingPlan) return;
     const plan = pendingPlan;
     const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
       if (e.key === 'Enter') { e.preventDefault(); setPendingPlan(null); window.artha.agent.approvePlan(plan.workflowId, true); }
       if (e.key === 'Escape') { e.preventDefault(); setPendingPlan(null); window.artha.agent.approvePlan(plan.workflowId, false); }
     };
@@ -41,13 +59,17 @@ export default function PlanApproval() {
   if (!pendingPlan) return null;
 
   const br = pendingPlan.blastRadius;
+  const stepComments = pendingPlan.steps
+    .filter(s => (comments[s.index] ?? '').trim())
+    .map(s => ({ step_index: s.index, original_text: s.description, comment: comments[s.index].trim() }));
+  const revised = (pendingPlan.revisions ?? 0) > 0;
 
   /** Dismiss the modal first, then fire IPC — gives the user instant feedback
    *  even on a slow IPC round-trip when starting a long-running workflow. */
-  const approve = (approved: boolean) => {
+  const submit = (review: Parameters<typeof window.artha.agent.reviewPlan>[1]) => {
     const plan = pendingPlan;
     setPendingPlan(null); // Dismiss modal immediately — don't wait for execution
-    window.artha.agent.approvePlan(plan.workflowId, approved); // Fire and continue
+    void window.artha.agent.reviewPlan(plan.workflowId, review); // Fire and continue
   };
 
   return (
@@ -60,6 +82,17 @@ export default function PlanApproval() {
             <p className="text-xs text-artha-muted mt-0.5">This task requires your approval before executing</p>
           </div>
         </div>
+
+        {/* ── Who asked ────────────────────────────────────────────────────
+            A plan from a LAN teammate or a background task is labelled, so the
+            host never approves it believing they asked for it themselves. */}
+        {pendingPlan.origin && pendingPlan.origin !== 'local' && (
+          <div className="mx-6 mt-4 rounded-xl border border-artha-warn/30 bg-artha-warn/10 px-3 py-2 text-xs text-artha-text">
+            {pendingPlan.origin === 'lan'
+              ? `Requested by a teammate over your network${pendingPlan.originActor ? ` (${pendingPlan.originActor})` : ''}, not by you.`
+              : 'Requested by a scheduled or background task, not by you.'}
+          </div>
+        )}
 
         <div className="px-6 py-4">
           <p className="text-xs text-artha-subtle mb-3 font-medium uppercase tracking-wide">Goal</p>
@@ -98,10 +131,13 @@ export default function PlanApproval() {
             </div>
           )}
 
-          <p className="text-xs text-artha-subtle mb-3 font-medium uppercase tracking-wide">Steps ({pendingPlan.steps.length})</p>
-          <ol className="space-y-2">
+          <p className="text-xs text-artha-subtle mb-3 font-medium uppercase tracking-wide">
+            Steps ({pendingPlan.steps.length}){revised ? ' · revised with your comments' : ''}
+          </p>
+          <ol className="space-y-2 max-h-[40vh] overflow-y-auto">
             {pendingPlan.steps.map((step) => (
-              <li key={step.index} className="flex items-start gap-3 text-sm">
+              <li key={step.index} className="text-sm">
+              <div className="flex items-start gap-3">
                 <span className="shrink-0 w-5 h-5 rounded-full bg-artha-accent/12 text-artha-accent text-xs flex items-center justify-center font-medium">
                   {step.index + 1}
                 </span>
@@ -113,21 +149,74 @@ export default function PlanApproval() {
                     {step.toolName}
                   </code>
                 )}
+                {/* Comment on this specific step. */}
+                <button
+                  type="button"
+                  title="Comment on this step"
+                  aria-label={`Comment on step ${step.index + 1}`}
+                  onClick={() => setOpenComment(openComment === step.index ? null : step.index)}
+                  className={`${step.toolName ? '' : 'ml-auto '}shrink-0 p-1 rounded hover:bg-artha-text/5 ${(comments[step.index] ?? '').trim() ? 'text-artha-accent' : 'text-artha-muted'}`}
+                >
+                  <MessageSquare size={13} />
+                </button>
+              </div>
+              {openComment === step.index && (
+                <textarea
+                  autoFocus
+                  value={comments[step.index] ?? ''}
+                  onChange={e => setComments(prev => ({ ...prev, [step.index]: e.target.value }))}
+                  placeholder="What should change about this step?"
+                  rows={2}
+                  className="mt-2 ml-8 w-[calc(100%-2rem)] px-3 py-2 rounded-lg border border-artha-border bg-artha-bg text-xs text-artha-text focus:outline-none focus:border-artha-accent"
+                />
+              )}
               </li>
             ))}
           </ol>
         </div>
 
+        {rejectReason !== null ? (
+          // Reject flow: optional reason, then confirm. Ends the run as
+          // cancelled-by-user (never completed).
+          <div className="px-6 py-4 border-t border-artha-border space-y-3">
+            <input
+              autoFocus
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              placeholder="Why are you rejecting this plan? (optional)"
+              className="w-full px-3 py-2 rounded-lg border border-artha-border bg-artha-bg text-sm text-artha-text focus:outline-none focus:border-artha-danger"
+            />
+            <div className="flex gap-3">
+              <button onClick={() => setRejectReason(null)}
+                className="px-4 py-2 rounded-lg border border-artha-border text-sm text-artha-muted hover:text-artha-text">
+                Back
+              </button>
+              <button onClick={() => submit({ decision: 'reject', reason: rejectReason.trim() || undefined })}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-artha-danger/40 bg-artha-danger/10 text-sm text-artha-danger font-medium">
+                <XCircle size={15} /> Reject plan
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="flex gap-3 px-6 py-4 border-t border-artha-border">
-          <button onClick={() => approve(false)}
+          <button onClick={() => setRejectReason('')}
             className="flex items-center gap-2 px-4 py-2 rounded-lg border border-artha-border hover:bg-artha-danger/8 hover:border-artha-danger/40 text-sm text-artha-text transition-colors">
-            <XCircle size={15} className="text-artha-danger" /> Cancel
+            <XCircle size={15} className="text-artha-danger" /> Reject
           </button>
-          <button onClick={() => approve(true)}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-artha-on-accent text-sm font-medium transition-all duration-200 active:scale-95">
-            <CheckCircle size={15} /> Approve & Execute
-          </button>
+          {stepComments.length > 0 ? (
+            <button onClick={() => submit({ decision: 'accept_with_comments', comments: stepComments })}
+              title={revised ? 'Run with these comments as guidance' : 'Artha revises the plan with your comments and asks again'}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover text-artha-on-accent text-sm font-medium transition-all duration-200 active:scale-95">
+              <MessageSquare size={15} /> Accept with {stepComments.length} comment{stepComments.length === 1 ? '' : 's'}
+            </button>
+          ) : (
+            <button onClick={() => submit({ decision: 'accept' })}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-artha-accent hover:bg-artha-accent-hover hover:shadow-glow-sm text-artha-on-accent text-sm font-medium transition-all duration-200 active:scale-95">
+              <CheckCircle size={15} /> Accept & Execute
+            </button>
+          )}
         </div>
+        )}
       </div>
     </div>
   );

@@ -3,6 +3,10 @@
  * connecting a conversation/run to the governance + audit features:
  *   • Receipts  — every tool call (incl. policy-blocked / dry-run) with its
  *                 plain-English effect, content hash, and governing tier.
+ *   • Timeline  — the run event log (tool calls, approvals / questions /
+ *                 plan review, goal-gate decisions, kill-switch stops, stalls,
+ *                 the loop's recorded outcome), via lib/runTimeline.ts. Plan
+ *                 reviews recorded under the workflow id are linked in.
  *   • Steps     — the raw ReAct trace, with "Fork from here" on any step that
  *                 captured a replayable snapshot (time travel).
  *
@@ -12,8 +16,9 @@
 import { useEffect, useState } from 'react';
 import {
   X, ReceiptText, CheckCircle2, XCircle, ShieldX, Eye, FileEdit, Hash,
-  GitBranch, ChevronDown, ChevronRight, Undo2,
+  GitBranch, ChevronDown, ChevronRight, Undo2, Activity,
 } from 'lucide-react';
+import { reduceRunTimeline, type TimelineRow, type TimelineTone } from '../../lib/runTimeline';
 import { useChatStore } from '../../stores/chat';
 import { toast } from '../../stores/toast';
 
@@ -34,11 +39,18 @@ const STATUS_META: Record<Receipt['status'], { icon: typeof CheckCircle2; color:
   skipped: { icon: Eye,          color: 'text-artha-accent',  label: 'dry run' },
 };
 
+/** Dot colour per timeline tone. */
+const TONE_DOT: Record<TimelineTone, string> = {
+  info: 'bg-artha-accent', ok: 'bg-artha-success', warn: 'bg-artha-warn', danger: 'bg-artha-danger', muted: 'bg-artha-subtle',
+};
+
 export default function RunInspector() {
   const { inspectorRunId, setInspectorRunId, setActiveTab, setActiveSession, setMessages } = useChatStore();
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [steps, setSteps] = useState<Step[]>([]);
   const [showSteps, setShowSteps] = useState(false);
+  // Run event timeline rows (null while loading / unavailable).
+  const [timeline, setTimeline] = useState<TimelineRow[] | null>(null);
   const [forking, setForking] = useState(false);
   // Reversible file actions Artha can still undo. Global (recent), not strictly
   // scoped to this run — there's no run-id on the undo registry — so it's shown
@@ -53,6 +65,11 @@ export default function RunInspector() {
       window.artha.receipts.listByRun(inspectorRunId),
       window.artha.timetravel.getSteps(inspectorRunId),
     ]).then(([r, s]) => { setReceipts(r as Receipt[]); setSteps(s as Step[]); });
+    setTimeline(null);
+    // Separate from the receipts fetch so a timeline failure never hides receipts.
+    window.artha.run.timeline(inspectorRunId)
+      .then(evs => setTimeline(reduceRunTimeline(evs)))
+      .catch(() => setTimeline([]));
     window.artha.undo.list().then((u) => setUndoables(u.map(x => ({ id: x.id, label: x.label })))).catch(() => setUndoables([]));
   }, [inspectorRunId]);
 
@@ -182,6 +199,36 @@ export default function RunInspector() {
                   );
                 })}
               </div>
+            )}
+          </div>
+
+          {/* Run event timeline */}
+          <div>
+            <h3 className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-artha-subtle font-semibold mb-2">
+              <Activity size={11} /> Timeline
+            </h3>
+            {timeline === null ? (
+              <p className="text-xs text-artha-muted/70">Loading…</p>
+            ) : timeline.length === 0 ? (
+              <p className="text-xs text-artha-muted/70">No events were recorded for this run.</p>
+            ) : (
+              <ol className="space-y-1">
+                {timeline.map(row => (
+                  <li key={row.key} className="flex items-start gap-2 rounded-md border border-artha-border bg-artha-s2 px-2.5 py-1.5">
+                    <span className={`mt-1 h-1.5 w-1.5 rounded-full shrink-0 ${TONE_DOT[row.tone]}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] text-artha-text truncate">{row.title}</span>
+                        {row.linked && <span className="text-[9px] text-artha-muted" title="Recorded before the run started">· before run</span>}
+                        <span className="ml-auto text-[9px] font-mono text-artha-subtle shrink-0">
+                          {new Date(row.ts).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      {row.detail && <p className="text-[10px] text-artha-muted break-words">{row.detail}</p>}
+                    </div>
+                  </li>
+                ))}
+              </ol>
             )}
           </div>
 

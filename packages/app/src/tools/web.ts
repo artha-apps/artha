@@ -9,6 +9,7 @@
  *   - Honest UA: identifies itself as a local agent
  *   - Citable: every result carries source URL + title for chat citations
  */
+import { AsyncLocalStorage } from 'async_hooks';
 import OpenAI from 'openai';
 import robotsParser from 'robots-parser';
 import { getDb } from '../db/schema';
@@ -121,24 +122,26 @@ export function drainCitations(token: string): Citation[] {
   });
 }
 
-let activeToken: string | null = null;
+/** Which workflow the current async call chain belongs to. One process-wide
+ *  variable used to hold this, saved/restored like a stack — but concurrent
+ *  loops (a chat run while a scheduled run works) interleave rather than nest,
+ *  so citations and browser hand-offs were filed under whichever loop started
+ *  last. AsyncLocalStorage gives every ReAct loop its own value that follows
+ *  its awaits; a nested loop's scope ends with it, restoring the parent's. */
+const tokenScope = new AsyncLocalStorage<string>();
 
-/** Set (or clear) which workflow token `record()` accumulates citations under.
- *  The orchestrator sets this at the start and end of each ReAct loop so that
- *  concurrent tool calls in separate chats don't cross-contaminate. */
-export function setActiveCitationToken(token: string | null): void {
-  activeToken = token;
+/** Run `fn` (a whole ReAct loop) with `token` as its citation/workflow token. */
+export function runWithCitationToken<T>(token: string, fn: () => T): T {
+  return tokenScope.run(token, fn);
 }
 
-/** The currently-active citation token (or null). Lets a nested ReAct loop (a
- *  sub-capability) save the parent's token before it runs and RESTORE it after,
- *  instead of clobbering it to null — otherwise the parent's later web/browser
- *  calls would stop being attributed. */
+/** The workflow token of the loop this call runs in (or null outside one). */
 export function getActiveCitationToken(): string | null {
-  return activeToken;
+  return tokenScope.getStore() ?? null;
 }
 
 function record(citation: Citation): void {
+  const activeToken = getActiveCitationToken();
   if (!activeToken) return;
   const list = pendingCitations.get(activeToken);
   if (list) list.push(citation);

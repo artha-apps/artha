@@ -53,6 +53,9 @@ export interface ReceiptInput {
   tier: PolicyTier;
   isMutation: boolean;
   durationMs: number;
+  /** Optional caller-supplied effect text, used instead of describeEffect()
+   *  when the caller knows the precise reason (e.g. stopped_by_user). */
+  effect?: string;
 }
 
 /** Filesystem tools whose effect is worth describing in concrete before→after
@@ -106,11 +109,11 @@ export function describeEffect(
 /** Tools that change durable state — flagged in the receipt so the UI can show
  *  a "changed your files" badge and the audit view can filter to real effects. */
 export const RECEIPT_MUTATION_TOOLS = new Set([
-  // Kept in sync with MUTATION_TOOLS in agent/orchestrator.ts. Dead entries
-  // (fs_write_file, fs_rename_file) removed; the state-changing capabilities
-  // users actually run added, so receipts stop under-reporting real effects.
+  // Kept in sync with MUTATION_TOOLS in agent/orchestrator.ts. The dead entry
+  // fs_rename_file was removed; the state-changing capabilities users
+  // actually run were added, so receipts stop under-reporting real effects.
   'fs_move_file', 'fs_move_batch', 'fs_copy_file', 'fs_delete_file',
-  'fs_create_directory',
+  'fs_create_directory', 'fs_write_file',
   'docs_generate',
   'email_compose',
   'browser_click', 'browser_type', 'browser_navigate',
@@ -120,7 +123,7 @@ export const RECEIPT_MUTATION_TOOLS = new Set([
 /** Persist one receipt. Best-effort: a logging failure must never break a run. */
 export function recordReceipt(input: ReceiptInput): void {
   try {
-    const effect = describeEffect(input.toolName, input.args, input.result, input.status);
+    const effect = input.effect ?? describeEffect(input.toolName, input.args, input.result, input.status);
     const hash = input.status === 'ok' || input.status === 'error' ? hashResult(input.result) : '';
     getDb().prepare(`
       INSERT INTO tool_receipts

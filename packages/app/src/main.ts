@@ -13,10 +13,14 @@
  * The single-instance lock at the bottom ensures only one Artha window can run
  * at a time; a second launch attempt brings the existing window to focus.
  */
-import { app, BrowserWindow, shell, dialog } from 'electron';
+import { app, BrowserWindow, shell, dialog, globalShortcut, powerMonitor } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
-import { registerIpcHandlers } from './ipc/handlers';
+import { registerIpcHandlers, getOrchestrator } from './ipc/handlers';
+import { createScheduledRunner } from './scheduler/scheduledRunner';
+import { runWithContext } from './agent/runContext';
+import { pruneRunEvents } from './agent/runEventRetention';
+import { listActiveRuns } from './agent/runEvents';
 import { initDatabase, runMigrations, getDb } from './db/schema';
 import { BrowserController } from './browser/controller';
 import { SchedulerService } from './scheduler/scheduler';
@@ -26,6 +30,10 @@ import { ensureModelReady, unloadActiveModel, stopOllamaIfStarted, setManagedRun
 import { ensureAgentModel } from './router/modelProvisioner';
 import { sendNotification } from './notify';
 import { resolveQaProfile } from './system/qaProfile';
+import { installKillSwitch } from './desktop/runtime';
+import { desktopActionQueue } from './desktop/actionQueue';
+import { hideControlOverlay } from './controlOverlay';
+import { recordReceipt } from './bodhi/receipts';
 
 /** Probe whether the local Ollama runtime is reachable. Best-effort with a
  *  short timeout so a missing Ollama can't stall startup. Drives the
@@ -134,6 +142,35 @@ async function createWindow(): Promise<void> {
   }
   startHealthCheckpointing();
 
+  // run_events retention (agent/runEventRetention.ts): keep the last 30 days
+  // or the last 200 runs, whichever is larger. Runs once at launch and then
+  // daily; every prune logs what it removed, and a failure never blocks launch.
+  const pruneRunEventLog = (): void => {
+    try {
+      pruneRunEvents(getDb(), { activeRunIds: listActiveRuns().map(r => r.runId) });
+    } catch (err) {
+      console.warn('[Artha] run_events retention could not start:', err);
+    }
+  };
+  pruneRunEventLog();
+  setInterval(pruneRunEventLog, 24 * 60 * 60 * 1000).unref();
+
+  // Durability: persistent undo, pre-mutation file checkpoints, keep-awake.
+  // Each is independent and best-effort — a failure here must not block launch.
+  try {
+    const { configureUndoStore } = await import('./agent/undo');
+    configureUndoStore(getDb());
+  } catch (err) { console.warn('[Artha] durable undo unavailable:', err); }
+  try {
+    const { configureCheckpointStore } = await import('./agent/checkpoints');
+    configureCheckpointStore({ db: getDb(), dir: path.join(app.getPath('userData'), 'checkpoints') });
+  } catch (err) { console.warn('[Artha] file checkpoints unavailable:', err); }
+  try {
+    const { installKeepAwake } = await import('./system/keepAwake');
+    await installKeepAwake(() =>
+      (getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json?: string } | undefined)?.settings_json);
+  } catch (err) { console.warn('[Artha] keep-awake unavailable:', err); }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -159,29 +196,91 @@ async function createWindow(): Promise<void> {
   // Register all IPC handlers (agent, LLM, MCP, docs, RAG, web, browser, scheduler)
   registerIpcHandlers(mainWindow);
 
+  // Global kill switch: a system-wide stop shortcut, held only while a run is
+  // active. A press cancels every run (never "completed"), rejects queued
+  // desktop actions, hides the control overlay and hands the browser back.
+  installKillSwitch({
+    register: (acc, onPress) => globalShortcut.register(acc, onPress),
+    unregister: (acc) => globalShortcut.unregister(acc),
+    rejectDesktopActions: () => desktopActionQueue.stopAll(),
+    hideOverlay: hideControlOverlay,
+    setBrowserDrivingToUser: () => {
+      const b = BrowserController.getInstance();
+      b.cancelHandoff();
+      b.setDrivingMode('user');
+    },
+    recordStopReceipt: (run, info) => recordReceipt({
+      runId: run.runId, sessionId: run.sessionId, workflowId: run.workflowId,
+      // Sorts after the run's real tool calls in the receipt list.
+      idx: 1_000_000,
+      toolName: 'stop_shortcut',
+      args: { reason: 'stopped_by_user', desktopActionsRejected: info.actionsRejected },
+      result: 'stopped_by_user',
+      status: 'blocked',
+      tier: 'auto',
+      isMutation: false,
+      durationMs: 0,
+      effect: `stopped_by_user — run cancelled from the global stop shortcut${info.actionsRejected ? `; ${info.actionsRejected} desktop action(s) rejected` : ''}.`,
+    }),
+  }, (() => {
+    try {
+      const row = getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json?: string } | undefined;
+      const v = JSON.parse(row?.settings_json ?? '{}').desktop_stop_shortcut;
+      return typeof v === 'string' && v ? v : undefined;
+    } catch { return undefined; }
+  })());
+
   // Initialise the scheduler after IPC handlers are ready (orchestrator is live).
-  // The runner creates a fresh session per task so scheduled runs are isolated.
-  SchedulerService.getInstance().init(async (prompt: string) => {
-    const { getDb } = await import('./db/schema');
-    const db = getDb();
-    const sessionId = crypto.randomUUID();
-    // origin='scheduled' so these sessions are identifiable without the old
-    // title-prefix heuristic (and stay out of the normal chat sidebar).
-    db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'scheduled')`)
-      .run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
-    // Dynamically import to avoid circular deps — orchestrator is already constructed by registerIpcHandlers.
-    const { AgentOrchestrator } = await import('./agent/orchestrator');
-    const { runWithContext } = await import('./agent/runContext');
-    const orch = new AgentOrchestrator(mainWindow!);
-    // Mark the run unattended so a `confirm`-tier tool policy fails closed
-    // instead of popping a desktop modal nobody is watching at fire time.
-    await runWithContext({ actor: 'scheduler', lan: false, unattended: true }, () =>
-      orch.handleMessage(sessionId, prompt),
-    );
-    // Hand the session back so the scheduler can read the run's REAL outcome
-    // instead of inferring success from "the promise resolved".
-    return { sessionId };
+  // The runner creates a fresh session per task so scheduled runs are isolated,
+  // but runs them on the SHARED app-wide orchestrator (scheduler/scheduledRunner.ts)
+  // so the kill switch, cancelWorkflow and outbox state cover them too.
+  SchedulerService.getInstance().init(createScheduledRunner({
+    getOrchestrator,
+    runWithContext,
+    createSession: (prompt, opts) => {
+      const db = getDb();
+      const sessionId = crypto.randomUUID();
+      // origin='scheduled' so these sessions are identifiable without the old
+      // title-prefix heuristic (and stay out of the normal chat sidebar).
+      db.prepare(`INSERT INTO chat_sessions (session_id, title, origin) VALUES (?, ?, 'scheduled')`)
+        .run(sessionId, `Scheduled: ${prompt.slice(0, 40)}`);
+      // Folder-triggered runs are confined to the watched folder: attaching it
+      // as the session's only scope makes the file tools enforce that boundary.
+      if (opts?.scopeFolder) {
+        db.prepare(`INSERT OR IGNORE INTO session_scopes (session_id, path, kind) VALUES (?, ?, 'folder')`)
+          .run(sessionId, opts.scopeFolder);
+      }
+      return sessionId;
+    },
+  }), {
+    // Hold probes: a run that cannot succeed is put on hold BEFORE it starts.
+    googleConnected: () => {
+      try {
+        const row = getDb().prepare(`SELECT refresh_token FROM oauth_tokens WHERE provider='google'`).get() as { refresh_token: string | null } | undefined;
+        return !!row?.refresh_token;
+      } catch { return false; }
+    },
+    modelUnavailable: async () => {
+      const { resolveTransport } = await import('./llm/client');
+      const { isModelInstalled } = await import('./llm/ollamaPull');
+      let t: { baseUrl: string; model: string };
+      try { t = resolveTransport(getDb(), undefined, 'agent'); } catch { return 'no model is configured.'; }
+      // Only local Ollama models are probed; cloud endpoints are assumed reachable.
+      if (!/localhost:11434|127\.0\.0\.1:11434/.test(t.baseUrl)) return null;
+      const installed = await Promise.race([
+        isModelInstalled(t.model).catch(() => false),
+        new Promise<boolean>(r => setTimeout(() => r(false), 5000)),
+      ]);
+      return installed
+        ? null : `the local model "${t.model}" is not running or not installed.`;
+    },
   }).catch(err => console.error('[Artha] Scheduler init failed:', err));
+
+  // Missed-run catch-up on wake: a slot that passed while the machine slept
+  // runs once, late; then every task is re-armed from "now".
+  powerMonitor.on('resume', () => {
+    void SchedulerService.getInstance().handleWake().catch(err => console.error('[Artha] Scheduler wake failed:', err));
+  });
 
   // Load renderer
   if (isDev) {
@@ -336,6 +435,9 @@ if (!gotSingleInstanceLock) {
   // started it — we never stop a server the user was already running).
   // preventDefault + app.exit lets the best-effort unload finish first.
   let quitting = false;
+  // Never leave a global shortcut registered after Artha exits.
+  app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* ignore */ } });
+
   app.on('before-quit', (e) => {
     if (quitting) return;
     e.preventDefault();

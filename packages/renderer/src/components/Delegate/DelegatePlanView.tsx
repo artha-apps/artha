@@ -7,21 +7,35 @@
  * paused at `awaiting_confirmation`, this view shows the confirmation controls.
  * Safe plans (research/summarize/draft/analyze/plan) skip the gate and run
  * straight through, so the controls simply don't render.
+ *
+ * Step comments (S5 parity with Chat's PlanApproval): while awaiting approval
+ * the user can comment on any step, then Approve, Approve with comments
+ * (carried into the run as notes, see lib/delegateParity.ts) or Cancel.
  */
-import { Loader2, Check, Circle, AlertTriangle, ShieldAlert, Wrench, Bot } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Loader2, Check, Circle, AlertTriangle, ShieldAlert, Wrench, Bot, MessageSquare } from 'lucide-react';
 import type { DelegatePlan, DelegateStatus } from '../../services/delegateService';
+import type { PlanReview } from '../../../../app/src/agent/planReview';
 import { tabTheme } from '../../lib/tabTheme';
+import { draftsToComments } from '../../lib/delegateParity';
 
 interface Props {
   plan: DelegatePlan;
   status: DelegateStatus;
-  onConfirm: () => void;
-  onCancel: () => void;
+  /** Submit the S5-style review (accept / accept_with_comments / reject). */
+  onReview: (review: PlanReview) => void;
 }
 
-export default function DelegatePlanView({ plan, status, onConfirm, onCancel }: Props) {
+export default function DelegatePlanView({ plan, status, onReview }: Props) {
   const theme = tabTheme('delegate');
   const awaiting = status === 'awaiting_confirmation';
+  /** Per-step comment drafts, keyed by step index. */
+  const [drafts, setDrafts] = useState<Record<number, string>>({});
+  /** Which step's comment box is open. */
+  const [openComment, setOpenComment] = useState<number | null>(null);
+  // A new plan starts with a clean review.
+  useEffect(() => { setDrafts({}); setOpenComment(null); }, [plan.goal]);
+  const comments = draftsToComments(plan, drafts);
 
   return (
     <div className="rounded-xl border border-artha-border bg-artha-surface p-4">
@@ -53,6 +67,15 @@ export default function DelegatePlanView({ plan, status, onConfirm, onCancel }: 
             <div className="min-w-0 flex-1">
               <div className="flex items-start gap-2">
                 <span className="text-sm text-artha-text leading-snug">{step.description}</span>
+                {awaiting && (
+                  <button
+                    onClick={() => setOpenComment(o => (o === step.index ? null : step.index))}
+                    title="Comment on this step"
+                    className={`ml-auto shrink-0 p-0.5 rounded hover:text-artha-text ${(drafts[step.index] ?? '').trim() ? 'text-artha-accent' : 'text-artha-subtle'}`}
+                  >
+                    <MessageSquare size={12} />
+                  </button>
+                )}
                 {step.external && (
                   <span className="inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium text-amber-500 bg-amber-500/10 border border-amber-500/30">
                     <ShieldAlert size={10} /> needs approval
@@ -77,6 +100,16 @@ export default function DelegatePlanView({ plan, status, onConfirm, onCancel }: 
                   ))}
                 </div>
               )}
+              {awaiting && openComment === step.index && (
+                <textarea
+                  autoFocus
+                  value={drafts[step.index] ?? ''}
+                  onChange={(e) => setDrafts(d => ({ ...d, [step.index]: e.target.value }))}
+                  rows={2}
+                  placeholder="What should change about this step?"
+                  className="mt-2 w-full resize-none rounded-lg bg-artha-surface border border-artha-border px-2 py-1.5 text-xs text-artha-text placeholder-artha-muted focus:border-artha-accent/50 focus:outline-none"
+                />
+              )}
             </div>
           </li>
         ))}
@@ -98,15 +131,25 @@ export default function DelegatePlanView({ plan, status, onConfirm, onCancel }: 
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {comments.length > 0 ? (
+              <button
+                onClick={() => onReview({ decision: 'accept_with_comments', comments })}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                style={{ backgroundColor: theme.accent }}
+              >
+                <MessageSquare size={13} /> Approve with {comments.length} comment{comments.length === 1 ? '' : 's'}
+              </button>
+            ) : (
+              <button
+                onClick={() => onReview({ decision: 'accept' })}
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                style={{ backgroundColor: theme.accent }}
+              >
+                Approve &amp; run
+              </button>
+            )}
             <button
-              onClick={onConfirm}
-              className="px-4 py-2 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90"
-              style={{ backgroundColor: theme.accent }}
-            >
-              Approve &amp; run
-            </button>
-            <button
-              onClick={onCancel}
+              onClick={() => onReview({ decision: 'reject' })}
               className="px-4 py-2 rounded-lg text-sm font-medium text-artha-muted border border-artha-border hover:text-artha-text hover:border-artha-muted transition-colors"
             >
               Cancel

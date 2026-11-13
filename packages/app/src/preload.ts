@@ -5,6 +5,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AgentRoute } from './router/agentRouter';
 import type { SkillMetric, SkillModelStats, SkillToolUsage, SkillFailure } from './skills/metrics';
+import type { Goal } from './bodhi/goals';
+import type { Interaction } from './agent/interactions';
+
+/** A persistent goal as the renderer sees it: the row plus elapsed active time. */
+export type GoalView = Goal & { elapsedMs: number };
+
+/** A human-in-the-loop pause as delivered to the renderer (type-only import —
+ *  the preload never loads the main-process module). */
+export type InteractionDTO = Interaction;
 
 /**
  * The full type of `window.artha` as seen by the renderer. Inferred from the
@@ -22,6 +31,32 @@ export interface ModelStatus {
   detail?: string;
   /** On 'no_model': whether Ollama exists (onboarding's install card, B1). */
   ollamaInstalled?: boolean;
+}
+
+/** A queued outbox message as the renderer sees it. Mirrors `OutboxItem`
+ *  in agent/outbox.ts (kept local: preload must not import main-process DB code). */
+export interface OutboxItemView {
+  id: string;
+  sessionId: string;
+  position: number;
+  status: 'ready' | 'sending' | 'editing' | 'sent' | 'cancelled';
+  content: string;
+  attachments: { name: string; mime: string; data: string }[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A session's outbox state: pending items in send order plus pause/steer
+ *  flags. pausedReason 'cancel' ⇒ the UI shows "Queue paused after cancel". */
+export interface OutboxSnapshot {
+  sessionId: string;
+  items: OutboxItemView[];
+  paused: boolean;
+  pausedReason: 'user' | 'cancel' | 'stop' | null;
+  /** Item ids waiting to be injected at the next tool-call boundary. */
+  steering: string[];
+  /** Whether a run is in flight in the session (per the main process). */
+  active: boolean;
 }
 
 /** A parsed Bring-Your-Own-Memory entry, exchanged with the BYOM importer.
@@ -111,7 +146,16 @@ export interface ContextPackRow {
  *
  * All `invoke` calls map 1-to-1 to an `ipcMain.handle` in `ipc/handlers.ts`.
  */
+/** Wire shape of one run event (mirrors agent/runEvents.ts RunEvent). */
+type RunEventWire = { runId: string; seq: number; ts: number; kind: string; payload: unknown };
+
 const api = {
+  // Doctor — read-only health report (doctor/inspect.ts).
+  doctor: {
+    inspect: () => ipcRenderer.invoke('doctor:inspect') as Promise<{
+      checks: { id: string; label: string; status: 'ok' | 'warn' | 'error'; detail: string; fix?: string }[];
+    }>,
+  },
   // ── Agent ────────────────────────────────────────────────────────────────
   agent: {
     /** opts.modelOverride runs THIS message on a specific saved model (cloud
@@ -172,6 +216,29 @@ const api = {
     },
     approvePlan: (workflowId: string, approved: boolean) =>
       ipcRenderer.invoke('agent:approvePlan', workflowId, approved),
+    /** Structured plan review (agent/planReview.ts): accept, accept with
+     *  per-step comments (the planner revises once and asks again), or reject
+     *  with a reason (the run ends cancelled-by-user). */
+    reviewPlan: (workflowId: string, review: {
+      decision: 'accept' | 'accept_with_comments' | 'reject';
+      comments?: { step_index: number; original_text: string; comment: string }[];
+      reason?: string;
+    }) => ipcRenderer.invoke('agent:reviewPlan', workflowId, review) as Promise<void>,
+    /** Unified human-in-the-loop frame (agent/interactions.ts). */
+    listPendingInteractions: () =>
+      ipcRenderer.invoke('interactions:listPending') as Promise<InteractionDTO[]>,
+    respondInteraction: (id: string, status: 'answered' | 'declined', answer?: unknown) =>
+      ipcRenderer.invoke('interactions:respond', id, status, answer) as Promise<boolean>,
+    onInteractionPending: (cb: (i: InteractionDTO) => void) => {
+      const h = (_e: unknown, p: InteractionDTO) => cb(p);
+      ipcRenderer.on('interaction:pending', h);
+      return () => ipcRenderer.removeListener('interaction:pending', h);
+    },
+    onInteractionResolved: (cb: (p: { id: string; status: string }) => void) => {
+      const h = (_e: unknown, p: { id: string; status: string }) => cb(p);
+      ipcRenderer.on('interaction:resolved', h);
+      return () => ipcRenderer.removeListener('interaction:resolved', h);
+    },
     onSkillActive: (cb: (payload: { slug: string; name: string; icon: string }) => void) => {
       ipcRenderer.on('agent:skillActive', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:skillActive');
@@ -201,12 +268,15 @@ const api = {
       ipcRenderer.invoke('agent:clarifyRespond', workflowId, answers),
     // Per-tool-call approval (policy `confirm` tier). The orchestrator pauses a
     // specific function call until the user approves or denies it here.
-    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string }) => void) => {
+    onToolApprovalRequest: (cb: (payload: { approvalId: string; workflowId: string; sessionId: string; toolName: string; argsPreview: string; note: string; allowAlways?: boolean; appGrant?: { appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean } }) => void) => {
       ipcRenderer.on('agent:toolApprovalRequest', (_e, p) => cb(p));
       return () => ipcRenderer.removeAllListeners('agent:toolApprovalRequest');
     },
-    respondToolApproval: (approvalId: string, approved: boolean) =>
-      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved),
+    // `scope` answers the prompt's durable option: 'always' = "Always allow
+    // (30 days)" on a tool prompt (recorded only when offered) or "Always for
+    // this project" on a per-app desktop grant prompt; 'once' = app-grant Once.
+    respondToolApproval: (approvalId: string, approved: boolean, scope?: 'once' | 'always') =>
+      ipcRenderer.invoke('agent:respondToolApproval', approvalId, approved, scope),
     // Decompose a goal into sub-tasks and run them concurrently.
     runParallel: (sessionId: string, goal: string, subTasks: string[]) =>
       ipcRenderer.invoke('agent:runParallel', { sessionId, goal, subTasks }) as Promise<string[]>,
@@ -220,13 +290,96 @@ const api = {
     },
   },
 
+  // ── Run event log ──────────────────────────────────────────────────────────
+  // Replayable, per-run timeline (agent/runEvents.ts). Attach `onEvent` BEFORE
+  // calling `subscribe` — replayed events are sent during the subscribe call.
+  run: {
+    /** Replay events after `fromSeq` (exclusive; 0 = from the start), then
+     *  stream live ones to `onEvent`. Resubscribing replaces the old stream. */
+    subscribe: (runId: string, fromSeq = 0) =>
+      ipcRenderer.invoke('run:subscribe', runId, fromSeq) as Promise<{ ok: boolean; error?: string }>,
+    unsubscribe: (runId: string) =>
+      ipcRenderer.invoke('run:unsubscribe', runId) as Promise<{ ok: boolean }>,
+    /** Loops currently executing (optionally for one session). */
+    active: (sessionId?: string) =>
+      ipcRenderer.invoke('run:active', sessionId) as Promise<Array<{ runId: string; workflowId: string; sessionId: string; startedAt: number }>>,
+    /** One page of persisted events after `fromSeq`. */
+    events: (runId: string, fromSeq = 0, limit = 500) =>
+      ipcRenderer.invoke('run:events', runId, fromSeq, limit) as Promise<RunEventWire[]>,
+    /** The Run Inspector timeline: the run's events plus the plan-review
+     *  events recorded under its workflow id (`linked: 'workflow'`). */
+    timeline: (runId: string) =>
+      ipcRenderer.invoke('run:timeline', runId) as Promise<Array<RunEventWire & { linked?: 'workflow' }>>,
+    /** Every event delivered by an active subscription. Removes only this
+     *  listener on cleanup, so several views can tail independently. */
+    onEvent: (cb: (msg: { event: RunEventWire; replayed: boolean }) => void) => {
+      const h = (_e: unknown, m: { event: RunEventWire; replayed: boolean }) => cb(m);
+      ipcRenderer.on('run:event', h);
+      return () => { ipcRenderer.removeListener('run:event', h); };
+    },
+    /** A ReAct loop started for a workflow — carries the run id to subscribe to. */
+    onStarted: (cb: (p: { runId: string; workflowId: string; sessionId: string }) => void) => {
+      const h = (_e: unknown, p: { runId: string; workflowId: string; sessionId: string }) => cb(p);
+      ipcRenderer.on('run:started', h);
+      return () => { ipcRenderer.removeListener('run:started', h); };
+    },
+  },
+
   // ── Delegate ───────────────────────────────────────────────────────────────
   // Goal-driven execution surface. `run` hands a goal to Bodhi, which routes it
   // to a capability and executes it through the orchestrator, returning the
   // final output + artifacts. `steps` reads a Task's step trace for progress.
+  /** Outbox — type while Artha works. Messages queued during an active run are
+   *  sent one at a time when it ends (paused after a cancel, held while an
+   *  approval is pending); "steer" injects one at the next tool-call boundary. */
+  outbox: {
+    list: (sessionId: string) =>
+      ipcRenderer.invoke('outbox:list', sessionId) as Promise<OutboxSnapshot>,
+    enqueue: (sessionId: string, content: string, attachments?: { name: string; mime: string; data: string }[]) =>
+      ipcRenderer.invoke('outbox:enqueue', sessionId, content, attachments) as Promise<{ item: OutboxItemView; snapshot: OutboxSnapshot }>,
+    reorder: (sessionId: string, orderedIds: string[]) =>
+      ipcRenderer.invoke('outbox:reorder', sessionId, orderedIds) as Promise<OutboxSnapshot>,
+    edit: (itemId: string, patch: { content?: string; editing?: boolean }) =>
+      ipcRenderer.invoke('outbox:edit', itemId, patch) as Promise<OutboxSnapshot | null>,
+    cancel: (itemId: string) =>
+      ipcRenderer.invoke('outbox:cancel', itemId) as Promise<OutboxSnapshot | null>,
+    pause: (sessionId: string) =>
+      ipcRenderer.invoke('outbox:pause', sessionId) as Promise<OutboxSnapshot>,
+    resume: (sessionId: string) =>
+      ipcRenderer.invoke('outbox:resume', sessionId) as Promise<OutboxSnapshot>,
+    steer: (itemId: string) =>
+      ipcRenderer.invoke('outbox:steer', itemId) as Promise<{ ok: boolean; snapshot: OutboxSnapshot | null }>,
+    /** Queue/pause state changed for a session. */
+    onUpdated: (cb: (snap: OutboxSnapshot) => void) => {
+      const h = (_e: unknown, snap: OutboxSnapshot) => cb(snap);
+      ipcRenderer.on('outbox:updated', h);
+      return () => { ipcRenderer.removeListener('outbox:updated', h); };
+    },
+    /** A queued item left the queue: mode 'drain' = new turn, 'steer' = injected into the live run. */
+    onSent: (cb: (ev: { sessionId: string; item: OutboxItemView; mode: 'drain' | 'steer' }) => void) => {
+      const h = (_e: unknown, ev: { sessionId: string; item: OutboxItemView; mode: 'drain' | 'steer' }) => cb(ev);
+      ipcRenderer.on('outbox:sent', h);
+      return () => { ipcRenderer.removeListener('outbox:sent', h); };
+    },
+    /** A drained turn failed to start/finish with an error. */
+    onTurnFailed: (cb: (ev: { sessionId: string; itemId: string; error: string }) => void) => {
+      const h = (_e: unknown, ev: { sessionId: string; itemId: string; error: string }) => cb(ev);
+      ipcRenderer.on('outbox:turnFailed', h);
+      return () => { ipcRenderer.removeListener('outbox:turnFailed', h); };
+    },
+  },
+
   delegate: {
+    /** A queued follow-up was drained by the outbox and started a Delegate
+     *  continuation run in `sessionId`; the Delegate view follows `runId`. */
+    onFollowUpStarted: (cb: (p: { sessionId: string; runId: string }) => void) => {
+      const h = (_e: unknown, p: { sessionId: string; runId: string }) => cb(p);
+      ipcRenderer.on('delegate:followUpStarted', h);
+      return () => { ipcRenderer.removeListener('delegate:followUpStarted', h); };
+    },
     /** Non-blocking: kick off a goal, get back the Task id to poll. */
-    start: (goal: string) => ipcRenderer.invoke('delegate:start', goal) as Promise<{
+    // `mode` = optional permission mode for the task (ask | accept_edits | auto).
+    start: (goal: string, mode?: 'ask' | 'accept_edits' | 'auto' | null) => ipcRenderer.invoke('delegate:start', goal, mode ?? null) as Promise<{
       runId: string;
       sessionId: string;
       capability: string;
@@ -254,6 +407,11 @@ const api = {
       evidence: { kind: string; status: string; summary: string }[];
       empty: boolean;
     }>,
+    /** The task's persistent goal (most recent, any status) — null if none. */
+    goal: (sessionId: string) => ipcRenderer.invoke('delegate:goal', sessionId) as Promise<GoalView | null>,
+    /** Pause / Resume / Stop the goal. Completion is never user- or model-set. */
+    goalSetStatus: (goalId: string, status: 'active' | 'paused' | 'terminated') =>
+      ipcRenderer.invoke('delegate:goalSetStatus', goalId, status) as Promise<{ ok: boolean; goal?: GoalView; error?: string }>,
     /** The task's conversation so far (user + agent messages, one thread). */
     thread: (sessionId: string) => ipcRenderer.invoke('delegate:thread', sessionId) as Promise<
       { sender_type: string; content: string; created_at: number }[]
@@ -621,6 +779,14 @@ const api = {
     // Desktop-control master switch (default off).
     getDesktopControl: () => ipcRenderer.invoke('settings:getDesktopControl') as Promise<boolean>,
     setDesktopControl: (enabled: boolean) => ipcRenderer.invoke('settings:setDesktopControl', enabled) as Promise<boolean>,
+    // Keep the machine awake while an agent run is active (default off), and
+    // whether that also applies on battery (default off).
+    getKeepAwake: () => ipcRenderer.invoke('settings:getKeepAwake') as Promise<{ keepAwakeWhileRunning: boolean; keepAwakeOnBattery: boolean }>,
+    setKeepAwake: (patch: { keepAwakeWhileRunning?: boolean; keepAwakeOnBattery?: boolean }) =>
+      ipcRenderer.invoke('settings:setKeepAwake', patch) as Promise<{ keepAwakeWhileRunning: boolean; keepAwakeOnBattery: boolean }>,
+    // Global stop shortcut for desktop control (Electron accelerator string; '' = default).
+    getDesktopStopShortcut: () => ipcRenderer.invoke('settings:getDesktopStopShortcut') as Promise<string>,
+    setDesktopStopShortcut: (accelerator: string) => ipcRenderer.invoke('settings:setDesktopStopShortcut', accelerator) as Promise<string>,
     // Sentry crash reporting (opt-out, default ON). `getSentry` also reports
     // whether the one-time first-launch disclosure has been acknowledged.
     getSentry: () => ipcRenderer.invoke('settings:getSentry') as Promise<{ enabled: boolean; disclosureAck: boolean }>,
@@ -697,11 +863,26 @@ const api = {
   },
 
   // ── Undo ───────────────────────────────────────────────────────────────────
-  // Reverse a reversible filesystem action the agent performed. In-memory,
-  // process-lifetime (see agent/undo.ts).
+  // Reverse a reversible filesystem action the agent performed. Persisted, so
+  // it survives a restart (see agent/undo.ts).
   undo: {
     list: () => ipcRenderer.invoke('undo:list') as Promise<{ id: string; kind: string; label: string; ts: number }[]>,
     revert: (id: string) => ipcRenderer.invoke('undo:revert', id) as Promise<{ ok: boolean; error?: string; label?: string }>,
+  },
+
+  // ── File checkpoints ───────────────────────────────────────────────────────
+  // Restore every file a run touched to its state before a given step.
+  checkpoints: {
+    rewind: (runId: string, stepId: string) => ipcRenderer.invoke('checkpoints:rewind', runId, stepId) as Promise<{
+      ok: boolean; runId: string; stepId: string; restored: string[]; removed: string[];
+      skipped: { path: string; reason: string }[];
+      externalActions: { actionId: string; tool: string; state: string }[];
+      /** Files whose current version was backed up before being replaced/removed. */
+      preserved: string[];
+      /** Rewind these ids to undo this rewind. */
+      undo?: { runId: string; stepId: string };
+      error?: string;
+    }>,
   },
 
   // ── Global search ────────────────────────────────────────────────────────
@@ -869,6 +1050,26 @@ const api = {
     delete: (policyId: string) => ipcRenderer.invoke('policies:delete', policyId) as Promise<boolean>,
   },
 
+  // ── Standing grants ("Always allow (30 days)") ────────────────────────────
+  // Settings lists them with a Revoke button; expired/revoked rows stay for audit.
+  grants: {
+    list: () => ipcRenderer.invoke('grants:list') as Promise<{
+      id: string; scope_kind: 'tool' | 'host' | 'folder' | 'app' | 'connector'; scope_value: string;
+      subject: string; created_at: number; expires_at: number | null; revoke_gen: number; active: boolean;
+    }[]>,
+    revoke: (id: string) => ipcRenderer.invoke('grants:revoke', id) as Promise<boolean>,
+  },
+
+  // ── Per-chat permission mode ──────────────────────────────────────────────
+  // ask | accept_edits | plan | auto (unattended is runtime-only). null clears.
+  session: {
+    getMode: (sessionId: string) => ipcRenderer.invoke('session:getMode', sessionId) as Promise<{
+      mode: 'ask' | 'accept_edits' | 'plan' | 'auto' | 'unattended'; stored: string | null; defaultMode: string;
+    }>,
+    setMode: (sessionId: string, mode: 'ask' | 'accept_edits' | 'plan' | 'auto' | null) =>
+      ipcRenderer.invoke('session:setMode', sessionId, mode) as Promise<boolean>,
+  },
+
   // ── Verified tool receipts (provenance for function calls) ────────────────
   // Read-only audit trail: every tool call (incl. blocked / dry-run) with a
   // plain-English effect, a content hash, and the governing policy tier.
@@ -889,10 +1090,19 @@ const api = {
   runs: {
     listRecent: (limit?: number) => ipcRenderer.invoke('runs:listRecent', limit) as Promise<{
       run_id: string; session_id: string; workflow_id: string; goal: string;
-      status: 'running' | 'completed' | 'failed' | 'cancelled'; model: string;
+      status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; model: string;
       parent_run_id: string | null; created_at: number;
       session_title: string; session_origin: string; calls: number; mutations: number;
     }[]>,
+    // Runs the app interrupted (quit/crash) are offered for Resume / Dismiss;
+    // nothing resumes automatically (see agent/resume.ts).
+    listInterrupted: () => ipcRenderer.invoke('runs:listInterrupted') as Promise<{
+      runId: string; sessionId: string; goal: string; createdAt: number; lastStepIdx: number;
+      unattended: boolean; confirmedActions: { actionId: string; tool: string; state: string }[];
+    }[]>,
+    resumeInterrupted: (runId: string) =>
+      ipcRenderer.invoke('runs:resumeInterrupted', runId) as Promise<{ ok: boolean; error?: string; sessionId?: string }>,
+    dismissInterrupted: (runId: string) => ipcRenderer.invoke('runs:dismissInterrupted', runId) as Promise<boolean>,
   },
 
   // ── Time travel ──────────────────────────────────────────────────────────
@@ -919,13 +1129,37 @@ const api = {
   // orchestrator with its stored prompt in an isolated session.
   scheduler: {
     list: () => ipcRenderer.invoke('scheduler:list'),
-    create: (input: { name: string; prompt: string; cron?: string; fire_at?: number }) =>
+    create: (input: { name: string; prompt: string; cron?: string; fire_at?: number; notify?: 'always' | 'on_change' | 'on_failure' }) =>
       ipcRenderer.invoke('scheduler:create', input),
     update: (taskId: string, patch: { name?: string; prompt?: string; cron?: string; fire_at?: number }) =>
       ipcRenderer.invoke('scheduler:update', taskId, patch),
     toggle: (taskId: string, enabled: boolean) =>
       ipcRenderer.invoke('scheduler:toggle', taskId, enabled),
     remove: (taskId: string) => ipcRenderer.invoke('scheduler:remove', taskId),
+    // ── v2: Scheduler inbox + triggers ──
+    /** Recent task_executions (newest first), optionally for one task. */
+    executions: (limit?: number, taskId?: string) => ipcRenderer.invoke('scheduler:executions', limit, taskId),
+    /** Finished, unread executions — the inbox badge. */
+    unreadCount: () => ipcRenderer.invoke('scheduler:unreadCount') as Promise<number>,
+    /** Mark one execution read, or all when execId is omitted. */
+    markRead: (execId?: string) => ipcRenderer.invoke('scheduler:markRead', execId),
+    /** Fire a task now through the same unattended path as a scheduled run. */
+    runNow: (taskId: string) => ipcRenderer.invoke('scheduler:runNow', taskId) as Promise<{ started: boolean; reason?: string }>,
+    /** Resolve a run id to its chat session (to open the run). */
+    sessionForRun: (runId: string) => ipcRenderer.invoke('scheduler:sessionForRun', runId) as Promise<string | null>,
+    setNotify: (taskId: string, notify: 'always' | 'on_change' | 'on_failure') =>
+      ipcRenderer.invoke('scheduler:setNotify', taskId, notify),
+    /** Watch a folder (must be inside an attached scope) — null clears it. */
+    setFolderTrigger: (taskId: string, folder: string | null) =>
+      ipcRenderer.invoke('scheduler:setFolderTrigger', taskId, folder),
+    pickFolder: () => ipcRenderer.invoke('scheduler:pickFolder') as Promise<string | null>,
+    /** Save a task as a Markdown task file; resolves to the path or null if cancelled. */
+    exportFile: (taskId: string) => ipcRenderer.invoke('scheduler:exportFile', taskId) as Promise<string | null>,
+    /** Pick a Markdown task file and create a task from it (null if cancelled). */
+    importFile: () => ipcRenderer.invoke('scheduler:importFile'),
+    /** Enable (mints a token, shown once) or disable the local webhook. */
+    setWebhook: (taskId: string, enabled: boolean) =>
+      ipcRenderer.invoke('scheduler:setWebhook', taskId, enabled) as Promise<{ token: string | null; path: string; url: string | null; lanRunning: boolean }>,
   },
 
   // ── Browser (co-piloted BrowserView) ─────────────────────────────────────

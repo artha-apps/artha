@@ -83,6 +83,15 @@ export interface AgentPlan {
   requiresApproval: boolean;
   /** Pre-flight blast-radius estimate, rendered as the approval card header. */
   blastRadius?: BlastRadius;
+  /** Comment-driven planner revisions so far (the planner revises at most once). */
+  revisions?: number;
+  /** Who asked for this plan: the desktop user, a LAN teammate, or a
+   *  background (scheduled/webhook/folder) task. Shown on the review card so
+   *  the host never approves a teammate's or a task's plan thinking it is
+   *  their own. */
+  origin?: 'local' | 'lan' | 'scheduled';
+  /** The LAN teammate's identity when origin is 'lan'. */
+  originActor?: string;
 }
 
 /** A per-tool-call approval the orchestrator paused on (policy `confirm` tier)
@@ -94,6 +103,11 @@ export interface ToolApprovalRequest {
   toolName: string;
   argsPreview: string;
   note: string;
+  /** True when the modal may offer "Always allow (30 days)" (never for email_send). */
+  allowAlways?: boolean;
+  /** Set for a per-app desktop-control prompt: the modal then offers
+   *  Once / Always for this project (30 days) / Deny. */
+  appGrant?: { appName: string; alwaysAllowed: boolean; alwaysConfirm: boolean };
 }
 
 /** A run-level failure surfaced inline in the thread (and as a toast). `retry`
@@ -140,7 +154,7 @@ export interface SessionScope {
  *  the Workspace Settings modal scoped to that panel. Keeping the union lets
  *  legacy call-sites (`setActiveView('models')`) deep-link into the modal
  *  without changing their signature. */
-export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'crm' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license' | 'guide' | 'about' | 'policies' | 'receipts';
+export type ActiveView = 'chat' | 'models' | 'mcp' | 'skills' | 'web' | 'rag' | 'provenance' | 'timetravel' | 'bundles' | 'router' | 'artifacts' | 'marketplace' | 'memory' | 'crm' | 'ide' | 'cloud' | 'lan' | 'desktop' | 'team' | 'scheduler' | 'settings' | 'license' | 'guide' | 'about' | 'policies' | 'receipts' | 'grants';
 
 /** Top-level rooms inside the Chat view. Tab selection persists in
  *  localStorage so reloads land where you left off.

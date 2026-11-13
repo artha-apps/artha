@@ -42,6 +42,11 @@ export interface ToolContext {
    *  (external_actions), so a send can be traced back to the run that made it. */
   taskId?: string | null;
   runId?: string | null;
+  /** Session + step identity of this call: attributes durable undo entries
+   *  and orders pre-mutation file checkpoints (agent/checkpoints.ts). */
+  sessionId?: string | null;
+  stepId?: string | null;
+  stepIdx?: number | null;
 }
 
 /**
@@ -237,6 +242,13 @@ export class MCPRegistry {
       .map(c => ({ id: c.id, name: c.name, tools: c.tools }));
   }
 
+  /** Servers currently quarantined (read-only; used by the Doctor report). */
+  getQuarantinedServers(): { id: string; name: string; failures: number }[] {
+    return Array.from(this.connections.values())
+      .filter(c => c.quarantined)
+      .map(c => ({ id: c.id, name: c.name, failures: c.failures }));
+  }
+
   /** Which connected server owns `toolName` (undefined for built-ins). */
   serverForTool(toolName: string): { id: string; name: string } | undefined {
     for (const c of this.connections.values()) {
@@ -282,7 +294,9 @@ export class MCPRegistry {
    *  shadow `fs_move_file` etc. by re-using the name. */
   async invokeTool(toolName: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
     if (isFilesystemTool(toolName)) {
-      return invokeFilesystemTool(toolName, args, ctx?.allowedRoots);
+      return invokeFilesystemTool(toolName, args, ctx?.allowedRoots, ctx && {
+        runId: ctx.runId, sessionId: ctx.sessionId, stepId: ctx.stepId, stepIdx: ctx.stepIdx,
+      });
     }
     if (isWebTool(toolName)) {
       return invokeWebTool(toolName, args);

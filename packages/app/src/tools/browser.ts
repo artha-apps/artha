@@ -17,7 +17,8 @@ import {
   back, click, forward, getUrl, navigate, readDom,
   reload, screenshot, typeInto, waitForSelector,
 } from '../browser/actions';
-import { recordCitation, allowedLocalHosts } from './web';
+import { recordCitation, allowedLocalHosts, getActiveCitationToken } from './web';
+import { getInteractionHub } from '../agent/interactions';
 import { assertPublicURL } from '../net/ssrfGuard';
 
 // ── Tool schemas (OpenAI function format) ────────────────────────────────────
@@ -292,7 +293,20 @@ export async function invokeBrowserTool(name: string, args: Record<string, unkno
       const reason = String(args.reason ?? 'manual step required');
       emitter.emit?.('browser:autoOpen', null);
       emitter.emit?.('browser:handoffRequested', { reason });
-      const outcome = await controller.requestUser(reason);
+      // requestUser() registers the pending handoff synchronously, so a UI
+      // response routed through the unified frame below can never race ahead.
+      const pending = controller.requestUser(reason);
+      // Unified frame (additive, agent/interactions.ts): record the handoff so
+      // it survives a renderer reload. The controller stays authoritative; a
+      // generic UI response maps to its existing resume / cancel verbs.
+      const hub = getInteractionHub();
+      const workflowId = getActiveCitationToken() ?? undefined;
+      const { interaction } = hub.open(
+        { runId: workflowId ?? 'browser', workflowId, kind: 'handoff', payload: { reason } },
+        (status) => { if (status === 'answered') controller.resumeAgent(); else controller.cancelHandoff(); },
+      );
+      const outcome = await pending;
+      hub.settle(interaction.id, outcome === 'resumed' ? 'answered' : 'declined', { outcome });
       emitter.emit?.('browser:handoffResolved', { outcome });
       return JSON.stringify({ outcome, reason });
     }
