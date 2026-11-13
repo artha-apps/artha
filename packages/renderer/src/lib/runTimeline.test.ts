@@ -37,6 +37,14 @@ describe('reduceRunTimeline', () => {
     ]);
   });
 
+  it('an approval prompt that expired reads "expired (no answer)", never "denied"', () => {
+    const rows = reduceRunTimeline([
+      ev('interaction', { phase: 'request', approvalId: 'a9', toolName: 'fs_copy_file' }),
+      ev('interaction', { phase: 'response', approvalId: 'a9', approved: false, expired: true }),
+    ]);
+    expect(rows.map(r => [r.title, r.detail, r.tone])).toEqual([['Approval for fs_copy_file', 'expired (no answer)', 'warn']]);
+  });
+
   it('renders goal gate, kill switch, stalls, errors and the loop outcome honestly', () => {
     const rows = reduceRunTimeline([
       ev('status', { source: 'goal_gate', action: 'continue', gaps: ['no file written'], round: 1 }),

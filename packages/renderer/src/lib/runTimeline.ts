@@ -58,6 +58,8 @@ function interactionLabel(p: P): string {
 /** Response outcome → label + tone. Confirm events carry `approved`; ask/plan
  *  events carry the unified interaction `status`. */
 function interactionOutcome(p: P): { text: string; tone: TimelineTone } {
+  // An approval prompt that expired was never denied by anyone.
+  if (p.expired === true) return { text: 'expired (no answer)', tone: 'warn' };
   if (typeof p.approved === 'boolean') return p.approved ? { text: 'approved', tone: 'ok' } : { text: 'denied', tone: 'warn' };
   switch (p.status) {
     case 'answered': return { text: 'answered', tone: 'ok' };

@@ -182,6 +182,10 @@ export interface AgentPlan {
   originActor?: string;
 }
 
+/** How long an approval prompt waits before it expires unanswered (the call
+ *  is then not executed). Unchanged from before; named so messages can state it. */
+export const APPROVAL_TIMEOUT_MS = 120_000;
+
 /** A per-tool-call approval the orchestrator paused on because a policy assigned
  *  the call the `confirm` tier. The renderer shows a modal and answers via
  *  `respondToolApproval(approvalId, approved)`. */
@@ -896,6 +900,9 @@ ${envBlock}`,
     appGrant?: ToolApprovalRequest['appGrant'];
     /** Receives the approvalId so a caller can read the chosen scope. */
     onId?: (approvalId: string) => void;
+    /** Called when the prompt EXPIRED with no answer (the result is then
+     *  false, like a decline, but nobody actually said no). */
+    onExpired?: () => void;
   }): Promise<boolean> {
     const approvalId = crypto.randomUUID();
     req.onId?.(approvalId);
@@ -939,11 +946,13 @@ ${envBlock}`,
           },
         });
       }),
-      new Promise<boolean>(resolve => setTimeout(() => { timedOut = true; resolve(false); }, 120_000)),
+      new Promise<boolean>(resolve => setTimeout(() => { timedOut = true; resolve(false); }, APPROVAL_TIMEOUT_MS)),
     ]).then(approved => {
       hub.settle(approvalId, timedOut ? 'expired' : approved ? 'answered' : 'declined', { approved });
-      // Logging only — the decision itself (including fail-closed timeout) is unchanged.
-      if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'response', approvalId, approved });
+      // Logging only — the decision itself (including fail-closed timeout) is
+      // unchanged. An expiry is recorded as such: nobody declined.
+      if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'response', approvalId, approved, ...(timedOut ? { expired: true } : {}) });
+      if (timedOut) { try { req.onExpired?.(); } catch { /* caller bookkeeping only */ } }
       return approved;
     }).finally(() => {
       this.toolApprovalResolvers.delete(approvalId);
@@ -1945,6 +1954,8 @@ RULES — follow exactly, no exceptions:
     // fallback) is refused without asking again (found in live QA 2026-11-12:
     // a declined send was re-prompted by the fallback).
     const declinedTools = new Set<string>();
+    // The subset of those whose prompt EXPIRED unanswered (nobody said no).
+    const unansweredTools = new Set<string>();
     // The text intent detection reads (file task? send? web action?). On a
     // scheduler run the prompt also carries trigger details (file names from
     // a watched folder, …) that someone else chose; only the task the user
@@ -2313,23 +2324,33 @@ RULES — follow exactly, no exceptions:
             toolResult = `Error: ${toolCall.function.name} was not executed — ${gate.reason}`;
             toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
           } else if (gate.action === 'ask' && declinedTools.has(toolCall.function.name)) {
-            toolResult = `Error: The user already declined ${toolCall.function.name} in this run, so it was not asked again or executed. Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
+            toolResult = unansweredTools.has(toolCall.function.name)
+              ? `Error: The approval prompt for ${toolCall.function.name} already went unanswered in this run, so it was not asked again or executed. Do not retry it — say plainly that this step is waiting for the user's approval.`
+              : `Error: The user already declined ${toolCall.function.name} in this run, so it was not asked again or executed. Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
             toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
           } else if (gate.action === 'ask') {
             // Confirm needs a human to answer; decideToolCall already turned
             // asks on unattended runs (LAN / scheduled) into blocks. NOTE:
             // `silent` does NOT mean unattended — Delegate runs are silent but
             // a desktop user approves via the app-level ToolApprovalModal.
+            let promptExpired = false;
             const approved = await this.requestToolApproval({
               workflowId: args.workflowId, sessionId: args.sessionId,
               toolName: toolCall.function.name, args: parsedArgs,
               note: decision.note || gate.reason,
               allowAlways: gate.source !== 'floor',
               runId: args.runId,
+              onExpired: () => { promptExpired = true; },
             });
             if (!approved) {
+              // Either way it is not asked again in this run (a second prompt
+              // would wait another ${APPROVAL_TIMEOUT_MS / 60_000} minutes), but the two are worded
+              // truthfully: an unanswered prompt is not a "no".
               declinedTools.add(toolCall.function.name);
-              toolResult = `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
+              if (promptExpired) unansweredTools.add(toolCall.function.name);
+              toolResult = promptExpired
+                ? `Error: Nobody answered the approval prompt for ${toolCall.function.name} within ${APPROVAL_TIMEOUT_MS / 60_000} minutes, so it was NOT executed. The user did not decline it. Do not retry it — finish what you can and say plainly that this step is waiting for their approval.`
+                : `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
               toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
             }
             // approved → fall through to normal execution below.
@@ -2721,7 +2742,7 @@ RULES — follow exactly, no exceptions:
         let det: { sent: boolean; to: string | null; reason?: string } = { sent: false, to: null };
         if (detectsSendIntent(intentGoal) && !sendWasConfirmed() && declinedTools.has('email_send')) {
           // The user already said no to this send — never ask a second time.
-          det = { sent: false, to: null, reason: 'declined' };
+          det = { sent: false, to: null, reason: unansweredTools.has('email_send') ? 'unanswered' : 'declined' };
         } else if (detectsSendIntent(intentGoal) && !sendWasConfirmed()) {
           det = await this.deterministicEmailSend(
             { goal: intentGoal, workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId },
@@ -2742,6 +2763,8 @@ RULES — follow exactly, no exceptions:
             `❌ The email was not sent — nothing was delivered.\n\n` +
             (det.reason === 'declined'
               ? `You declined the send, so nothing went out. `
+              : det.reason === 'unanswered'
+              ? `The approval prompt wasn't answered within ${APPROVAL_TIMEOUT_MS / 60_000} minutes, so nothing went out. `
               : triedToSend
                 ? `I tried to send it but couldn't confirm delivery — this usually means you're not signed ` +
                   `in to Gmail in Artha's browser. `
@@ -3376,13 +3399,15 @@ Rules:
     const fields = parseEmailFieldsFromGoal(args.goal) ?? await this.extractEmailFields(args.goal);
     if (!fields) return { sent: false, to: null, reason: 'no recipient could be extracted' };
     recordStep(stepIdx, 'system', { note: 'deterministic-send', to: fields.to });
+    let fallbackExpired = false;
     const approved = await this.requestToolApproval({
       workflowId: args.workflowId, sessionId: args.sessionId,
       toolName: 'email_send', args: fields,
       note: `Send this email to ${fields.to} through your Gmail.`,
       runId: args.runId,
+      onExpired: () => { fallbackExpired = true; },
     });
-    if (!approved) return { sent: false, to: fields.to, reason: 'declined' };
+    if (!approved) return { sent: false, to: fields.to, reason: fallbackExpired ? 'unanswered' : 'declined' };
     try {
       const result = await this.registry.invokeTool('email_send', fields, { runId: args.runId });
       let sent = false;

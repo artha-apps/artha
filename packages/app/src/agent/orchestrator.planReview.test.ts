@@ -13,7 +13,7 @@
  * Heavy collaborators (Electron, SQLite, LLM, MCP) are faked; the SQL the
  * orchestrator runs is captured for assertions.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { state } = vi.hoisted(() => ({
   state: {
@@ -50,7 +50,7 @@ vi.mock('../skills/registry', () => ({
   toActive: (x: unknown) => x,
 }));
 
-import { AgentOrchestrator, type AgentPlan } from './orchestrator';
+import { AgentOrchestrator, APPROVAL_TIMEOUT_MS, type AgentPlan } from './orchestrator';
 import { getInteractionHub } from './interactions';
 import { runWithContext, getRunContext, type RunContext } from './runContext';
 
@@ -219,5 +219,33 @@ describe('AgentOrchestrator.reviewPlan', () => {
     expect(payload.actor).toBe('lan:teammate');
     open.mockRestore();
     void orch.reviewPlan('wf-1', { decision: 'reject' });
+  });
+});
+
+describe('approval prompt expiry (live QA 2026-11-13)', () => {
+  type Req = { workflowId: string; sessionId: string; toolName: string; args: Record<string, unknown>; note: string; onId?: (id: string) => void; onExpired?: () => void };
+  const ask = (orch: AgentOrchestrator, req: Req) =>
+    (orch as unknown as { requestToolApproval: (r: Req) => Promise<boolean> }).requestToolApproval(req);
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('an unanswered prompt resolves false AND is flagged as expired, not declined', async () => {
+    vi.useFakeTimers();
+    const { orch } = makeOrchestrator();
+    const onExpired = vi.fn(); let id = '';
+    const p = ask(orch, { workflowId: 'wf-x', sessionId: 's-1', toolName: 'fs_copy_file', args: {}, note: 'n', onId: x => { id = x; }, onExpired });
+    expect(getInteractionHub().isLive(id)).toBe(true);
+    await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS + 10);
+    expect(await p).toBe(false);
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(getInteractionHub().isLive(id)).toBe(false);
+  });
+
+  it('a real "no" resolves false without the expired flag', async () => {
+    const { orch } = makeOrchestrator();
+    const onExpired = vi.fn(); let id = '';
+    const p = ask(orch, { workflowId: 'wf-y', sessionId: 's-1', toolName: 'fs_copy_file', args: {}, note: 'n', onId: x => { id = x; }, onExpired });
+    orch.respondToolApproval(id, false);
+    expect(await p).toBe(false);
+    expect(onExpired).not.toHaveBeenCalled();
   });
 });
