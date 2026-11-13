@@ -57,7 +57,7 @@ import {
   invokeDesktopTool,
 } from '../tools/desktop';
 import { gatherContext } from './contextGather';
-import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, fileGoalVerdict, parseEmailFieldsFromGoal, compactStaleDomDumps } from './actGuard';
+import { shouldNudgeToAct, shouldNudgeToSend, detectsSendIntent, detectsWebAction, fileGoalVerdict, parseEmailFieldsFromGoal, compactStaleDomDumps, taskOwnText } from './actGuard';
 import { dropEchoedGoal } from './historyDedupe';
 import { clampToolResult } from './toolResultBudget';
 import { resolveAgentRoute, agentRouteInput } from '../router/agentRouter';
@@ -1945,6 +1945,13 @@ RULES — follow exactly, no exceptions:
     // fallback) is refused without asking again (found in live QA 2026-11-12:
     // a declined send was re-prompted by the fallback).
     const declinedTools = new Set<string>();
+    // The text intent detection reads (file task? send? web action?). On a
+    // scheduler run the prompt also carries trigger details (file names from
+    // a watched folder, …) that someone else chose; only the task the user
+    // wrote may decide what kind of run this is. Chat and LAN goals are used
+    // whole (a typed marker never hides intent there).
+    const rcIntent = getRunContext();
+    const intentGoal = rcIntent?.unattended === true && !rcIntent.lan ? taskOwnText(args.goal) : args.goal;
     // Turns re-asked because the prompt overflowed num_ctx (see below).
     let truncatedRetries = 0;
     // Sanitized, bounded per-call evidence for the independent goal check
@@ -2069,7 +2076,7 @@ RULES — follow exactly, no exceptions:
     // Small local models otherwise try to hand-drive Gmail's DOM (browser_click
     // on Compose), which times out. If they ignore this, the deterministic
     // rescue at the terminal still finishes the job.
-    if (detectsSendIntent(args.goal)) {
+    if (detectsSendIntent(intentGoal)) {
       messages.push({
         role: 'system',
         content:
@@ -2563,7 +2570,7 @@ RULES — follow exactly, no exceptions:
         // genuine clarifying question, reject the narration, tell it to act, and
         // loop again. Capped so we never trap a model that truly can't proceed.
         if (shouldNudgeToAct({
-          goal: args.goal,
+          goal: intentGoal,
           browserToolCalls,
           fsToolCalls,
           mutationCount: mutations.length,
@@ -2573,7 +2580,7 @@ RULES — follow exactly, no exceptions:
         })) {
           if (streamedLive) emit('agent:streamReset');
           actNudges++;
-          const webNarrated = detectsWebAction(args.goal) && browserToolCalls === 0;
+          const webNarrated = detectsWebAction(intentGoal) && browserToolCalls === 0;
           const fsNames = tools.map(t => t.function.name).filter(n => n.startsWith('fs_')).join(', ');
           messages.push({
             role: 'system',
@@ -2599,7 +2606,7 @@ RULES — follow exactly, no exceptions:
         // send. This is what turns "drafted" into "delivered" instead of a
         // false completion.
         if (shouldNudgeToSend({
-          goal: args.goal,
+          goal: intentGoal,
           sendConfirmed: sendWasConfirmed(),
           nudges: sendNudges,
           maxNudges: MAX_SEND_NUDGES,
@@ -2698,7 +2705,7 @@ RULES — follow exactly, no exceptions:
         // restate the task?" from a model that lost the thread) is not one.
         // Either way the run is NEVER recorded as succeeded (see below).
         const verdict = fileGoalVerdict({
-          goal: args.goal, isWebGoal: detectsWebAction(args.goal),
+          goal: intentGoal, isWebGoal: detectsWebAction(intentGoal),
           anyMutationSucceeded: mutations.some(m => m.success), finalText: rawContent, toolCallErrors,
         });
         const fileGoalUnmet = verdict.unmet;
@@ -2712,18 +2719,18 @@ RULES — follow exactly, no exceptions:
         // Gmail's DOM, or narrated a fake "sent"), Artha finishes the job
         // deterministically — extract the fields and call email_send itself.
         let det: { sent: boolean; to: string | null; reason?: string } = { sent: false, to: null };
-        if (detectsSendIntent(args.goal) && !sendWasConfirmed() && declinedTools.has('email_send')) {
+        if (detectsSendIntent(intentGoal) && !sendWasConfirmed() && declinedTools.has('email_send')) {
           // The user already said no to this send — never ask a second time.
           det = { sent: false, to: null, reason: 'declined' };
-        } else if (detectsSendIntent(args.goal) && !sendWasConfirmed()) {
+        } else if (detectsSendIntent(intentGoal) && !sendWasConfirmed()) {
           det = await this.deterministicEmailSend(
-            { goal: args.goal, workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId },
+            { goal: intentGoal, workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId },
             recordStep, stepIdx++,
           );
         }
         // Recompute AFTER the deterministic attempt — email_send logs its own
         // confirmed external_action, so this reflects whether it actually sent.
-        const sendUnfulfilled = detectsSendIntent(args.goal) && !sendWasConfirmed();
+        const sendUnfulfilled = detectsSendIntent(intentGoal) && !sendWasConfirmed();
         if (!sendUnfulfilled && det.sent) {
           // Deterministic send succeeded — the model's prose is irrelevant now.
           finalText = `✅ Email sent${det.to ? ` to ${det.to}` : ''} through your Gmail (confirmed by Gmail's “Message sent”).`;

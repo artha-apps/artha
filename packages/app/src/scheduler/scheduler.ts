@@ -30,6 +30,7 @@ import * as schedule from 'node-schedule';
 import * as fs from 'fs';
 import { app } from 'electron';
 import { getDb } from '../db/schema';
+import { TRIGGER_DETAILS_MARKER } from '../agent/actGuard';
 import { userFacingOutcome, legacyStatusToOutcome, type RunOutcome } from '../bodhi/taskModel';
 import { sendNotification } from '../notify';
 import { startCheckIn, finishCheckIn, addBreadcrumb, captureException } from '../sentry';
@@ -606,7 +607,9 @@ export class SchedulerService {
   /** Run the agent for one fire and project its REAL outcome (never "the promise resolved"). */
   private async executeRun(task: ScheduledTask, opts: FireOptions): Promise<RunResult> {
     if (!this.runTask) throw new Error('Scheduler is not ready.');
-    const prompt = opts.context ? `${task.prompt}\n\n(${opts.context})` : task.prompt;
+    // Trigger details go after a marker so intent detection reads only the
+    // task the user wrote (agent/actGuard.taskOwnText).
+    const prompt = opts.context ? `${task.prompt}\n\n${TRIGGER_DETAILS_MARKER}\n${opts.context}` : task.prompt;
     const db = getDb();
     // Scope the run to the RESOLVED folder (checked in holdCheck), so a link
     // retargeted between the check and the run can't widen the sandbox.
