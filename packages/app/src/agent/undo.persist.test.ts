@@ -20,7 +20,13 @@ import { configureUndoStore, recordFilesystemEffect, listUndoable, revert, mostR
 /** Open (or reopen) a node:sqlite database file as a SqlDb. */
 function openDb(file: string): SqlDb & { close(): void } {
   const { DatabaseSync } = createRequire(__filename)('node:sqlite') as { DatabaseSync: new (f: string) => SqlDb & { close(): void } };
-  return new DatabaseSync(file);
+  const opened = new DatabaseSync(file);
+  // Test-only: skip the per-commit disk sync. The cap test makes ~110 separate
+  // commits, and on the Windows CI runner each sync is slow enough that the
+  // test took 3–20 s and timed out intermittently. Closing the handle still
+  // writes everything to the file, so the reopen test is unaffected.
+  opened.exec('PRAGMA synchronous = OFF');
+  return opened;
 }
 
 let dir: string;
