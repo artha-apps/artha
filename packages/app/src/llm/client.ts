@@ -24,13 +24,18 @@ import { isOllamaManaged } from './providerKind';
 import { isUnsupported, markUnsupported } from './capabilities';
 import { applyToolCallDeltas, toToolCalls, type PartialToolCall } from './streamMerge';
 import { resolveAgentRoute } from '../router/agentRouter';
-import { pickNumCtx, estimateTokens } from './numCtx';
+import { pickNumCtx, estimateTokens, scaledEstimate, notePromptSize } from './numCtx';
 
 /** Assembled result of a streamed completion — mirrors the bits of a
  *  ChatCompletionMessage the ReAct loop consumes. */
 export interface StreamedMessage {
   content: string | null;
   tool_calls?: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[];
+  /** True when Ollama had to cut the head off the prompt (it was bigger than
+   *  num_ctx), so the reply came from a prompt missing the system prompt and
+   *  the user's request. The caller must retry, not use the reply. The model's
+   *  learned prompt scale has already grown, so the retry gets a bigger window. */
+  truncated?: boolean;
   /** True when the model GENERATED tokens but the runtime returned neither text
    *  nor a tool call — Ollama does this when the model calls a tool that was
    *  not in the offered `tools` list (it parses the call, finds no match, and
@@ -154,6 +159,23 @@ export class LLMClient {
     messages: OpenAI.ChatCompletionMessageParam[],
     tools?: OpenAI.ChatCompletionTool[],
   ): Promise<OpenAI.ChatCompletion> {
+    const estimate = estimateTokens(JSON.stringify(messages) + JSON.stringify(tools ?? []));
+    // A truncated prompt makes the reply worthless; re-ask with the bigger
+    // window the learned scale now gives (at most twice).
+    for (let attempt = 0; ; attempt++) {
+      const numCtx = pickNumCtx(this.config.contextWindow, scaledEstimate(this.config.model, estimate), this.config.maxTokens ?? 4096);
+      const out = await this.completeOllamaNativeOnce(messages, tools, numCtx);
+      const truncated = notePromptSize(this.config.model, estimate, out.promptEvalCount, numCtx);
+      if (!truncated || attempt >= 2) return out.completion;
+      console.warn(`[Artha] ${this.config.model}: prompt overflowed num_ctx ${numCtx}; retrying with a larger window`);
+    }
+  }
+
+  private async completeOllamaNativeOnce(
+    messages: OpenAI.ChatCompletionMessageParam[],
+    tools: OpenAI.ChatCompletionTool[] | undefined,
+    numCtx: number,
+  ): Promise<{ completion: OpenAI.ChatCompletion; promptEvalCount: number }> {
     const body = {
       model: this.config.model,
       messages: this.toOllamaMessages(messages),
@@ -169,12 +191,9 @@ export class LLMClient {
       think: false,
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
-        // Sized from THIS request (see numCtx.ts) — a static window truncates.
-        num_ctx: pickNumCtx(
-          this.config.contextWindow,
-          estimateTokens(JSON.stringify(messages) + JSON.stringify(tools ?? [])),
-          this.config.maxTokens ?? 4096,
-        ),
+        // Sized from THIS request and this model's learned template cost
+        // (see numCtx.ts) — a static window truncates.
+        num_ctx: numCtx,
         num_predict: this.config.maxTokens ?? 4096,
         temperature: this.config.temperature ?? 0.3,
       },
@@ -204,7 +223,7 @@ export class LLMClient {
           },
         }))
       : undefined;
-    return {
+    const completion = {
       id: 'ollama-native',
       object: 'chat.completion',
       created: 0,
@@ -217,6 +236,7 @@ export class LLMClient {
       }],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any as OpenAI.ChatCompletion;
+    return { completion, promptEvalCount: typeof data?.prompt_eval_count === 'number' ? data.prompt_eval_count : 0 };
   }
 
   /** Map OpenAI-shaped messages to Ollama native `/api/chat` shape. Shared by
@@ -347,6 +367,13 @@ export class LLMClient {
     onReasoning?: (chunk: string) => void,
   ): Promise<StreamedMessage> {
     const oMessages = this.toOllamaMessages(messages);
+    const estimate = estimateTokens(JSON.stringify(oMessages) + JSON.stringify(tools ?? []));
+    const numCtxFor = (think: boolean) => pickNumCtx(
+      this.config.contextWindow,
+      scaledEstimate(this.config.model, estimate),
+      think ? 4096 : (this.config.maxTokens ?? 2048),
+    );
+    let numCtxUsed = 0;
 
     const buildBody = (think: boolean) => ({
       model: this.config.model,
@@ -360,14 +387,11 @@ export class LLMClient {
       ...(think ? { think: true } : {}),
       keep_alive: this.config.keepAlive ?? '30m',
       options: {
-        // Sized from THIS request (see numCtx.ts): the tool schemas + history
-        // decide the window, not a per-model row. Undersizing made Ollama drop
-        // the system prompt and the user's request for a routed 14B.
-        num_ctx: pickNumCtx(
-          this.config.contextWindow,
-          estimateTokens(JSON.stringify(oMessages) + JSON.stringify(tools ?? [])),
-          think ? 4096 : (this.config.maxTokens ?? 2048),
-        ),
+        // Sized from THIS request and this model's learned template cost
+        // (see numCtx.ts): the tool schemas + history decide the window, not a
+        // per-model row. Undersizing made Ollama drop the system prompt and the
+        // user's request for a routed 14B, and for an escalated 30B.
+        num_ctx: (numCtxUsed = numCtxFor(think)),
         // When thinking is on, the reasoning tokens and the answer tokens share
         // one num_predict budget — a fixed cap (e.g. 2048) gets eaten by a long
         // chain-of-thought, truncating or emptying the actual answer
@@ -420,6 +444,8 @@ export class LLMClient {
     let content = '';
     // Tokens the model actually generated this turn (from the final chunk).
     let evalCount = 0;
+    // Prompt tokens Ollama evaluated (final chunk) — detects truncation.
+    let promptEvalCount = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const collected: any[] = [];
 
@@ -441,6 +467,7 @@ export class LLMClient {
           let evt: any;
           try { evt = JSON.parse(line); } catch { continue; }
           if (evt?.done && typeof evt.eval_count === 'number') evalCount = evt.eval_count;
+          if (evt?.done && typeof evt.prompt_eval_count === 'number') promptEvalCount = evt.prompt_eval_count;
           const think: string | undefined = evt?.message?.thinking;
           if (think && onReasoning) onReasoning(think);
           const tok: string | undefined = evt?.message?.content;
@@ -469,11 +496,14 @@ export class LLMClient {
       if (abortPoll) clearInterval(abortPoll);
     }
 
+    const truncated = notePromptSize(this.config.model, estimate, promptEvalCount, numCtxUsed);
+    if (truncated) console.warn(`[Artha] ${this.config.model}: prompt overflowed num_ctx ${numCtxUsed}; the reply is discarded and the turn retried`);
     const discarded = !content && collected.length === 0 && evalCount > 0;
     return {
       content: content || null,
       tool_calls: collected.length ? collected : undefined,
       ...(discarded ? { discarded: true } : {}),
+      ...(truncated ? { truncated: true } : {}),
     };
   }
 }

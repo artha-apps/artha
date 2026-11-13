@@ -1933,6 +1933,8 @@ RULES — follow exactly, no exceptions:
     // fallback) is refused without asking again (found in live QA 2026-11-12:
     // a declined send was re-prompted by the fallback).
     const declinedTools = new Set<string>();
+    // Turns re-asked because the prompt overflowed num_ctx (see below).
+    let truncatedRetries = 0;
     // Sanitized, bounded per-call evidence for the independent goal check
     // (bodhi/goalEvaluator.ts). Short summaries only — never raw payloads.
     const goalEvidence: Array<Omit<EvaluatorEvidence, 'id'>> = [];
@@ -2201,6 +2203,19 @@ RULES — follow exactly, no exceptions:
 
       // Aborted mid-stream — bounce to the top so the cancel handler finalises.
       if (isCancelled()) continue;
+
+      // The prompt overflowed the model's window, so Ollama cut off its head
+      // (the system prompt and the user's request) and this reply answers a
+      // mutilated prompt. Never act on it, and don't count it as the model
+      // failing (which would escalate): retry the same turn — the client has
+      // already grown this model's window (llm/numCtx.ts).
+      if (msg.truncated && truncatedRetries < 3) {
+        truncatedRetries++;
+        if (streamedLive) emit('agent:streamReset');
+        recordStep(stepIdx++, 'system', { note: 'prompt-truncated-retry', model: loopModel, attempt: truncatedRetries });
+        emit('agent:status', 'The request was too large for the model\'s window — retrying with a larger one…');
+        continue;
+      }
 
       messages.push({
         role: 'assistant',
