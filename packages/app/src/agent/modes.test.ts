@@ -54,7 +54,7 @@ const MATRIX: Record<PermissionMode, Record<Call, string>> = {
   accept_edits: { read: 'run', editIn: 'run', editOut: 'ask', del: 'ask', web: 'run', click: 'run' },
   plan:         { read: 'run', editIn: 'block', editOut: 'block', del: 'block', web: 'run', click: 'block' },
   auto:         { read: 'run', editIn: 'run', editOut: 'ask', del: 'ask', web: 'run', click: 'run' },
-  unattended:   { read: 'run', editIn: 'run', editOut: 'run', del: 'run', web: 'run', click: 'run' },
+  unattended:   { read: 'run', editIn: 'run', editOut: 'run', del: 'block', web: 'run', click: 'run' },
 };
 
 describe('mode × tool matrix', () => {
@@ -283,5 +283,15 @@ describe('ask mode asks before any change until its plan is approved (live QA 20
   it('an unattended run never gets the ask: it is blocked', async () => {
     const copy = { toolName: 'fs_copy_file', args: { source: `${ROOT}/a.txt`, destination: `${ROOT}/b.txt` } };
     expect((await decideToolCall(input({ mode: 'ask', ...copy, attended: false }))).action).toBe('block');
+  });
+});
+
+describe('unattended runs never delete without approval (founder decision 2026-11-13)', () => {
+  it('blocks a delete with no policy at all, and a chat/global "always" grant does not unlock it', async () => {
+    const grants = new InMemoryGrantStore();
+    grants.add({ scopeKind: 'tool', scopeValue: 'fs_delete_file', subject: 'global', ttlSeconds: 3600 }, NOW);
+    const d = await decideToolCall(input({ mode: 'unattended', attended: false, ...CALLS.del, grants }));
+    expect(d.action).toBe('block');
+    expect(d.reason).toMatch(/unattended/);
   });
 });

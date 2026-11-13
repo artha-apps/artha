@@ -23,7 +23,8 @@
  *                 don't know. The classifier FAILS CLOSED.
  *   unattended    Nobody is watching (scheduled / LAN runs). Anything that
  *                 would ask is blocked and reported instead — the existing
- *                 fail-closed behaviour. A run that is unattended is ALWAYS in
+ *                 fail-closed behaviour. Deletes always count as asking here,
+ *                 whatever the tool policies say. A run that is unattended is ALWAYS in
  *                 this mode, whatever the chat's mode says.
  *
  * Per-call decision order (decideToolCall), most authoritative first:
@@ -361,6 +362,11 @@ async function modeRules(i: ToolCallGateInput): Promise<{ action: 'run' | 'ask' 
       }
       return null; // read-only, or the user approved this plan ⇒ policy decides
     case 'unattended':
+      // Nobody is watching: a delete never runs on the strength of "no policy
+      // said otherwise" (a new profile may have no delete policy at all).
+      // It asks, which an unattended run turns into skip-and-report.
+      if (DELETE_TOOLS.has(t)) return { action: 'ask', reason: 'Deleting always needs your approval.' };
+      return null;
     default:
       return null;
   }
@@ -421,8 +427,13 @@ export async function decideToolCall(i: ToolCallGateInput): Promise<ToolCallGate
       : null;
   if (!asking) return { action: 'run', source: 'baseline', reason: 'Allowed.' };
 
-  // 5. active grant turns the ask into a run.
-  const g = i.grants.findActive(query, i.now);
+  // 5. active grant turns the ask into a run. For a delete on an unattended
+  // run only a grant made for that schedule counts — a chat, project or
+  // global "always allow" never lets a background run delete.
+  const grantSubjects = !attended && DELETE_TOOLS.has(i.toolName)
+    ? i.subjects.filter(s => s.startsWith('schedule:'))
+    : i.subjects;
+  const g = i.grants.findActive({ ...query, subjects: grantSubjects }, i.now);
   if (g) return { action: 'run', source: 'grant', grantId: g.id, reason: `Allowed by your standing grant (${g.scope_kind}: ${g.scope_value}).` };
 
   return noAnswer({ action: 'ask', source: asking.source, reason: asking.reason });
