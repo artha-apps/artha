@@ -119,7 +119,7 @@
 | **security/** | |
 | `src/security/secrets.ts` | Connector-credential secret store — encrypts API keys/tokens at rest via Electron `safeStorage` (OS keychain) with a base64 fallback + availability flag |
 | **tools/** | |
-| `src/tools/filesystem.ts` | Built-in fs tools (list/search/read/move/copy/delete) — hard sandbox confines reads/writes to the chat's attached scopes when present |
+| `src/tools/filesystem.ts` | Built-in fs tools (list/search/read/move/copy/delete) — hard sandbox confines reads/writes to the chat's attached scopes when present; `fs_write_file` writes plain-text files (no overwrite unless asked, checkpointed, atomic) |
 | `src/tools/web.ts` | `webSearchImpl` — three-tier search chain (Brave → SearXNG → DuckDuckGo) + citation collection; the citation/workflow token is scoped per ReAct loop via AsyncLocalStorage (`runWithCitationToken`) |
 | `src/tools/citationToken.test.ts` | Vitest — interleaved and nested loops keep their own citation token and sources |
 | `src/tools/brave.ts` | Brave Search API client (free-tier tier of the search chain) |

@@ -163,6 +163,13 @@ export function recordFilesystemEffect(toolName: string, resultJson: string, ori
       if (to) push({ kind: 'copy', label: `Copied → ${path.basename(to)}`, copied: to }, origin);
       break;
     }
+    case 'fs_write_file': {
+      // A NEW file can be undone by removing it. An overwrite is not listed
+      // here: the previous version lives in the run's checkpoint (rewind).
+      const written = r.written as string;
+      if (written && r.created === true) push({ kind: 'copy', label: `Created ${path.basename(written)}`, copied: written }, origin);
+      break;
+    }
     case 'fs_create_directory': {
       const created = r.created as string;
       if (created) push({ kind: 'create_dir', label: `Created folder ${path.basename(created)}`, created }, origin);

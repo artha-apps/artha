@@ -231,6 +231,28 @@ export const FILESYSTEM_TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'fs_write_file',
+      description:
+        'Create a plain-text file with the given content (txt, md, csv, json, code, notes). ' +
+        'Refuses to replace an existing file unless overwrite is true. ' +
+        'For Word/Excel/PowerPoint/PDF documents use docs_generate instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path of the file to write' },
+          content: { type: 'string', description: 'The full text content of the file' },
+          overwrite: {
+            type: 'boolean',
+            description: 'Set true only to replace a file that already exists. Default false.',
+          },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'fs_copy_file',
       description: 'Copy a file from one location to another.',
       parameters: {
@@ -517,6 +539,41 @@ async function copyFileImpl(source: string, destination: string, roots?: ScopeRo
   return JSON.stringify({ copied: src, to: dst, success: true });
 }
 
+/** Largest text fs_write_file will write (the model produces it token by
+ *  token, so anything bigger is a mistake or a runaway). */
+export const MAX_WRITE_BYTES = 1024 * 1024;
+
+/**
+ * Write a plain-text file. Never replaces an existing file unless the caller
+ * says so, snapshots whatever is there first (so rewind restores it), and
+ * writes through a temp file + rename so a crash can't leave half a file.
+ */
+async function writeFileImpl(
+  filePath: string, content: unknown, overwrite: boolean,
+  roots?: ScopeRoot[] | null, before?: BeforeMutate,
+): Promise<string> {
+  if (typeof content !== 'string') throw new Error('fs_write_file needs "content" as text.');
+  const bytes = Buffer.byteLength(content, 'utf8');
+  if (bytes > MAX_WRITE_BYTES) throw new Error(`Content is too large to write (${bytes} bytes; the limit is ${MAX_WRITE_BYTES}).`);
+  const dst = safePath(expandTilde(filePath), roots);
+  const st = await fsp.stat(dst).catch(() => null);
+  if (st?.isDirectory()) throw new Error(`"${dst}" is a folder. Give the full path of the file to write.`);
+  if (st && !overwrite) {
+    throw new Error(`"${dst}" already exists and was NOT changed. To replace it, call fs_write_file again with overwrite: true.`);
+  }
+  await before?.([dst]); // snapshot the old version (or record "did not exist")
+  await fsp.mkdir(path.dirname(dst), { recursive: true });
+  const tmp = `${dst}.artha-write-${process.pid}-${Date.now()}`;
+  try {
+    await fsp.writeFile(tmp, content, 'utf8');
+    await fsp.rename(tmp, dst);
+  } catch (err) {
+    await fsp.unlink(tmp).catch(() => { /* nothing to clean up */ });
+    throw err;
+  }
+  return JSON.stringify({ written: dst, bytes, created: !st, success: true });
+}
+
 async function readFileImpl(filePath: string, roots?: ScopeRoot[] | null): Promise<string> {
   const resolved = safePath(expandTilde(filePath), roots);
   const stat = await fsp.stat(resolved);
@@ -633,6 +690,11 @@ async function dispatchFilesystemTool(
         (args.destination ?? args.dst ?? args.dest) as string,
         allowedRoots,
         before,
+      );
+    case 'fs_write_file':
+      return writeFileImpl(
+        (args.path ?? args.destination ?? args.filename) as string,
+        args.content, args.overwrite === true, allowedRoots, before,
       );
     case 'fs_read_file':
       return readFileImpl(args.path as string, allowedRoots);

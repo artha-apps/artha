@@ -109,11 +109,11 @@ export function describeEffect(
 /** Tools that change durable state — flagged in the receipt so the UI can show
  *  a "changed your files" badge and the audit view can filter to real effects. */
 export const RECEIPT_MUTATION_TOOLS = new Set([
-  // Kept in sync with MUTATION_TOOLS in agent/orchestrator.ts. Dead entries
-  // (fs_write_file, fs_rename_file) removed; the state-changing capabilities
-  // users actually run added, so receipts stop under-reporting real effects.
+  // Kept in sync with MUTATION_TOOLS in agent/orchestrator.ts. The dead entry
+  // fs_rename_file was removed; the state-changing capabilities users
+  // actually run were added, so receipts stop under-reporting real effects.
   'fs_move_file', 'fs_move_batch', 'fs_copy_file', 'fs_delete_file',
-  'fs_create_directory',
+  'fs_create_directory', 'fs_write_file',
   'docs_generate',
   'email_compose',
   'browser_click', 'browser_type', 'browser_navigate',

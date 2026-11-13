@@ -156,6 +156,50 @@ describe('checkpoint + rewind', () => {
   });
 });
 
+describe('fs_write_file', () => {
+  it('creates a new file, and rewind removes it again', async () => {
+    const out = JSON.parse(await step(1, 'fs_write_file', { path: at('notes/todo.md'), content: '# Todo\n- ship\n' }));
+    expect(out).toMatchObject({ success: true, created: true, written: at('notes/todo.md'), bytes: 14 });
+    expect(r('notes/todo.md')).toBe('# Todo\n- ship\n');
+    const rep = await rewindRunToStep('R1', 'step-1');
+    expect(rep.ok).toBe(true);
+    expect(fs.existsSync(at('notes/todo.md'))).toBe(false);
+  });
+
+  it('refuses to replace an existing file unless overwrite is true, and changes nothing', async () => {
+    await w('keep.txt', 'my original');
+    await expect(step(1, 'fs_write_file', { path: at('keep.txt'), content: 'clobbered' }))
+      .rejects.toThrow(/already exists and was NOT changed.*overwrite: true/);
+    expect(r('keep.txt')).toBe('my original');
+    expect(fs.readdirSync(dir).filter(f => f.includes('artha-write'))).toEqual([]); // no temp file left
+  });
+
+  it('an explicit overwrite is checkpointed: rewind brings the old version back byte for byte', async () => {
+    await w('keep.txt', 'my original');
+    const out = JSON.parse(await step(2, 'fs_write_file', { path: at('keep.txt'), content: 'new text', overwrite: true }));
+    expect(out).toMatchObject({ success: true, created: false });
+    expect(r('keep.txt')).toBe('new text');
+    const rep = await rewindRunToStep('R1', 'step-2');
+    expect(rep.ok).toBe(true);
+    expect(r('keep.txt')).toBe('my original');
+  });
+
+  it('rejects a folder path, non-text content, and oversized content', async () => {
+    await fsp.mkdir(at('afolder'));
+    await expect(step(1, 'fs_write_file', { path: at('afolder'), content: 'x' })).rejects.toThrow(/is a folder/);
+    await expect(step(1, 'fs_write_file', { path: at('a.txt') })).rejects.toThrow(/needs "content" as text/);
+    await expect(step(1, 'fs_write_file', { path: at('big.txt'), content: 'x'.repeat(1024 * 1024 + 1) })).rejects.toThrow(/too large/);
+    expect(fs.existsSync(at('big.txt'))).toBe(false);
+  });
+
+  it('stays inside the chat\'s attached folders', async () => {
+    const outside = path.join(os.tmpdir(), `artha-outside-${Date.now()}.txt`);
+    await expect(invokeFilesystemTool('fs_write_file', { path: outside, content: 'x' }, [{ path: dir, kind: 'folder' }] as never))
+      .rejects.toThrow();
+    expect(fs.existsSync(outside)).toBe(false);
+  });
+});
+
 describe('store limits are never silent', () => {
   it('evicts the oldest snapshot over the cap, logs it, and rewind reports it', async () => {
     configureCheckpointStore({ db, dir: store, capBytes: 20, log: (m) => logs.push(m) });

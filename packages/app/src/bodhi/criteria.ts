@@ -93,6 +93,9 @@ export function deriveCriteriaFromMutations(mutations: MutationLike[]): Criterio
       case 'fs_create_directory':
         add(m.args.path, 'was created');
         break;
+      case 'fs_write_file':
+        add(m.args.path ?? m.args.destination ?? m.args.filename, 'was written');
+        break;
       case 'fs_move_batch': {
         const moves = Array.isArray(m.args.moves) ? m.args.moves : [];
         for (const mv of moves.slice(0, MAX_BATCH_CRITERIA)) {

@@ -221,7 +221,8 @@ interface TrackedMutation {
  * run may describe them as done.
  *
  * This set previously covered filesystem tools only — and two of its entries
- * (`fs_write_file`, `fs_rename_file`) do not exist. That left the features
+ * did not exist then (`fs_rename_file` still doesn't; `fs_write_file` was
+ * added 2026-11-13). That left the features
  * users actually run outside verification entirely: "I created your Q3
  * report", "I submitted the form" and "I clicked through and booked it" were
  * unverified model prose, while desktop control — the highest-blast-radius
@@ -233,6 +234,7 @@ const MUTATION_TOOLS = new Set([
   'fs_move_file',
   'fs_move_batch',
   'fs_copy_file',
+  'fs_write_file',
   'fs_delete_file',
   'fs_create_directory',
   // Deliverables — the flagship "Artha made me a document" claim
