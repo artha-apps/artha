@@ -36,6 +36,23 @@ export function detectsFileAction(goal: string): boolean {
   return verb.test(goal) && object.test(goal);
 }
 
+/**
+ * How a run that ended with a final answer stands against a file-action goal.
+ *   - `unmet`: the user asked for a change on disk (and not a web action) and
+ *     no mutation succeeded. Such a run is NEVER recorded as succeeded.
+ *   - `askedClarifyingQuestion`: the reply is a question asked before anything
+ *     failed. A "?" after failed tool calls ("could you restate the task?"
+ *     from a model that lost the thread) is not a clarifying question.
+ *   - `warn`: show the deterministic "nothing was changed on disk" note.
+ */
+export function fileGoalVerdict(i: {
+  goal: string; isWebGoal: boolean; anyMutationSucceeded: boolean; finalText: string; toolCallErrors: number;
+}): { unmet: boolean; askedClarifyingQuestion: boolean; warn: boolean } {
+  const unmet = detectsFileAction(i.goal) && !i.isWebGoal && !i.anyMutationSucceeded;
+  const askedClarifyingQuestion = i.finalText.includes('?') && i.toolCallErrors === 0;
+  return { unmet, askedClarifyingQuestion, warn: unmet && !askedClarifyingQuestion };
+}
+
 /** Inputs the orchestrator feeds the guard at the moment the model returns a
  *  plain-text (no-tool-call) reply. */
 export interface ActGuardState {
