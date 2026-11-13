@@ -35,7 +35,7 @@ import {
   GOAL_TOOL_SCHEMAS, isGoalTool, getOpenGoal, createGoal, modelUpdateGoal, userStatedOutcome, GoalError,
 } from '../bodhi/goals';
 import {
-  evaluateGoal, applyStopGate, addGoalGapCriteria, numberEvidence, MAX_GOAL_FEEDBACK_ROUNDS,
+  evaluateGoal, applyStopGate, addGoalGapCriteria, numberEvidence, MAX_GOAL_FEEDBACK_ROUNDS, shouldRecheckBlockedGoal,
   type EvaluatorEvidence, type JudgeFn,
 } from '../bodhi/goalEvaluator';
 import { classifyToolResult, isFailure, countsAsCompletedMutation } from './toolOutcome';
@@ -3231,7 +3231,18 @@ Rules:
       const db = getDb();
       const goal = getOpenGoal(db, a.sessionId);
       if (!goal || goal.status === 'paused') return null;
-      if (goal.status === 'blocked') {
+      // A goal blocked BEFORE this run, in a run that then did real work, is
+      // checked again below (bodhi/goalEvaluator.shouldRecheckBlockedGoal).
+      let runStartedAtMs: number | null = null;
+      try {
+        const row = db.prepare(`SELECT created_at FROM agent_runs WHERE run_id=?`).get(a.runId) as { created_at?: number } | undefined;
+        if (typeof row?.created_at === 'number') runStartedAtMs = row.created_at * 1000;
+      } catch { /* unknown start ⇒ no re-check */ }
+      const recheckBlocked = goal.status === 'blocked' && shouldRecheckBlockedGoal({
+        goalUpdatedAtMs: goal.updatedAt, runStartedAtMs,
+        succeededWork: a.mutations.some(m => m.success) || a.goalEvidence.some(e => e.status === 'succeeded'),
+      });
+      if (goal.status === 'blocked' && !recheckBlocked) {
         // The model (or an earlier gate) said it can't proceed — honest, not a
         // false completion. Surface the reason and end as needs review — the
         // reason becomes a prose criterion so the run can't project as verified.
@@ -3258,14 +3269,19 @@ Rules:
       }, this.goalJudge(a.actorModel));
       if (a.stopped?.()) return null; // stopped while judging — never complete
       const r = applyStopGate(db, {
-        goal, verdict, roundsUsed: a.goalRounds, runId: a.runId, sessionId: a.sessionId, objective: a.goal,
+        // A re-check of a blocked goal gets no further feedback rounds: it
+        // either completes on this run's evidence or stays "needs you".
+        goal, verdict, roundsUsed: recheckBlocked ? MAX_GOAL_FEEDBACK_ROUNDS : a.goalRounds,
+        runId: a.runId, sessionId: a.sessionId, objective: a.goal,
       });
       const gapList = r.gaps.map(g => `- ${g}`).join('\n');
       const note = r.action === 'complete'
         ? `🎯 Goal met — confirmed by an independent check: ${goal.condition}`
         : r.action === 'needs_review'
           ? verdict.verdict === 'unmet'
-            ? `⚠️ Goal not met after ${MAX_GOAL_FEEDBACK_ROUNDS} more attempts — needs you. Still missing:\n${gapList}`
+            ? recheckBlocked
+              ? `⏸️ Goal still not met after this run — needs you. Still missing:\n${gapList}`
+              : `⚠️ Goal not met after ${MAX_GOAL_FEEDBACK_ROUNDS} more attempts — needs you. Still missing:\n${gapList}`
             : `⚠️ Goal could not be verified automatically — needs your review.${gapList ? `\n${gapList}` : ''}`
           : null;
       return { action: r.action, gaps: r.gaps, feedback: r.feedback, note };

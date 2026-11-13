@@ -15,7 +15,7 @@ import {
   createGoal, getOpenGoal, getGoal, modelUpdateGoal, userSetGoalStatus,
   markGoalCompletedByEvaluator, goalElapsedMs, userStatedOutcome, GoalError, type GoalsDb,
 } from './goals';
-import { applyStopGate, evaluateGoal, type GoalVerdict } from './goalEvaluator';
+import { applyStopGate, evaluateGoal, shouldRecheckBlockedGoal, MAX_GOAL_FEEDBACK_ROUNDS, type GoalVerdict } from './goalEvaluator';
 import { deriveDelegateOutcome } from './delegateOutcome';
 import { persistRunFacts } from './runFacts';
 
@@ -184,6 +184,48 @@ describe('stop gate', () => {
     expect(outcome.uiStatus).toBe('needs_review');
     expect(outcome.isComplete).toBe(false);
     expect(outcome.remainingWork.join(' ')).toContain('q3.pdf has no revenue table');
+  });
+
+  it('a goal the gate blocked can be completed by a LATER run that did the work (live QA 2026-11-13)', () => {
+    const raw = openDb(':memory:');
+    const db = asDb(raw);
+    seedRun(raw, 'r1');
+    seedRun(raw, 'r2');
+    const goal = freshGoal(db);
+    // Run 1 ended unmet with its rounds used up → blocked, "needs you".
+    const blocked = applyStopGate(db, { goal, verdict: unmet, roundsUsed: MAX_GOAL_FEEDBACK_ROUNDS, runId: 'r1', sessionId: 's1', objective: goal.objective }).goal!;
+    expect(blocked.status).toBe('blocked');
+
+    // Run 2 (the user's next turn) did the work; the evaluator now says met.
+    const met: GoalVerdict = { verdict: 'met', gaps: [], evidence_refs: ['E1'], source: 'judge' };
+    const r = applyStopGate(db, { goal: blocked, verdict: met, roundsUsed: MAX_GOAL_FEEDBACK_ROUNDS, runId: 'r2', sessionId: 's1', objective: goal.objective });
+    expect(r.action).toBe('complete');
+    expect(getGoal(db, 'g1')!.status).toBe('completed');
+    expect(getGoal(db, 'g1')!.blockedReason).toBeNull();
+  });
+
+  it('a re-check that is still unmet stays blocked with the CURRENT gaps, and never loops', () => {
+    const raw = openDb(':memory:');
+    const db = asDb(raw);
+    seedRun(raw, 'r1');
+    seedRun(raw, 'r2');
+    const goal = freshGoal(db);
+    const blocked = applyStopGate(db, { goal, verdict: unmet, roundsUsed: MAX_GOAL_FEEDBACK_ROUNDS, runId: 'r1', sessionId: 's1', objective: goal.objective }).goal!;
+    const stillUnmet: GoalVerdict = { verdict: 'unmet', gaps: ['the table has no Q3 column'], evidence_refs: [], source: 'judge' };
+    const r = applyStopGate(db, { goal: blocked, verdict: stillUnmet, roundsUsed: MAX_GOAL_FEEDBACK_ROUNDS, runId: 'r2', sessionId: 's1', objective: goal.objective });
+    expect(r.action).toBe('needs_review');
+    expect(getGoal(db, 'g1')!.status).toBe('blocked');
+    expect(getGoal(db, 'g1')!.blockedReason).toContain('the table has no Q3 column');
+    expect(getGoal(db, 'g1')!.blockedReason).not.toContain('q3.pdf has no revenue table');
+  });
+
+  it('shouldRecheckBlockedGoal: only a block from BEFORE this run, and only after real work', () => {
+    const base = { goalUpdatedAtMs: 1_000, runStartedAtMs: 5_000, succeededWork: true };
+    expect(shouldRecheckBlockedGoal(base)).toBe(true);
+    expect(shouldRecheckBlockedGoal({ ...base, succeededWork: false })).toBe(false);       // the run did nothing
+    expect(shouldRecheckBlockedGoal({ ...base, goalUpdatedAtMs: 6_000 })).toBe(false);     // blocked during this run
+    expect(shouldRecheckBlockedGoal({ ...base, goalUpdatedAtMs: 5_000 })).toBe(false);     // same instant: not "before"
+    expect(shouldRecheckBlockedGoal({ ...base, runStartedAtMs: null })).toBe(false);       // unknown start
   });
 
   it('records a false_completion_attempt every time the run tries to finish unmet', () => {

@@ -248,6 +248,25 @@ export function decideStopGate(verdict: GoalVerdict['verdict'], roundsUsed: numb
   return 'needs_review';
 }
 
+/**
+ * Should a goal that is already `blocked` be checked again when this run ends?
+ *
+ * A blocked goal used to short-circuit the gate forever: every later run
+ * repeated the stored reason. So after "needs you — the file does not exist",
+ * a user who replied "ok, create it" got a run that created the file AND a
+ * note still saying it does not exist (live QA, 2026-11-13).
+ *
+ * Re-check only when the block PREDATES this run (this run is the user's next
+ * turn, not the run in which the model said it was blocked) and the run did
+ * real work. The check itself is the normal evaluator, so completion still
+ * needs a `met` verdict backed by a succeeded tool result.
+ */
+export function shouldRecheckBlockedGoal(i: {
+  goalUpdatedAtMs: number; runStartedAtMs: number | null; succeededWork: boolean;
+}): boolean {
+  return i.runStartedAtMs != null && i.goalUpdatedAtMs < i.runStartedAtMs && i.succeededWork;
+}
+
 /** The system message that sends an unmet goal back to the model. */
 export function goalFeedbackMessage(goal: Pick<Goal, 'condition'>, gaps: string[], round: number, maxRounds = MAX_GOAL_FEEDBACK_ROUNDS): string {
   return (
