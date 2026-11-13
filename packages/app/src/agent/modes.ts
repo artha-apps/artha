@@ -4,9 +4,13 @@
  * A mode is chosen per chat session (chat_sessions.permission_mode) or, when
  * unset, derived from the `autonomousActions` setting. Five modes:
  *
- *   ask           Today's confirm behaviour: plans that change files always
- *                 stop at the plan card; per-call, the user's tool policies
- *                 decide (confirm-tier tools ask).
+ *   ask           Nothing changes without asking: until the user approves
+ *                 this run's plan, every tool that is not read-only asks
+ *                 first (an active grant still counts as an answer). Once the
+ *                 plan is approved, the user's tool policies decide
+ *                 (confirm-tier tools ask). This is enforced per call, so it
+ *                 holds even when the planner model fails to flag its plan
+ *                 as needing approval (found in live QA, 2026-11-12).
  *   accept_edits  File writes / moves / new folders INSIDE the chat's attached
  *                 folders run without asking. Deletes always ask, and edits
  *                 outside the attached folders ask.
@@ -352,6 +356,10 @@ async function modeRules(i: ToolCallGateInput): Promise<{ action: 'run' | 'ask' 
       return { action: g.decision === 'allow' ? 'run' : g.decision, reason: g.reason };
     }
     case 'ask':
+      if (!i.planApproved && !READ_ONLY_TOOLS.has(t)) {
+        return { action: 'ask', reason: `Ask mode: ${t} changes things, so Artha asks first.` };
+      }
+      return null; // read-only, or the user approved this plan ⇒ policy decides
     case 'unattended':
     default:
       return null;

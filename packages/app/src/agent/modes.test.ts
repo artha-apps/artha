@@ -50,7 +50,7 @@ const MODES: PermissionMode[] = ['ask', 'accept_edits', 'plan', 'auto', 'unatten
 // Expected action per (mode, call) for an attended run, no grants, auto policy,
 // plan NOT yet approved. 'ask' in unattended can't happen — it would be 'block'.
 const MATRIX: Record<PermissionMode, Record<Call, string>> = {
-  ask:          { read: 'run', editIn: 'run', editOut: 'run', del: 'run', web: 'run', click: 'run' },
+  ask:          { read: 'run', editIn: 'ask', editOut: 'ask', del: 'ask', web: 'run', click: 'ask' },
   accept_edits: { read: 'run', editIn: 'run', editOut: 'ask', del: 'ask', web: 'run', click: 'run' },
   plan:         { read: 'run', editIn: 'block', editOut: 'block', del: 'block', web: 'run', click: 'block' },
   auto:         { read: 'run', editIn: 'run', editOut: 'ask', del: 'ask', web: 'run', click: 'run' },
@@ -271,5 +271,17 @@ describe('mode resolution + plan gate', () => {
     expect(isPermissionMode('auto')).toBe(true);
     expect(isPermissionMode('yolo')).toBe(false);
     expect(isPermissionMode(3)).toBe(false);
+  });
+});
+
+describe('ask mode asks before any change until its plan is approved (live QA 2026-11-12)', () => {
+  it('a copy inside the attached folder asks; after plan approval the policy decides', async () => {
+    const copy = { toolName: 'fs_copy_file', args: { source: `${ROOT}/a.txt`, destination: `${ROOT}/b.txt` } };
+    expect((await decideToolCall(input({ mode: 'ask', ...copy }))).action).toBe('ask');
+    expect((await decideToolCall(input({ mode: 'ask', ...copy, planApproved: true }))).action).toBe('run');
+  });
+  it('an unattended run never gets the ask: it is blocked', async () => {
+    const copy = { toolName: 'fs_copy_file', args: { source: `${ROOT}/a.txt`, destination: `${ROOT}/b.txt` } };
+    expect((await decideToolCall(input({ mode: 'ask', ...copy, attended: false }))).action).toBe('block');
   });
 });
