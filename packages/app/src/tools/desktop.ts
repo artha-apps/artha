@@ -180,16 +180,65 @@ function resolveKeys(nut: any, combo: string): unknown[] {
 const TYPE_CHUNK = 16;
 
 /**
- * Resolve the app a desktop action will land in, for the per-app grant check
- * (desktop/appGrants.ts). desktop_open_app targets the app being opened; every
- * other action targets the frontmost app (macOS System Events). Returns null
- * when the app can't be determined — the gate then treats it as unknown and
- * asks (fail closed).
+ * JXA: the owner app of the topmost normal window (layer 0) containing the
+ * point argv[0], argv[1] in global screen points — the same space nut-js
+ * moves the mouse in. Prints '' when no app window is there (desktop, menu
+ * bar, Dock). Owner names need no Screen Recording permission.
  */
-export async function resolveDesktopTargetApp(name: string, args: Record<string, unknown>): Promise<string | null> {
+const WINDOW_OWNER_AT_JXA = `
+ObjC.import('CoreGraphics'); ObjC.import('Foundation');
+function run(argv) {
+  const x = Number(argv[0]), y = Number(argv[1]);
+  const list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo(
+    $.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID));
+  for (let i = 0; i < list.count; i++) {
+    const w = list.objectAtIndex(i);
+    if (ObjC.unwrap(w.objectForKey('kCGWindowLayer')) !== 0) continue;
+    const b = ObjC.deepUnwrap(w.objectForKey('kCGWindowBounds'));
+    if (x >= b.X && x < b.X + b.Width && y >= b.Y && y < b.Y + b.Height) {
+      return ObjC.unwrap(w.objectForKey('kCGWindowOwnerName')) || '';
+    }
+  }
+  return '';
+}`;
+
+/** Runs a command and returns its stdout (injectable for tests). */
+export type ExecText = (cmd: string, args: string[]) => Promise<string>;
+
+const execText: ExecText = async (cmd, args) => {
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  return (await promisify(execFile)(cmd, args, { timeout: 3000 })).stdout;
+};
+
+/**
+ * Resolve the app a desktop action will land in, for the per-app grant check
+ * (desktop/appGrants.ts):
+ *   - desktop_open_app → the app being opened;
+ *   - desktop_click / desktop_move_mouse → the app that owns the window under
+ *     (x, y). Gating clicks on the FRONTMOST app let a click pass under the
+ *     front app's grant while landing in a window beside or behind it, e.g.
+ *     System Settings or a password manager (bug-hunt R2 #2);
+ *   - keyboard actions → the frontmost app, which receives the keys.
+ * Returns null when the app can't be determined — the gate then treats it as
+ * unknown and asks, or skips on unattended runs (fail closed).
+ */
+export async function resolveDesktopTargetApp(
+  name: string, args: Record<string, unknown>, exec: ExecText = execText,
+): Promise<string | null> {
   if (name === 'desktop_open_app') {
     const app = String(args.appName ?? '').trim();
     return app || null;
+  }
+  if (name === 'desktop_click' || name === 'desktop_move_mouse') {
+    const x = Number(args.x), y = Number(args.y);
+    if (process.platform !== 'darwin' || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    try {
+      const owner = (await exec('osascript', ['-l', 'JavaScript', '-e', WINDOW_OWNER_AT_JXA, String(x), String(y)])).trim();
+      return owner || null;
+    } catch {
+      return null; // never fall back to the frontmost app for a pointer action
+    }
   }
   if (process.platform === 'darwin') {
     try {

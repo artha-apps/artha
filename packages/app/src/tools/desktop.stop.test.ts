@@ -56,4 +56,28 @@ describe('desktop tools under the kill switch', () => {
       expect(await resolveDesktopTargetApp('desktop_click', { x: 1, y: 1 })).toBeNull();
     }
   });
+
+  describe('pointer actions are gated on the window under the point (R2 #2)', () => {
+    const asDarwin = async (fn: () => Promise<void>) => {
+      const real = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      try { await fn(); } finally { Object.defineProperty(process, 'platform', real); }
+    };
+
+    it('asks for the owner of the window at (x, y), not the frontmost app', () => asDarwin(async () => {
+      const exec = vi.fn(async (_cmd: string, args: string[]) => (args.slice(-2).join(',') === '900,300' ? 'System Settings\n' : 'Notes\n'));
+      expect(await resolveDesktopTargetApp('desktop_click', { x: 900, y: 300 }, exec)).toBe('System Settings');
+      expect(exec.mock.calls[0][0]).toBe('osascript');
+      expect(exec.mock.calls[0][1].slice(0, 2)).toEqual(['-l', 'JavaScript']);
+      expect(await resolveDesktopTargetApp('desktop_move_mouse', { x: 10, y: 10 }, exec)).toBe('Notes');
+    }));
+
+    it('is unknown (fail closed) over no app window, on a lookup error, or without coordinates', () => asDarwin(async () => {
+      expect(await resolveDesktopTargetApp('desktop_click', { x: 5, y: 5 }, async () => '\n')).toBeNull();
+      expect(await resolveDesktopTargetApp('desktop_click', { x: 5, y: 5 }, async () => { throw new Error('denied'); })).toBeNull();
+      const exec = vi.fn(async () => 'Notes');
+      expect(await resolveDesktopTargetApp('desktop_click', {}, exec)).toBeNull();
+      expect(exec).not.toHaveBeenCalled();
+    }));
+  });
 });
