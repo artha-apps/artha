@@ -150,6 +150,12 @@ export interface ContextPackRow {
 type RunEventWire = { runId: string; seq: number; ts: number; kind: string; payload: unknown };
 
 const api = {
+  // Doctor — read-only health report (doctor/inspect.ts).
+  doctor: {
+    inspect: () => ipcRenderer.invoke('doctor:inspect') as Promise<{
+      checks: { id: string; label: string; status: 'ok' | 'warn' | 'error'; detail: string; fix?: string }[];
+    }>,
+  },
   // ── Agent ────────────────────────────────────────────────────────────────
   agent: {
     /** opts.modelOverride runs THIS message on a specific saved model (cloud

@@ -87,6 +87,8 @@ import { generateDocument } from '../docs/generator';
 import { exportBundle, importBundle } from '../bundles/bundle';
 import { runBenchmark, benchmarkModel, listProfiles, setOverride, listOverrides } from '../router/benchmark';
 import { getDb } from '../db/schema';
+import { inspect as doctorInspect } from '../doctor/inspect';
+import { realDoctorDeps } from '../doctor/probes';
 import { recomputePrimaryProject, getSessionScopes, findOrCreateFolderWorkspace } from '../db/scopes';
 import {
   listPacks, savePackFromSession, applyPackToSession,
@@ -1898,6 +1900,9 @@ export function registerIpcHandlers(window: BrowserWindow): void {
   // touching the user's own install. Switching :11434 to the managed copy is
   // consent-gated (llm/ollamaRuntime.ts switchToManagedRuntime).
   ipcMain.handle('ollama:runtimeReport', () => getRuntimeReport());
+
+  // Doctor — read-only health report (doctor/inspect.ts). No auto-fix.
+  ipcMain.handle('doctor:inspect', () => doctorInspect(realDoctorDeps()));
 
   let runtimeInstallAbort: AbortController | null = null;
   ipcMain.handle('ollama:runtimeInstall', async () => {
