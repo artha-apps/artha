@@ -154,7 +154,7 @@ export default function ToolApprovalModal() {
           <div>
             <p className="text-sm font-semibold text-artha-text">Approve this action?</p>
             <p className="text-xs text-artha-muted mt-0.5">
-              Your tool policy asks for confirmation before this call runs.
+              Artha needs your OK before this step runs. It will wait for you.
             </p>
           </div>
         </div>

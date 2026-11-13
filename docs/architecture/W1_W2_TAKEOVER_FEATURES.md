@@ -26,6 +26,13 @@ Undo entries are stored in `undo_entries`, so Undo survives a restart (`agent/un
 
 `agent/interactions.ts` handles every pause for a person: an `ask_user` question, a plan approval, a browser handoff, or a policy confirm. Each one opens a single `Interaction` frame, persisted in `interactions` (DDL in `db/interactionsTable.ts`), so a pending question survives a renderer reload. `agent/askUser.ts` lets the model ask 1–4 multiple-choice questions mid-run. The answers resolve the same tool call, so no new turn starts. `agent/planReview.ts` adds Accept, Accept with comments (one planner revision) and Reject (ends the run as cancelled-by-user). `agent/interactionRunEvents.ts` mirrors ask and plan interactions into the run event log. Renderer side: `components/Chat/AskUserCard.tsx`, `lib/askCard.ts` and `stores/interactions.ts`.
 
+**Every pause waits until it is answered.** Question cards and plan reviews always did; tool approval prompts used to expire after 2 minutes (counted as a decline) and now wait too. What that relies on:
+- **Unattended runs are never asked.** `requestToolApproval` refuses up front when the run is scheduled or from the LAN, so nothing can park a run nobody is watching.
+- **Stop releases a waiting prompt,** including one raised by a sub-capability loop (`workflowParents` links a child workflow to its caller). Quitting the app also ends it; the run then shows as interrupted with a resume offer.
+- **A waiting run costs nothing.** It does not hold the keep-awake blocker (`system/keepAwake.ts`, `runWaiting`), and the run monitor writes one heartbeat every 5 minutes instead of every 10 seconds.
+- **A prompt cannot leave the screen unanswered.** The main process lists everything still waiting (`InteractionHub.listPending`, including a prompt whose row could not be written). The renderer keeps the shown prompt until that list says it is settled and then shows the next one (`lib/pendingPrompts.ts`).
+- **The user is told once.** If a prompt is still open after 30 seconds and Artha is not the focused app, one notification says a task is waiting (`APPROVAL_NUDGE_MS`).
+
 ## Outbox
 
 While a run is active, the composer's Send becomes Queue, and messages go to `outbox` (`agent/outbox.ts`, DDL in `db/outboxSchema.ts`) instead of starting a competing run. `agent/outboxDriver.ts` decides when to send. It drains the next item after the run ends and injects "steer now" items at the next tool-call boundary. It never sends past a pending approval, ask card or plan review. After a cancel the queue pauses (`chat_sessions.outbox_paused`, `outbox_paused_reason`). Delegate uses the same queue. Renderer side: `components/Chat/OutboxPanel.tsx`, `lib/outboxQueue.ts` and `lib/delegateParity.ts`.

@@ -17,7 +17,7 @@
 import { BrowserWindow } from 'electron';
 import * as os from 'os';
 import * as fs from 'fs';
-import { sendNotification } from '../notify';
+import { sendNotification, appHasFocus } from '../notify';
 import { getActiveLLMClient, resolveRunModel, type StreamedMessage, type TaskType } from '../llm/client';
 import { MCPRegistry, type ToolContext } from '../mcp/registry';
 import { SkillRegistry, toActive, type ActiveSkill } from '../skills/registry';
@@ -26,7 +26,7 @@ import { getPackContextBlock, getPackSkillId } from './contextPacks';
 import { getDb } from '../db/schema';
 import { getSessionScopes, getSessionAllowedRoots, getSessionPrimaryFolder, getSessionRagIndexIds } from '../db/scopes';
 import { buildShallowTree } from './folderTree';
-import { noteRunStarted, noteRunEnded } from '../system/keepAwake';
+import { noteRunStarted, noteRunEnded, noteRunWaiting } from '../system/keepAwake';
 import { AWAITING_USER_ANSWER } from '../bodhi/taskModel';
 import { getRunContext, confirmTierMustFailClosed, runWithContext, type RunContext } from './runContext';
 import { persistRunFacts, recordEvidence } from '../bodhi/runFacts';
@@ -182,9 +182,13 @@ export interface AgentPlan {
   originActor?: string;
 }
 
-/** How long an approval prompt waits before it expires unanswered (the call
- *  is then not executed). Unchanged from before; named so messages can state it. */
-export const APPROVAL_TIMEOUT_MS = 120_000;
+/**
+ * Approval prompts on attended runs wait until the user answers; there is no
+ * timeout (founder decision 2026-11-13: a 2-minute limit failed the task when
+ * the user stepped away). After this long unanswered, and only if Artha is not
+ * the focused app, ONE notification says it is waiting.
+ */
+export const APPROVAL_NUDGE_MS = 30_000;
 
 /** A per-tool-call approval the orchestrator paused on because a policy assigned
  *  the call the `confirm` tier. The renderer shows a modal and answers via
@@ -295,6 +299,10 @@ export class AgentOrchestrator {
    *  The workflowId is kept so cancelWorkflow() can promptly deny any approval
    *  the user is mid-decision on when they hit Stop. */
   private toolApprovalResolvers = new Map<string, { workflowId: string; resolve: (approved: boolean, always?: boolean) => void }>();
+  /** Child workflow → the workflow that invoked it (sub-capability loops get
+   *  their own workflow id). Stop on a workflow must also release prompts its
+   *  children are waiting on — they wait until answered, so nothing else would. */
+  private workflowParents = new Map<string, string>();
   /** Workflows whose plan the user explicitly approved on the plan card. Plan
    *  mode unlocks state-changing tools only for these; auto mode lets a delete
    *  that was in an approved plan run without a second prompt. */
@@ -882,9 +890,9 @@ ${envBlock}`,
   }
 
   /** Emit a tool-approval request to the renderer and block until the user
-   *  answers (or a safety timeout denies it). Used when a policy assigns a tool
-   *  call the `confirm` tier. Defaults to DENY on timeout — a governance gate
-   *  must fail closed. */
+   *  answers. There is no timeout: an attended run waits (Stop, or quitting
+   *  the app, releases it). A run nobody is watching is never asked — the
+   *  call is refused up front, so the gate still fails closed. */
   private async requestToolApproval(req: {
     workflowId: string;
     sessionId: string;
@@ -900,10 +908,19 @@ ${envBlock}`,
     appGrant?: ToolApprovalRequest['appGrant'];
     /** Receives the approvalId so a caller can read the chosen scope. */
     onId?: (approvalId: string) => void;
-    /** Called when the prompt EXPIRED with no answer (the result is then
-     *  false, like a decline, but nobody actually said no). */
-    onExpired?: () => void;
+    /** Called when the prompt was NOT shown because nobody is watching this
+     *  run (the result is then false, but nobody actually said no). */
+    onNotAsked?: () => void;
   }): Promise<boolean> {
+    // Fail closed before anything is shown. Every caller already blocks an
+    // unattended run earlier (decideToolCall, the desktop gate, the goal and
+    // email guards); this is the backstop, and it matters more now that a
+    // prompt waits forever: a scheduled or LAN run must never park on one.
+    if (confirmTierMustFailClosed(getRunContext())) {
+      console.warn(`[Artha] approval for ${req.toolName} not requested: nobody is watching this run.`);
+      try { req.onNotAsked?.(); } catch { /* caller bookkeeping only */ }
+      return false;
+    }
     const approvalId = crypto.randomUUID();
     req.onId?.(approvalId);
     // App-grant prompts manage their own (per-app) grant; they never record a
@@ -933,28 +950,41 @@ ${envBlock}`,
         approvalId, status === 'answered' && (answer as { approved?: unknown } | null)?.approved === true,
       ),
     );
-    let timedOut = false;
-    return Promise.race([
-      new Promise<boolean>(resolve => {
-        this.toolApprovalResolvers.set(approvalId, {
-          workflowId: req.workflowId,
-          resolve: (approved, always) => {
-            // "Always allow" records an expiring tool grant so the same tool
-            // stops asking (bodhi/grants.ts). Only when offered and approved.
-            if (approved && always && allowAlways) this.recordStandingGrant(req.sessionId, req.toolName);
-            resolve(approved);
-          },
-        });
-      }),
-      new Promise<boolean>(resolve => setTimeout(() => { timedOut = true; resolve(false); }, APPROVAL_TIMEOUT_MS)),
-    ]).then(approved => {
-      hub.settle(approvalId, timedOut ? 'expired' : approved ? 'answered' : 'declined', { approved });
-      // Logging only — the decision itself (including fail-closed timeout) is
-      // unchanged. An expiry is recorded as such: nobody declined.
-      if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'response', approvalId, approved, ...(timedOut ? { expired: true } : {}) });
-      if (timedOut) { try { req.onExpired?.(); } catch { /* caller bookkeeping only */ } }
+    // If the user is elsewhere, tell them once that a task is waiting. (With
+    // the old 2-minute limit they at least got "task failed"; a silent wait
+    // would be worse.) No tool arguments in the text: it may show on a lock
+    // screen. A notification must never affect the run.
+    const nudge = setInterval(() => {
+      try {
+        if (appHasFocus()) return; // they are looking at the prompt
+        clearInterval(nudge);
+        sendNotification(
+          'Artha is waiting for your approval',
+          req.appGrant
+            ? `A task is paused until you allow or deny control of ${req.appGrant.appName}.`
+            : `A task is paused until you approve or deny one step (${req.toolName}).`,
+        );
+      } catch { clearInterval(nudge); }
+    }, APPROVAL_NUDGE_MS);
+    (nudge as { unref?: () => void }).unref?.();
+
+    return new Promise<boolean>(resolve => {
+      this.toolApprovalResolvers.set(approvalId, {
+        workflowId: req.workflowId,
+        resolve: (approved, always) => {
+          // "Always allow" records an expiring tool grant so the same tool
+          // stops asking (bodhi/grants.ts). Only when offered and approved.
+          if (approved && always && allowAlways) this.recordStandingGrant(req.sessionId, req.toolName);
+          resolve(approved);
+        },
+      });
+    }).then(approved => {
+      hub.settle(approvalId, approved ? 'answered' : 'declined', { approved });
+      // Logging only — the decision itself is unchanged.
+      if (req.runId) recordRunEvent(req.runId, 'interaction', { phase: 'response', approvalId, approved });
       return approved;
     }).finally(() => {
+      clearInterval(nudge);
       this.toolApprovalResolvers.delete(approvalId);
       // Only app-grant callers read the scope back (requestAppGrant); drop it
       // for every other prompt so the map can't grow.
@@ -1235,21 +1265,37 @@ or
   /** Called when user hits the Stop button in the UI. */
   cancelWorkflow(workflowId: string): void {
     this.cancelledWorkflows.add(workflowId);
+    // This workflow plus every sub-capability loop running under it. Their
+    // prompts wait until answered, so Stop has to release them explicitly.
+    const targets = this.withChildWorkflows(workflowId);
     // Unified frame: decline any pending ask_user card (and any other pending
-    // interaction) of this workflow so the awaiting call unblocks now.
-    getInteractionHub().declineForWorkflow(workflowId);
+    // interaction) of these workflows so the awaiting calls unblock now.
+    for (const wf of targets) getInteractionHub().declineForWorkflow(wf);
     // Remembered until the chat turn ends so the outbox pauses ("Queue paused
     // after cancel") instead of auto-sending the next queued message.
     const stoppedSession = this.workflowSessions.get(workflowId) ?? this.sessionOfWorkflow(workflowId);
     // Only while that session's turn is live — a late Stop after the turn
     // ended must not pause the NEXT turn's queue.
     if (stoppedSession && this.outbox.isActive(stoppedSession)) this.userStoppedSessions.add(stoppedSession);
-    // If the user is mid-decision on a tool-approval modal for this workflow,
-    // deny it immediately so the loop unblocks now instead of after the 120s
-    // timeout — otherwise Stop feels broken while an approval is pending.
+    // If the user is mid-decision on a tool-approval modal for this workflow
+    // (or one of its sub-capability loops), deny it now so the loop unblocks.
+    // Approval prompts have no timeout, so this is what makes Stop work.
     for (const [, entry] of this.toolApprovalResolvers) {
-      if (entry.workflowId === workflowId) entry.resolve(false);
+      if (targets.has(entry.workflowId)) entry.resolve(false);
     }
+  }
+
+  /** `workflowId` and every workflow running under it (transitively). */
+  private withChildWorkflows(workflowId: string): Set<string> {
+    const out = new Set<string>([workflowId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [child, parent] of this.workflowParents) {
+        if (out.has(parent) && !out.has(child)) { out.add(child); grew = true; }
+      }
+    }
+    return out;
   }
 
   /** Decompose a goal into independent sub-tasks and run them concurrently.
@@ -1810,8 +1856,10 @@ RULES — follow exactly, no exceptions:
     // Tell the renderer which run backs this workflow so it can resubscribe
     // to the run's event log from its last seq after a reload.
     if (!args.silent) this.emit('run:started', { runId: args.runId, workflowId: args.workflowId, sessionId: args.sessionId });
-    const stopMonitor = startRunMonitor(args.runId);
     const awake = noteRunStarted(args.runId);
+    // While the run waits on the user (approval prompt, question card) it does
+    // not hold the machine awake; the monitor reports each change.
+    const stopMonitor = startRunMonitor(args.runId, { onAwaitingUser: (waiting) => noteRunWaiting(awake, waiting) });
     try {
       const s = JSON.parse((getDb().prepare(`SELECT settings_json FROM users WHERE user_id='default'`).get() as { settings_json?: string } | undefined)?.settings_json ?? '{}');
       if (typeof s.desktop_stop_shortcut === 'string' && s.desktop_stop_shortcut) getKillSwitch()?.setAccelerator(s.desktop_stop_shortcut);
@@ -1954,8 +2002,9 @@ RULES — follow exactly, no exceptions:
     // fallback) is refused without asking again (found in live QA 2026-11-12:
     // a declined send was re-prompted by the fallback).
     const declinedTools = new Set<string>();
-    // The subset of those whose prompt EXPIRED unanswered (nobody said no).
-    const unansweredTools = new Set<string>();
+    // The subset of those that were never asked about, because nobody is
+    // watching this run (nobody said no; worded differently below).
+    const notAskedTools = new Set<string>();
     // The text intent detection reads (file task? send? web action?). On a
     // scheduler run the prompt also carries trigger details (file names from
     // a watched folder, …) that someone else chose; only the task the user
@@ -2324,8 +2373,8 @@ RULES — follow exactly, no exceptions:
             toolResult = `Error: ${toolCall.function.name} was not executed — ${gate.reason}`;
             toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
           } else if (gate.action === 'ask' && declinedTools.has(toolCall.function.name)) {
-            toolResult = unansweredTools.has(toolCall.function.name)
-              ? `Error: The approval prompt for ${toolCall.function.name} already went unanswered in this run, so it was not asked again or executed. Do not retry it — say plainly that this step is waiting for the user's approval.`
+            toolResult = notAskedTools.has(toolCall.function.name)
+              ? `Error: ${toolCall.function.name} needs approval and nobody is watching this run to give it, so it was NOT executed (as before). Do not retry it — say plainly that this step needs the user's approval.`
               : `Error: The user already declined ${toolCall.function.name} in this run, so it was not asked again or executed. Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
             toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
           } else if (gate.action === 'ask') {
@@ -2333,23 +2382,23 @@ RULES — follow exactly, no exceptions:
             // asks on unattended runs (LAN / scheduled) into blocks. NOTE:
             // `silent` does NOT mean unattended — Delegate runs are silent but
             // a desktop user approves via the app-level ToolApprovalModal.
-            let promptExpired = false;
+            let notAsked = false;
             const approved = await this.requestToolApproval({
               workflowId: args.workflowId, sessionId: args.sessionId,
               toolName: toolCall.function.name, args: parsedArgs,
               note: decision.note || gate.reason,
               allowAlways: gate.source !== 'floor',
               runId: args.runId,
-              onExpired: () => { promptExpired = true; },
+              onNotAsked: () => { notAsked = true; },
             });
             if (!approved) {
-              // Either way it is not asked again in this run (a second prompt
-              // would wait another ${APPROVAL_TIMEOUT_MS / 60_000} minutes), but the two are worded
-              // truthfully: an unanswered prompt is not a "no".
+              // Not asked again in this run either way. The prompt itself has
+              // no timeout, so a false here is a real "no" (or Stop) — except
+              // the backstop case where nobody is watching, worded truthfully.
               declinedTools.add(toolCall.function.name);
-              if (promptExpired) unansweredTools.add(toolCall.function.name);
-              toolResult = promptExpired
-                ? `Error: Nobody answered the approval prompt for ${toolCall.function.name} within ${APPROVAL_TIMEOUT_MS / 60_000} minutes, so it was NOT executed. The user did not decline it. Do not retry it — finish what you can and say plainly that this step is waiting for their approval.`
+              if (notAsked) notAskedTools.add(toolCall.function.name);
+              toolResult = notAsked
+                ? `Error: ${toolCall.function.name} needs approval and nobody is watching this run to give it, so it was NOT executed. Nobody declined it. Do not retry it — finish what you can and say plainly that this step needs the user's approval.`
                 : `Error: The user declined this action (${toolCall.function.name}). Do not retry it — continue with the rest of the task, or ask how they'd like to proceed.`;
               toolStatus = 'error'; receiptStatus = 'blocked'; policyHandled = true;
             }
@@ -2742,7 +2791,7 @@ RULES — follow exactly, no exceptions:
         let det: { sent: boolean; to: string | null; reason?: string } = { sent: false, to: null };
         if (detectsSendIntent(intentGoal) && !sendWasConfirmed() && declinedTools.has('email_send')) {
           // The user already said no to this send — never ask a second time.
-          det = { sent: false, to: null, reason: unansweredTools.has('email_send') ? 'unanswered' : 'declined' };
+          det = { sent: false, to: null, reason: 'declined' };
         } else if (detectsSendIntent(intentGoal) && !sendWasConfirmed()) {
           det = await this.deterministicEmailSend(
             { goal: intentGoal, workflowId: args.workflowId, sessionId: args.sessionId, runId: args.runId },
@@ -2763,8 +2812,6 @@ RULES — follow exactly, no exceptions:
             `❌ The email was not sent — nothing was delivered.\n\n` +
             (det.reason === 'declined'
               ? `You declined the send, so nothing went out. `
-              : det.reason === 'unanswered'
-              ? `The approval prompt wasn't answered within ${APPROVAL_TIMEOUT_MS / 60_000} minutes, so nothing went out. `
               : triedToSend
                 ? `I tried to send it but couldn't confirm delivery — this usually means you're not signed ` +
                   `in to Gmail in Artha's browser. `
@@ -3129,6 +3176,8 @@ Rules:
     ];
 
     const startMs = Date.now();
+    // Linked for its lifetime so Stop on the caller reaches this loop's prompts.
+    this.workflowParents.set(workflowId, args.parentWorkflowId);
     try {
       await this.runReactLoop({
         workflowId,
@@ -3149,6 +3198,7 @@ Rules:
       ).get(childSessionId) as { content: string } | undefined;
       return row?.content?.trim() || '(the capability finished but produced no summary)';
     } finally {
+      this.workflowParents.delete(workflowId);
       // A composed sub-capability is a real skill execution — record it (tagged
       // 'invoke') so the dashboard reflects delegated work too. Tool counts use
       // the CHILD runId, so they never double-count against the parent skill.
@@ -3399,15 +3449,13 @@ Rules:
     const fields = parseEmailFieldsFromGoal(args.goal) ?? await this.extractEmailFields(args.goal);
     if (!fields) return { sent: false, to: null, reason: 'no recipient could be extracted' };
     recordStep(stepIdx, 'system', { note: 'deterministic-send', to: fields.to });
-    let fallbackExpired = false;
     const approved = await this.requestToolApproval({
       workflowId: args.workflowId, sessionId: args.sessionId,
       toolName: 'email_send', args: fields,
       note: `Send this email to ${fields.to} through your Gmail.`,
       runId: args.runId,
-      onExpired: () => { fallbackExpired = true; },
     });
-    if (!approved) return { sent: false, to: fields.to, reason: fallbackExpired ? 'unanswered' : 'declined' };
+    if (!approved) return { sent: false, to: fields.to, reason: 'declined' };
     try {
       const result = await this.registry.invokeTool('email_send', fields, { runId: args.runId });
       let sent = false;

@@ -27,7 +27,7 @@ const electron = vi.hoisted(() => {
 vi.mock('electron', () => ({ powerSaveBlocker: electron.powerSaveBlocker, powerMonitor: electron.powerMonitor }));
 
 import {
-  KeepAwakeController, installKeepAwake, noteRunStarted, noteRunEnded, setKeepAwakeController,
+  KeepAwakeController, installKeepAwake, noteRunStarted, noteRunEnded, noteRunWaiting, setKeepAwakeController,
   readKeepAwakeSettings, type KeepAwakeSettings,
 } from './keepAwake';
 
@@ -60,6 +60,41 @@ describe('KeepAwakeController', () => {
     expect(c.holding).toBe(false);
     c.runEnded(t2); // idempotent
     expect(b.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('a run waiting on the user does not hold the machine awake; it holds again once answered', () => {
+    const b = fakeBlocker();
+    const c = new KeepAwakeController({ blocker: b, onBattery: () => false, settings: () => ({ keepAwakeWhileRunning: true, keepAwakeOnBattery: false }) });
+    const t = c.runStarted('r1');
+    expect(c.holding).toBe(true);
+    c.runWaiting(t, true);            // an approval prompt opened — it may wait for hours
+    expect(c.holding).toBe(false);
+    expect(c.activeRuns).toBe(1);     // still an active run, just not working
+    expect(c.workingRuns).toBe(0);
+    c.runWaiting(t, true);            // repeated notice changes nothing
+    expect(b.stop).toHaveBeenCalledTimes(1);
+    c.runWaiting(t, false);           // answered → working again
+    expect(c.holding).toBe(true);
+    c.runEnded(t);
+    expect(c.holding).toBe(false);
+  });
+
+  it('holds while ANY run is working, even if another is waiting on the user', () => {
+    const b = fakeBlocker();
+    const c = new KeepAwakeController({ blocker: b, onBattery: () => false, settings: () => ({ keepAwakeWhileRunning: true, keepAwakeOnBattery: false }) });
+    const waiting = c.runStarted('chat');
+    const working = c.runStarted('scheduled');
+    c.runWaiting(waiting, true);
+    expect(c.holding).toBe(true);     // the scheduled run is still working
+    c.runEnded(working);
+    expect(c.holding).toBe(false);    // only the waiting run is left
+    c.runEnded(waiting);              // ended while waiting (Stop) — no stale state
+    const again = c.runStarted('next');
+    expect(c.holding).toBe(true);
+    c.runEnded(again);
+    c.runWaiting(again, true);        // an ended run's late notice is ignored
+    expect(c.workingRuns).toBe(0);
+    expect(c.holding).toBe(false);
   });
 
   it('never holds when the setting is off (the default)', () => {
@@ -114,6 +149,19 @@ describe('installKeepAwake (mocked electron)', () => {
     settings = '{}';
     noteRunStarted('run-2');                    // setting off → never held
     expect(electron.started.size).toBe(0);
+  });
+
+  it('noteRunWaiting releases and re-acquires through the installed controller', async () => {
+    await installKeepAwake(() => JSON.stringify({ keepAwakeWhileRunning: true }));
+    const t = noteRunStarted('r1');
+    expect(electron.started.size).toBe(1);
+    noteRunWaiting(t, true);
+    expect(electron.started.size).toBe(0);
+    noteRunWaiting(t, false);
+    expect(electron.started.size).toBe(1);
+    noteRunEnded(t);
+    expect(electron.started.size).toBe(0);
+    noteRunWaiting(null, true);       // no token (before install / tests): no-op
   });
 
   it('is a no-op before installation', () => {

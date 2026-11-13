@@ -70,6 +70,35 @@ describe('interactions persistence', () => {
     db.close();
   });
 
+  it('lists a live interaction even when its row could not be written, oldest first', () => {
+    const file = tempDbPath();
+    const db = openTestDb(file);
+    let failWrites = false;
+    const flaky = {
+      prepare: (sql: string) => {
+        if (failWrites && /^\s*INSERT/i.test(sql)) throw new Error('disk full');
+        return db.prepare(sql);
+      },
+      exec: (sql: string) => db.exec(sql),
+    };
+    const hub = new InteractionHub(() => flaky as never);
+    const first = hub.open({ runId: 'r1', workflowId: 'wf-1', kind: 'confirm', payload: { approvalId: 'a1', toolName: 'fs_copy_file' } }).interaction;
+    failWrites = true; // the next prompt cannot be persisted
+    const second = hub.open({ runId: 'r2', workflowId: 'wf-2', kind: 'confirm', payload: { approvalId: 'a2', toolName: 'fs_move_file' } }).interaction;
+    failWrites = false;
+
+    // Prompts wait until answered, so BOTH must be listed or the second would
+    // wait with nothing on screen.
+    expect(hub.isLive(second.id)).toBe(true);
+    expect(hub.listPending().map(i => i.id)).toEqual([first.id, second.id]);
+
+    hub.settle(first.id, 'answered', { approved: true });
+    expect(hub.listPending().map(i => i.id)).toEqual([second.id]);
+    hub.settle(second.id, 'declined', { approved: false });
+    expect(hub.listPending()).toEqual([]);
+    db.close();
+  });
+
   it('startup reconciliation expires orphaned pending rows (same SQL as runMigrations)', () => {
     const file = tempDbPath();
     const db = openTestDb(file);

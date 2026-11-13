@@ -24,6 +24,8 @@ const { state } = vi.hoisted(() => ({
 }));
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' }, BrowserWindow: class {}, Notification: class {} }));
+const notify = vi.hoisted(() => ({ sendNotification: vi.fn(), focused: false }));
+vi.mock('../notify', () => ({ sendNotification: notify.sendNotification, appHasFocus: () => notify.focused }));
 vi.mock('../db/schema', () => ({
   getDb: () => ({
     prepare: (sql: string) => ({
@@ -50,7 +52,7 @@ vi.mock('../skills/registry', () => ({
   toActive: (x: unknown) => x,
 }));
 
-import { AgentOrchestrator, APPROVAL_TIMEOUT_MS, type AgentPlan } from './orchestrator';
+import { AgentOrchestrator, APPROVAL_NUDGE_MS, type AgentPlan } from './orchestrator';
 import { getInteractionHub } from './interactions';
 import { runWithContext, getRunContext, type RunContext } from './runContext';
 
@@ -222,30 +224,114 @@ describe('AgentOrchestrator.reviewPlan', () => {
   });
 });
 
-describe('approval prompt expiry (live QA 2026-11-13)', () => {
-  type Req = { workflowId: string; sessionId: string; toolName: string; args: Record<string, unknown>; note: string; onId?: (id: string) => void; onExpired?: () => void };
+describe('approval prompts wait until answered (founder decision 2026-11-13)', () => {
+  type Req = {
+    workflowId: string; sessionId: string; toolName: string; args: Record<string, unknown>; note: string;
+    onId?: (id: string) => void; onNotAsked?: () => void;
+  };
   const ask = (orch: AgentOrchestrator, req: Req) =>
     (orch as unknown as { requestToolApproval: (r: Req) => Promise<boolean> }).requestToolApproval(req);
+  const base = { sessionId: 's-1', toolName: 'fs_copy_file', args: {}, note: 'n' };
+  /** Resolves to the settled value, or 'pending' if the promise has not settled. */
+  const stateOf = (p: Promise<boolean>) => Promise.race([p, Promise.resolve('pending' as const)]);
+
+  beforeEach(() => { notify.sendNotification.mockClear(); notify.focused = false; });
   afterEach(() => { vi.useRealTimers(); });
 
-  it('an unanswered prompt resolves false AND is flagged as expired, not declined', async () => {
+  it('is still waiting after hours, and continues when the user finally approves', async () => {
     vi.useFakeTimers();
     const { orch } = makeOrchestrator();
-    const onExpired = vi.fn(); let id = '';
-    const p = ask(orch, { workflowId: 'wf-x', sessionId: 's-1', toolName: 'fs_copy_file', args: {}, note: 'n', onId: x => { id = x; }, onExpired });
-    expect(getInteractionHub().isLive(id)).toBe(true);
-    await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS + 10);
-    expect(await p).toBe(false);
-    expect(onExpired).toHaveBeenCalledTimes(1);
+    let id = '';
+    const p = ask(orch, { ...base, workflowId: 'wf-a', onId: x => { id = x; } });
+    await vi.advanceTimersByTimeAsync(3 * 60 * 60_000);      // far past the old 2-minute limit
+    expect(await stateOf(p)).toBe('pending');
+    expect(getInteractionHub().isLive(id)).toBe(true);        // still answerable, still listed
+    expect(getInteractionHub().listPending().map(i => i.id)).toContain(id);
+    orch.respondToolApproval(id, true);
+    expect(await p).toBe(true);
     expect(getInteractionHub().isLive(id)).toBe(false);
   });
 
-  it('a real "no" resolves false without the expired flag', async () => {
+  it('a real "no" declines it', async () => {
     const { orch } = makeOrchestrator();
-    const onExpired = vi.fn(); let id = '';
-    const p = ask(orch, { workflowId: 'wf-y', sessionId: 's-1', toolName: 'fs_copy_file', args: {}, note: 'n', onId: x => { id = x; }, onExpired });
+    let id = ''; const onNotAsked = vi.fn();
+    const p = ask(orch, { ...base, workflowId: 'wf-b', onId: x => { id = x; }, onNotAsked });
     orch.respondToolApproval(id, false);
     expect(await p).toBe(false);
-    expect(onExpired).not.toHaveBeenCalled();
+    expect(onNotAsked).not.toHaveBeenCalled();
+  });
+
+  it('Stop releases a waiting prompt — nothing else would, now that it never times out', async () => {
+    const { orch } = makeOrchestrator();
+    let id = '';
+    const p = ask(orch, { ...base, workflowId: 'wf-c', onId: x => { id = x; } });
+    orch.cancelWorkflow('wf-c');
+    expect(await p).toBe(false);
+    expect(getInteractionHub().isLive(id)).toBe(false);
+  });
+
+  it('Stop on a run also releases a prompt raised by its sub-capability loop (own workflow id)', async () => {
+    const { orch } = makeOrchestrator();
+    const parents = (orch as unknown as { workflowParents: Map<string, string> }).workflowParents;
+    parents.set('wf-child', 'wf-parent');
+    parents.set('wf-grandchild', 'wf-child');
+    const child = ask(orch, { ...base, workflowId: 'wf-child' });
+    const grandchild = ask(orch, { ...base, workflowId: 'wf-grandchild' });
+    const unrelated = ask(orch, { ...base, workflowId: 'wf-other' });
+    let otherId = '';
+    const other2 = ask(orch, { ...base, workflowId: 'wf-other', onId: x => { otherId = x; } });
+
+    orch.cancelWorkflow('wf-parent');
+    expect(await child).toBe(false);
+    expect(await grandchild).toBe(false);
+    expect(await stateOf(unrelated)).toBe('pending');          // another run's prompt is untouched
+    orch.cancelWorkflow('wf-other');
+    expect(await unrelated).toBe(false);
+    expect(await other2).toBe(false);
+    expect(getInteractionHub().isLive(otherId)).toBe(false);
+  });
+
+  it('a run nobody is watching is never asked: refused up front, not parked', async () => {
+    const { orch } = makeOrchestrator();
+    for (const ctx of [{ actor: 'scheduler', lan: false, unattended: true }, { actor: 'lan:teammate', lan: true }] as RunContext[]) {
+      const before = getInteractionHub().livePending().length;
+      const onNotAsked = vi.fn(); const onId = vi.fn();
+      const approved = await runWithContext(ctx, () => ask(orch, { ...base, workflowId: 'wf-u', onId, onNotAsked }));
+      expect(approved).toBe(false);
+      expect(onNotAsked).toHaveBeenCalledTimes(1);
+      expect(onId).not.toHaveBeenCalled();                     // no prompt was created at all
+      expect(getInteractionHub().livePending().length).toBe(before);
+    }
+  });
+
+  it('tells the user once that it is waiting, only when Artha is not the focused app', async () => {
+    vi.useFakeTimers();
+    const { orch } = makeOrchestrator();
+    let id = '';
+    notify.focused = true;                                     // they are looking at the prompt
+    const p = ask(orch, { ...base, workflowId: 'wf-n', onId: x => { id = x; } });
+    await vi.advanceTimersByTimeAsync(APPROVAL_NUDGE_MS * 3);
+    expect(notify.sendNotification).not.toHaveBeenCalled();
+    notify.focused = false;                                    // they switched away
+    await vi.advanceTimersByTimeAsync(APPROVAL_NUDGE_MS);
+    expect(notify.sendNotification).toHaveBeenCalledTimes(1);
+    expect(notify.sendNotification.mock.calls[0][0]).toBe('Artha is waiting for your approval');
+    expect(String(notify.sendNotification.mock.calls[0][1])).toContain('fs_copy_file');
+    await vi.advanceTimersByTimeAsync(60 * 60_000);            // an hour later: still just the one
+    expect(notify.sendNotification).toHaveBeenCalledTimes(1);
+    orch.respondToolApproval(id, true);
+    expect(await p).toBe(true);
+  });
+
+  it('answering before the nudge means no notification at all', async () => {
+    vi.useFakeTimers();
+    const { orch } = makeOrchestrator();
+    let id = '';
+    const p = ask(orch, { ...base, workflowId: 'wf-q', onId: x => { id = x; } });
+    await vi.advanceTimersByTimeAsync(APPROVAL_NUDGE_MS - 1000);
+    orch.respondToolApproval(id, true);
+    expect(await p).toBe(true);
+    await vi.advanceTimersByTimeAsync(APPROVAL_NUDGE_MS * 4);
+    expect(notify.sendNotification).not.toHaveBeenCalled();
   });
 });

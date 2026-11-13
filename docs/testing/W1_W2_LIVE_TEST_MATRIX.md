@@ -67,6 +67,10 @@ Modes: `ask` · `accept_edits` · `plan` · `auto` (`unattended` is covered in �
 | 2.6 | Revoke the grant in Settings → Grants, then repeat the write. Separately, set a grant's `expires_at` to the past in a copy of the DB and relaunch. | It prompts again in both cases. A revoked or expired grant is ignored. | 📸 · 🗄 revoked/expired row |
 | 2.7 | In **every** mode, ask the agent to send an email to the throwaway mailbox | `email_send` **always** prompts and **never** offers "Always allow" | 📸 prompt with no Always button, once per mode |
 | 2.8 | Change the mode, then reload the app | The session keeps its mode (`session:getMode`) | 📸 mode selector |
+| 2.9 | Raise an approval prompt and leave it unanswered for 10 minutes with another app in front | The prompt is still there and the run is still waiting; it has not failed. One "Artha is waiting for your approval" notification appears after about 30 s. Approving it continues the run. | 📸 prompt after 10 min · 🗄 run row still `running`, then its outcome |
+| 2.10 | With a prompt waiting in one chat, let a different run finish (e.g. a scheduled task). Then raise a second prompt from another chat. | The first prompt stays on screen when the other run ends. The second prompt appears only after the first is answered. Neither run is left waiting with nothing on screen. | 🎥 |
+| 2.11 | Press **Stop** while an approval prompt is waiting. Repeat with a prompt raised inside a sub-capability. | The prompt closes and the run is recorded as cancelled. | 📸 · 🗄 run row |
+| 2.12 | Enable keep-awake, raise a prompt and leave it open; check the power assertions as in 4.2 | No assertion is held while the prompt is waiting; it returns once the prompt is answered and the run continues. | 📜 assertion output while waiting and after answering |
 
 ## 3. Goals
 

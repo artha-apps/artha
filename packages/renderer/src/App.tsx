@@ -17,6 +17,7 @@ import { useToastStore } from './stores/toast';
 import { useInteractionsStore } from './stores/interactions';
 import { useChatStore, type Session } from './stores/chat';
 import { applyRunEvent, loadRunCursor, saveRunCursor } from './lib/runResume';
+import { approvalPromptToShow } from './lib/pendingPrompts';
 import Onboarding from './components/Onboarding/Onboarding';
 import ModelStatusBanner from './components/ModelStatusBanner';
 import WorkingIndicator from './components/WorkingIndicator';
@@ -137,11 +138,27 @@ export default function App() {
       finaliseStream();
     });
 
+    // Approval prompts wait until answered, and there is one modal. Keep it in
+    // step with the main process, which knows what is still waiting
+    // (lib/pendingPrompts.ts): a prompt stays up until it is settled, and when
+    // it is, the next one still waiting is shown. A result that arrives after
+    // the modal changed is dropped — whatever changed it triggers its own sync.
+    const syncApprovalPrompt = () => {
+      const before = useChatStore.getState().pendingToolApproval;
+      window.artha.agent.listPendingInteractions().then((list) => {
+        if (useChatStore.getState().pendingToolApproval !== before) return;
+        const next = approvalPromptToShow(before, list);
+        if (next !== before) setPendingToolApproval(next);
+      }).catch(() => { /* keep what is shown */ });
+    };
+
     // agent:streamEnd fires when the orchestrator is fully done — authoritative
     // signal to flush the message, even for tool-only responses with no tokens.
-    // Also clear any stale tool-approval modal: if the run ended (e.g. the user
-    // hit Stop while an approval was pending), the modal must not linger.
-    const offEnd = window.artha.agent.onStreamEnd(() => { setPendingToolApproval(null); finaliseStream(); });
+    // It carries no run id, so it must NOT clear the approval modal outright:
+    // the prompt on screen may belong to another run that is still waiting.
+    // Re-check with the main process instead (a prompt of the run that ended
+    // is settled there, so it is cleared; anyone else's stays).
+    const offEnd = window.artha.agent.onStreamEnd(() => { syncApprovalPrompt(); finaliseStream(); });
     const offReset = window.artha.agent.onStreamReset(resetStream);
     const offWorkflow = window.artha.agent.onWorkflowStart((id) => {
       setStreaming(true);
@@ -177,7 +194,10 @@ export default function App() {
     // Per-tool-call approval — a policy with the "confirm" tier paused a single
     // function call. Show the approval modal; the run resumes on the answer.
     const offToolApproval = window.artha.agent.onToolApprovalRequest((req) => {
-      setPendingToolApproval(req);
+      // Never replace a prompt that is still on screen: it would keep waiting
+      // with nothing to answer it. The new one is shown once that is settled.
+      if (!useChatStore.getState().pendingToolApproval) setPendingToolApproval(req);
+      else syncApprovalPrompt();
     });
 
     // Unified human-in-the-loop frame. ask_user questions render as inline
@@ -189,17 +209,21 @@ export default function App() {
     });
     const offInteractionResolved = window.artha.agent.onInteractionResolved(({ id }) => {
       useInteractionsStore.getState().removeInteraction(id);
-      // A confirm settled elsewhere (timeout, Stop) must not leave its modal up;
-      // the confirm interaction's id is the tool approvalId.
+      // A confirm settled elsewhere (Stop, another window) must not leave its
+      // modal up; the confirm interaction's id is the tool approvalId.
       if (useChatStore.getState().pendingToolApproval?.approvalId === id) setPendingToolApproval(null);
+      // Whatever was settled, show the next approval still waiting (if any).
+      syncApprovalPrompt();
     });
     window.artha.agent.listPendingInteractions().then((list) => {
       for (const i of list) {
         if (i.kind === 'ask') useInteractionsStore.getState().addAsk(i);
         else if (i.kind === 'plan') setPendingPlan(i.payload as never);
-        else if (i.kind === 'confirm') setPendingToolApproval(i.payload as never);
         // handoff: the browser pane re-reads controller state (awaitingHandoff).
       }
+      // Tool confirms: the oldest one still waiting (the rest follow in turn).
+      const confirm = approvalPromptToShow(useChatStore.getState().pendingToolApproval, list);
+      if (confirm) setPendingToolApproval(confirm);
     }).catch(() => { /* older main process / no pending rows */ });
 
     // Live session title updates — main auto-titles a session from its first

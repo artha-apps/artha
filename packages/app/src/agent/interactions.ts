@@ -146,6 +146,9 @@ export class InteractionHub {
     sessionId?: string;
     runId: string;
     kind: InteractionKind;
+    /** The interaction as opened, so it can be listed even when its row could
+     *  not be written (see listPending). */
+    interaction: Interaction;
     resolve: (o: InteractionOutcome) => void;
     responder?: InteractionResponder;
   }>();
@@ -196,7 +199,7 @@ export class InteractionHub {
     const outcome = new Promise<InteractionOutcome>(resolve => {
       const sessionId = typeof req.payload.sessionId === 'string' ? req.payload.sessionId : undefined;
       this.waiters.set(interaction.id, {
-        workflowId: req.workflowId, sessionId, runId: req.runId, kind: req.kind, resolve, responder,
+        workflowId: req.workflowId, sessionId, runId: req.runId, kind: req.kind, interaction, resolve, responder,
       });
     });
     this.emitFn(INTERACTION_PENDING_CHANNEL, interaction);
@@ -248,15 +251,21 @@ export class InteractionHub {
     return this.waiters.has(id);
   }
 
-  /** Pending interactions for the renderer to re-show after a reload. Only rows
-   *  with a live waiter are returned — a row whose run is gone cannot be
-   *  answered, so showing it would be dishonest. */
+  /** Every interaction that can still be answered, oldest first. The renderer
+   *  shows prompts from this list (after a reload, and whenever it needs to
+   *  know what is still waiting), so it must be complete: prompts wait until
+   *  answered, and one that is missing here would wait with nothing on screen.
+   *  Only interactions with a live waiter are returned — a row whose run is
+   *  gone cannot be answered, so showing it would be dishonest. A live one
+   *  whose row could not be written (or read) is listed from memory. */
   listPending(): Interaction[] {
+    let rows: Interaction[] = [];
     try {
-      return listPendingInteractions(this.db()).filter(i => this.waiters.has(i.id));
-    } catch {
-      return [];
-    }
+      rows = listPendingInteractions(this.db()).filter(i => this.waiters.has(i.id));
+    } catch { /* database unavailable → memory only */ }
+    const listed = new Set(rows.map(r => r.id));
+    const memoryOnly = [...this.waiters.values()].map(w => w.interaction).filter(i => !listed.has(i.id));
+    return [...rows, ...memoryOnly].sort((a, b) => a.created_at - b.created_at);
   }
 }
 

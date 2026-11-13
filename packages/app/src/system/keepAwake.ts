@@ -4,8 +4,11 @@
  * A long run (a folder reorganisation, a multi-step research task) dies if the
  * machine sleeps halfway. When the user opts in (`keepAwakeWhileRunning`,
  * default OFF) Artha holds an Electron `powerSaveBlocker` of type
- * 'prevent-app-suspension' for as long as ANY run is active, and releases it
- * the moment the last run ends. On battery the blocker is only held when
+ * 'prevent-app-suspension' for as long as ANY run is working, and releases it
+ * the moment the last run ends. A run that is parked waiting for the user (an
+ * approval prompt or a question card, which wait until answered) does no work,
+ * so it does not count: the machine may sleep, and the prompt is still there
+ * on wake. On battery the blocker is only held when
  * `keepAwakeOnBattery` is also on (default OFF) — draining a laptop overnight
  * is a worse failure than an interrupted run, which the resume offer covers.
  *
@@ -38,6 +41,8 @@ export interface KeepAwakeDeps {
 /** Tracks active runs and holds/releases the blocker to match. */
 export class KeepAwakeController {
   private active = new Set<symbol>();
+  /** Active runs that are currently parked waiting for the user. */
+  private waiting = new Set<symbol>();
   private blockerId: number | null = null;
 
   constructor(private deps: KeepAwakeDeps) {}
@@ -54,11 +59,28 @@ export class KeepAwakeController {
   /** Mark a run as finished (idempotent per token). */
   runEnded(token: symbol): void {
     this.active.delete(token);
+    this.waiting.delete(token);
+    this.refresh();
+  }
+
+  /** Mark whether an active run is parked waiting for the user. Prompts wait
+   *  until answered, so without this an unanswered prompt would keep the
+   *  machine awake indefinitely. Unknown / ended tokens are ignored. */
+  runWaiting(token: symbol, waiting: boolean): void {
+    if (!this.active.has(token)) return;
+    if (waiting) this.waiting.add(token); else this.waiting.delete(token);
     this.refresh();
   }
 
   /** Number of runs currently active. */
   get activeRuns(): number { return this.active.size; }
+
+  /** Number of active runs that are doing work (not waiting for the user). */
+  get workingRuns(): number {
+    let n = 0;
+    for (const t of this.active) if (!this.waiting.has(t)) n++;
+    return n;
+  }
 
   /** Whether the blocker is currently held. */
   get holding(): boolean { return this.blockerId !== null; }
@@ -67,7 +89,7 @@ export class KeepAwakeController {
    *  on every lifecycle change, settings change, and AC/battery switch. */
   refresh(): void {
     let want = false;
-    if (this.active.size > 0) {
+    if (this.workingRuns > 0) {
       let s: KeepAwakeSettings = { keepAwakeWhileRunning: false, keepAwakeOnBattery: false };
       try { s = this.deps.settings(); } catch { /* unreadable settings → off */ }
       let battery = false;
@@ -106,6 +128,12 @@ export function noteRunStarted(label?: string): symbol | null {
 /** Orchestrator hook: a run loop ended. */
 export function noteRunEnded(token: symbol | null): void {
   if (token && controller) controller.runEnded(token);
+}
+
+/** Orchestrator hook: a run started (true) or stopped (false) waiting for the
+ *  user. While it waits it does not keep the machine awake. */
+export function noteRunWaiting(token: symbol | null, waiting: boolean): void {
+  if (token && controller) controller.runWaiting(token, waiting);
 }
 
 /** Re-evaluate after a settings change (Settings toggle IPC). */

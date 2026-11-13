@@ -279,6 +279,13 @@ export function runEventFromChannel(
 export interface RunMonitorOptions {
   heartbeatMs?: number;
   stallMs?: number;
+  /** While the run is waiting on the user, record a heartbeat at most this
+   *  often. Prompts wait until answered, so a prompt left open overnight must
+   *  not append a row every 10 s. Default 5 minutes. */
+  waitingHeartbeatMs?: number;
+  /** Called when the run starts (true) or stops (false) waiting on the user —
+   *  any `interaction` request/response: approval prompts, question cards. */
+  onAwaitingUser?: (waiting: boolean) => void;
 }
 
 /** Kinds that do NOT count as run activity for the watchdog — otherwise its
@@ -293,7 +300,8 @@ const PASSIVE_KINDS: ReadonlySet<RunEventKind> = new Set(['heartbeat', 'stalled'
  *   alive but quiet" from "connection dropped".
  * - If no activity event lands for `stallMs`, it appends ONE `stalled` event
  *   (re-armed when activity resumes). While an interaction is pending — the
- *   run is waiting on the user — it does not report a stall.
+ *   run is waiting on the user — it does not report a stall, heartbeats drop
+ *   to one per `waitingHeartbeatMs`, and `onAwaitingUser` is told.
  *
  * Honest-status guarantee: this function's only side effect is appending
  * `heartbeat` / `stalled` events. It never writes run status, never emits
@@ -302,6 +310,8 @@ const PASSIVE_KINDS: ReadonlySet<RunEventKind> = new Set(['heartbeat', 'stalled'
 export function startRunMonitor(runId: string, opts: RunMonitorOptions = {}): () => void {
   const heartbeatMs = opts.heartbeatMs ?? 10_000;
   const stallMs = opts.stallMs ?? 60_000;
+  const waitingHeartbeatMs = opts.waitingHeartbeatMs ?? 5 * 60_000;
+  let lastHeartbeatAt = Date.now();
   let lastActivity = Date.now();
   let stalledReported = false;
   let awaitingUser = false;
@@ -313,15 +323,26 @@ export function startRunMonitor(runId: string, opts: RunMonitorOptions = {}): ()
     stalledReported = false;
     if (ev.kind === 'interaction') {
       const phase = (ev.payload as { phase?: string } | null)?.phase;
-      awaitingUser = phase === 'request';
+      const next = phase === 'request';
+      if (next !== awaitingUser) {
+        awaitingUser = next;
+        // Notification only: a throwing listener must never affect the run.
+        try { opts.onAwaitingUser?.(next); } catch { /* ignore */ }
+      }
     }
     if (ev.kind === 'done' || ev.kind === 'error') stop();
   });
 
   const timer = setInterval(() => {
     if (stopped) return;
-    const idleMs = Date.now() - lastActivity;
-    recordRunEvent(runId, 'heartbeat', { idleMs });
+    const now = Date.now();
+    const idleMs = now - lastActivity;
+    // A run waiting on the user has nothing new to say every 10 s; it may
+    // wait for hours. Keep a sparse heartbeat so the log still shows it alive.
+    if (!awaitingUser || now - lastHeartbeatAt >= waitingHeartbeatMs) {
+      recordRunEvent(runId, 'heartbeat', awaitingUser ? { idleMs, awaitingUser: true } : { idleMs });
+      lastHeartbeatAt = now;
+    }
     if (!awaitingUser && !stalledReported && idleMs >= stallMs) {
       stalledReported = true;
       recordRunEvent(runId, 'stalled', { idleMs, note: 'no run activity; run status unchanged' });

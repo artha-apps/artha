@@ -217,6 +217,7 @@
 | `src/lib/goalChip.ts` | Pure view logic for the Delegate goal chip — status labels ("Needs you" for blocked) and which controls to show (`goalChip.test.ts`) |
 | `src/lib/runResume.ts` | Run resume cursor in localStorage (run id + last `seq`) so a reloaded run view calls `run.subscribe(runId, lastSeq)` for exactly the missed events (`runResume.test.ts`) |
 | `src/lib/runTimeline.ts` | Reducer turning a run's `run_events` into Run Inspector rows — tool calls + results, pauses, goal-gate decisions, kill-switch stops, stalls, errors (`runTimeline.test.ts`) |
+| `src/lib/pendingPrompts.ts` | `approvalPromptToShow()` — which tool-approval prompt the single modal shows: the one on screen while the main process still lists it as waiting, then the oldest one still waiting (prompts never time out) (`pendingPrompts.test.ts`) |
 | **components/Chat/** | |
 | `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file), Context Pack chips (save/apply/detach), "Continue with context" scope-inheritance chip, `@chat:`/`@memory:` reference tokens, expected-wait hint (benchmark-derived, task-shaped input on a slow model), cloud-escalation "Retry on ☁ X" in the failure banner (per-message modelOverride, audit-logged); message bubble list |
 | `ClarificationModal.tsx` | Pre-flight Q&A modal (pauses the agent until user answers or skips) |

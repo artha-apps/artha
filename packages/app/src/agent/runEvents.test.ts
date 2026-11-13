@@ -169,6 +169,41 @@ describe('startRunMonitor — heartbeat + watchdog', () => {
     stop();
   });
 
+  it('while waiting on the user: one heartbeat per 5 minutes, and the caller is told when it starts and ends', () => {
+    vi.useFakeTimers();
+    const notices: boolean[] = [];
+    const stop = startRunMonitor('r', { onAwaitingUser: (w) => notices.push(w) });
+    vi.advanceTimersByTime(20_000);
+    expect(store.rows.filter(e => e.kind === 'heartbeat').length).toBe(2); // every 10 s while working
+    appendRunEvent('r', 'interaction', { phase: 'request' });
+    expect(notices).toEqual([true]);
+
+    // A prompt left open for 8 hours: 96 rows, not 2,880 — and never a stall.
+    const before = store.rows.filter(e => e.kind === 'heartbeat').length;
+    vi.advanceTimersByTime(8 * 60 * 60_000);
+    const waitingBeats = store.rows.filter(e => e.kind === 'heartbeat').slice(before);
+    expect(waitingBeats.length).toBeGreaterThanOrEqual(95);
+    expect(waitingBeats.length).toBeLessThanOrEqual(97);
+    expect(waitingBeats.every(e => (e.payload as { awaitingUser?: boolean }).awaitingUser === true)).toBe(true);
+    expect(store.rows.filter(e => e.kind === 'stalled').length).toBe(0);
+
+    appendRunEvent('r', 'interaction', { phase: 'response', approved: true });
+    expect(notices).toEqual([true, false]);
+    const afterAnswer = store.rows.filter(e => e.kind === 'heartbeat').length;
+    vi.advanceTimersByTime(30_000);
+    expect(store.rows.filter(e => e.kind === 'heartbeat').length - afterAnswer).toBe(3); // back to every 10 s
+    stop();
+  });
+
+  it('a throwing onAwaitingUser listener never affects the monitor', () => {
+    vi.useFakeTimers();
+    const stop = startRunMonitor('r', { onAwaitingUser: () => { throw new Error('listener down'); } });
+    expect(() => appendRunEvent('r', 'interaction', { phase: 'request' })).not.toThrow();
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(store.rows.some(e => e.kind === 'heartbeat')).toBe(true);
+    stop();
+  });
+
   it('never marks the run completed', () => {
     vi.useFakeTimers();
     const stop = startRunMonitor('r');
