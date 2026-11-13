@@ -190,6 +190,26 @@ describe('AgentOrchestrator.reviewPlan', () => {
     expect(seen?.resume?.confirmedActionIds).toEqual(['A1']);
   });
 
+  it('a comment that revised the plan reaches the EXECUTOR, not just the plan card (live QA 2026-11-13)', async () => {
+    const { orch } = makeOrchestrator();
+    seedPlan(orch);
+    await orch.reviewPlan('wf-1', {
+      decision: 'accept_with_comments',
+      comments: [{ step_index: 1, original_text: 'Delete old screenshots', comment: 'Archive them, do not delete' }],
+    });
+    // The user now accepts the REVISED plan with a plain accept.
+    let executed: AgentPlan | undefined;
+    vi.spyOn(orch as unknown as { executePlan: (p: AgentPlan) => Promise<string> }, 'executePlan')
+      .mockImplementation(async (p) => { executed = p; return 'done'; });
+    await orch.reviewPlan('wf-1', { decision: 'accept' });
+
+    expect(executed).toBeDefined();
+    expect(executed!.steps[1].description).toContain('Archive');
+    expect(executed!.revisionComments).toEqual([
+      { step_index: 1, original_text: 'Delete old screenshots', comment: 'Archive them, do not delete' },
+    ]);
+  });
+
   it('labels the plan card with where the run came from', () => {
     const { orch } = makeOrchestrator();
     const open = vi.spyOn(getInteractionHub(), 'open');

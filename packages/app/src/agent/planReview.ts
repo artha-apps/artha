@@ -82,6 +82,45 @@ export function buildReviewNotes(comments: PlanStepComment[]): string | null {
     comments.map(c => `- Step ${c.step_index + 1} ("${c.original_text}"): ${c.comment}`).join('\n')}`;
 }
 
+/**
+ * What the EXECUTOR is told about a plan the user changed through review.
+ *
+ * The executor works from the user's original request, and the plan steps
+ * were never part of its prompt. So a comment that made the planner revise
+ * the plan ("name the copy X instead") changed the card the user approved but
+ * not what ran (found in live QA, 2026-11-13: the approved plan said
+ * plan-renamed.txt, the run created plan-first.txt). This block gives the
+ * executor the comments and the approved steps, and says which one wins.
+ *
+ * Returns '' when the user left no comments at all (nothing to add: the plan
+ * is then just the planner's own reading of the request).
+ */
+export function buildExecutorReviewBlock(input: {
+  steps: ReviewStep[];
+  /** Comments that drove a planner revision (already reflected in `steps`). */
+  revisionComments: PlanStepComment[];
+  /** buildReviewNotes() of comments accepted without a further revision. */
+  reviewNotes: string | null;
+}): string {
+  const { steps, revisionComments, reviewNotes } = input;
+  if (!revisionComments.length && !reviewNotes) return '';
+  const parts: string[] = [];
+  if (revisionComments.length) {
+    parts.push(
+      `The user reviewed the plan for this task and asked for changes:\n${
+        revisionComments.map(c => `- On "${c.original_text}": ${c.comment}`).join('\n')}`,
+    );
+  }
+  if (reviewNotes) parts.push(reviewNotes);
+  if (steps.length) {
+    parts.push(
+      `APPROVED PLAN — the user approved exactly these steps. Where they differ from the wording of the original request, the approved plan and the user's comments win:\n${
+        steps.map(s => `${s.index + 1}. ${s.description}${s.toolName ? ` [${s.toolName}]` : ''}`).join('\n')}`,
+    );
+  }
+  return parts.join('\n\n');
+}
+
 /** Decide what a review means. `revisions` is how many comment-driven
  *  revisions this plan has already had. */
 export function decidePlanReview(

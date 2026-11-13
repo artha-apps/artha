@@ -66,7 +66,7 @@ import { selectToolsForRun } from '../mcp/toolBudget';
 import { nextEscalation, escalationLadder } from './escalation';
 import { getInteractionHub } from './interactions';
 import { ASK_USER_TOOL_NAME, ASK_USER_TOOL_SCHEMA, runAskUser } from './askUser';
-import { decidePlanReview, type PlanReview } from './planReview';
+import { decidePlanReview, buildExecutorReviewBlock, type PlanReview, type PlanStepComment } from './planReview';
 import { noteDesktopControlActive } from '../controlOverlay';
 import { trackRun, wasStoppedByUser, getKillSwitch } from '../desktop/runtime';
 import { gateDesktopAction } from '../desktop/desktopGate';
@@ -167,6 +167,9 @@ export interface AgentPlan {
   /** Step comments the user approved the plan with; injected into the
    *  executor's system prompt so they are honoured while running. */
   reviewNotes?: string | null;
+  /** Step comments that made the planner revise this plan. Kept so the
+   *  executor is told about them too (planReview.buildExecutorReviewBlock). */
+  revisionComments?: PlanStepComment[];
   /** The unified-frame interaction (agent/interactions.ts) this plan's
    *  approval is pending on, when it paused for review. */
   interactionId?: string;
@@ -1198,6 +1201,7 @@ or
         goal: plan.goal,
         requiresApproval: true,
         revisions: (plan.revisions ?? 0) + 1,
+        revisionComments: [...(plan.revisionComments ?? []), ...action.comments],
         interactionId: undefined,
       };
       this.activePlans.set(workflowId, next);
@@ -1543,7 +1547,14 @@ Rules:
     if (!opts.silent) this.emit('agent:workflowStart', plan.workflowId);
 
     const history = this.getSessionHistory(plan.sessionId, plan.goal);
-    const destHint = this.extractDestination(plan.goal, homeDir);
+    // What the user changed through plan review (agent/planReview.ts). When
+    // they commented, the destination guessed from the ORIGINAL wording is
+    // dropped: a comment may have changed it, and that hint says "use no
+    // other location".
+    const reviewText = buildExecutorReviewBlock({
+      steps: plan.steps, revisionComments: plan.revisionComments ?? [], reviewNotes: plan.reviewNotes ?? null,
+    });
+    const destHint = reviewText ? null : this.extractDestination(plan.goal, homeDir);
     const skill = plan.skill ?? null;
     const skillBlock = skill
       ? `ACTIVE SKILL — "${skill.name}". This is your operating playbook for this task; follow it:\n${skill.instructions}\n\n`
@@ -1556,8 +1567,7 @@ Rules:
     const mentionBlock = resolveMentionBlock(plan.goal, plan.sessionId);
     // Context Pack pinned memories (by-reference; '' when no pack).
     const packBlock = getPackContextBlock(plan.sessionId);
-    // Step comments the user approved the plan with (agent/planReview.ts).
-    const reviewBlock = plan.reviewNotes ? `${plan.reviewNotes}\n\n` : '';
+    const reviewBlock = reviewText ? `${reviewText}\n\n` : '';
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       {

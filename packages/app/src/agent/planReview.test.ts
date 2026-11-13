@@ -6,7 +6,7 @@
  *     outcome — it is always cancelled.
  */
 import { describe, it, expect } from 'vitest';
-import { decidePlanReview, buildPlanRevisionPrompt, sanitizeComments, type PlanReview } from './planReview';
+import { decidePlanReview, buildPlanRevisionPrompt, buildExecutorReviewBlock, buildReviewNotes, sanitizeComments, type PlanReview } from './planReview';
 
 const steps = [
   { index: 0, description: 'List files in ~/Desktop', toolName: 'fs_list_directory' },
@@ -62,5 +62,28 @@ describe('plan review', () => {
       'junk',
     ])).toEqual([{ step_index: 0, original_text: 'List files in ~/Desktop', comment: 'keep' }]);
     expect(buildPlanRevisionPrompt(goal, steps, [])).toContain('Current plan:');
+  });
+});
+
+describe('buildExecutorReviewBlock (live QA 2026-11-13)', () => {
+  const revised = [{ index: 0, description: 'Copy the file a.txt to plan-renamed.txt', toolName: 'fs_copy_file' }];
+  const comment = { step_index: 0, original_text: 'Copy the file a.txt to plan-first.txt', comment: 'Name the copy plan-renamed.txt instead' };
+
+  it('tells the executor the comment that revised the plan AND the approved steps, and which wins', () => {
+    const block = buildExecutorReviewBlock({ steps: revised, revisionComments: [comment], reviewNotes: null });
+    expect(block).toContain('Name the copy plan-renamed.txt instead');
+    expect(block).toContain('1. Copy the file a.txt to plan-renamed.txt [fs_copy_file]');
+    expect(block).toMatch(/the approved plan and the user's comments win/);
+  });
+
+  it('includes comments accepted without another revision', () => {
+    const notes = buildReviewNotes([{ step_index: 0, original_text: 'x', comment: 'keep the originals' }]);
+    const block = buildExecutorReviewBlock({ steps: revised, revisionComments: [], reviewNotes: notes });
+    expect(block).toContain('keep the originals');
+    expect(block).toContain('APPROVED PLAN');
+  });
+
+  it('adds nothing when the user left no comments', () => {
+    expect(buildExecutorReviewBlock({ steps: revised, revisionComments: [], reviewNotes: null })).toBe('');
   });
 });
