@@ -119,7 +119,8 @@ export default function DesktopControlPanel() {
             <p className="text-sm font-semibold text-artha-text">Stop shortcut</p>
             <p className="text-xs text-artha-muted mt-0.5">
               Works from any app while Artha is running a task: stops every run and any queued mouse or keyboard
-              action. A stopped task is never marked complete. Leave blank for the default (Ctrl+Option+Shift+Period).
+              action. A click or key press already under way finishes first, and typing stops within a few
+              characters. A stopped task is never marked complete. Leave blank for the default (Ctrl+Option+Shift+Period).
             </p>
           </div>
           <div className="flex gap-2">

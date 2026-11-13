@@ -90,7 +90,7 @@ Modes: `ask` · `accept_edits` · `plan` · `auto` (`unattended` is covered in �
 
 | # | Steps | Expected | Evidence |
 |---|---|---|---|
-| 5.1 | Check that the stop shortcut is set in Settings. Start a desktop-control task (e.g. open the calculator app and type into it). Press the shortcut from another app while the agent is acting. | Desktop control stops right away and no further input events occur. The timeline shows a `status` row `{source: 'kill_switch', reason: 'stopped_by_user'}`. | 🎥 · 📸 timeline |
+| 5.1 | Check that the stop shortcut is set in Settings. Start a desktop-control task (e.g. open the calculator app and type into it). Press the shortcut from another app while the agent is acting. | Desktop control stops: an action already under way may finish (typing stops within 16 characters), and no further input events occur after that. The timeline shows a `status` row `{source: 'kill_switch', reason: 'stopped_by_user'}`. | 🎥 · 📸 timeline |
 | 5.2 | First desktop action on a new app | A per-app prompt appears with **Once / Always for this project / Deny**. Enter = Once. | 📸 |
 | 5.3 | Choose "Always for this project", then repeat | It doesn't prompt again. The grant appears in Settings → Grants as `desktop-control:<app>` and can be revoked there. After revoking, it prompts again. | 📸 Grants · 🗄 grant row value |
 | 5.4 | Target an app on the deny-list (e.g. a password manager, terminal or system settings) after granting "Always" to other apps | It **always** asks and no standing grant is ever applied | 📸 prompt each time |
