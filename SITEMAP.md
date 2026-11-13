@@ -22,6 +22,7 @@
 | `docs/architecture/ARTHA_PROVIDER_AND_RUNTIME_ARCHITECTURE.md` | Phase 0 decision record — current provider coupling audit, shared provider/runtime SDK boundaries (injectable ports), provider roster + gateway strategy, capability registry, execution-profile schema, headless-core process boundary (D-P7), browser substrate decision (D-P8: WebContentsView + CDP, no bundled Playwright), local-runtime seams, mock-provider test strategy |
 | `docs/architecture/ARTHA_PHASED_ROADMAP.md` | Phase 0→H roadmap with acceptance gates, Phase A commits 4–10 plan, 46-row feature-group traceability matrix (status/code/work/DB/security/tests/phase), residual-assumptions register (Ollama/localhost/local-planner/single-model/Electron-host), preserved future commitments |
 | `docs/architecture/ARTHA_SECURITY_THREAT_MODEL.md` | Security threat model — assets, trust boundaries (IPC/MCP/browser/LAN/cloud/desktop/Sentry/update), normative credential-storage + tag-enforcement policy, control classification table, browser-agent & prompt-injection layered mitigations, 10 threat scenarios; marks planned controls Phase A/B/C |
+| `docs/architecture/W1_W2_TAKEOVER_FEATURES.md` | Short feature notes for the W1/W2 work — one paragraph each on the run event log, permission modes + grants, goals + evaluator, durable undo + checkpoints, global stop + app grants, ask_user + interactions, outbox, automations v2; names the key modules and tables |
 | `docs/testing/PHASE_A_MANUAL_TEST_MATRIX.md` | Rendered-UI half of the Phase A smoke strategy — 14 founder-required scenarios (onboarding paths, discovery, switching, restart, keychain-absent, upgrade migration) with steps/expected/automation status; `ARTHA_FORCE_NO_KEYCHAIN=1` usage |
 | `docs/user-guide.md` | Non-technical end-user guide: quick-start (install → first task) + Part 2 "every feature, step by step" (numbered steps + Try-this per feature). Mirrors the in-app guide copy |
 | `docs/user-guide-slides.html` | Self-contained HTML slide deck of the user guide — one feature per slide, keyboard/click/swipe nav, print-to-PDF. Same copy as `user-guide.md` |
@@ -43,6 +44,9 @@
 | `src/db/schema.ts` | SQLite schema + `getDb()` singleton — all `CREATE TABLE` + additive `ALTER TABLE` migrations; opens/migrates the DB on first call |
 | `src/db/scopes.ts` | Per-chat scope helpers — `getSessionScopes`/`getSessionAllowedRoots`/`getSessionPrimaryFolder`/`recomputePrimaryProject` + `findOrCreateFolderWorkspace` (one workspace/RAG index per folder, shared by scopes IPC + Context Packs); backs the folder/file sandbox + context |
 | `src/db/health.ts` | DB health heartbeat — `startHealthCheckpointing()` writes a `db_health.checkpointed_at` row + Sentry breadcrumb every 30 min (disaster-recovery forensics) |
+| `src/db/interactionsTable.ts` | DDL for the `interactions` table (unified human-in-the-loop frame); dependency-free so `schema.ts` and the persistence tests run the same statement |
+| `src/db/outboxSchema.ts` | DDL for the `outbox` queue + index; shared by `schema.ts` and the in-memory vitest suites (per-session pause flag is a guarded ALTER on `chat_sessions`) |
+| `src/db/sqlLike.ts` | Minimal synchronous SQL handle shared by the durability modules (undo, checkpoints, resume) so they run on better-sqlite3 in prod and `node:sqlite` in vitest |
 | **agent/** | |
 | `src/agent/orchestrator.ts` | `AgentOrchestrator` — ReAct loop, clarification flow, memory + @-mention + Context Pack + live-environment context injection (date/time/timezone/OS/user), session skill fallback chain (pack skill → project default), tool dispatch |
 | `src/agent/historyDedupe.ts` | `dropEchoedGoal()` — strips the trailing copy of the current user request from session history so the ReAct prompt carries the goal once, not twice (pure; `historyDedupe.test.ts`) |
@@ -61,6 +65,9 @@
 | `src/bodhi/operator.ts` | Delegation Operator playbook — the operator-mode system instructions injected into every Delegate run (act don't advise; hand off for login via `browser_request_user` then continue; verify before claiming done) with full tool access. `buildOperatorSkill()` folds in a matched capability's playbook |
 | `src/bodhi/capabilities.test.ts` | Vitest — skill→capability projection, registry list/get/select via a fake `SkillSource`, executor-contract shape check |
 | `src/bodhi/tasks.test.ts` | Vitest — `rowToTask` projection (incl. forked-lineage) |
+| `src/bodhi/goals.ts` | Persistent goals — a durable "what done means" per chat session in `goals`, re-checked at every ReAct stop gate until completed or stopped; the model cannot mark it done (`goals.test.ts`) |
+| `src/bodhi/goalEvaluator.ts` | Independent goal evaluator + ReAct stop gate — treats the model's "done" as a claim; checks deterministic acceptance criteria first, then a judge (unparseable never counts as met) (`goalEvaluator.test.ts`) |
+| `src/bodhi/grants.ts` | Standing grants — expiring "Always allow (30 days)" permissions in `grants`, binding a scope (what) to a subject (where); revocable (`grants.test.ts`) |
 | **skills/** | |
 | `src/skills/registry.ts` | `SkillRegistry` singleton — loads/creates/toggles YAML skill files, resolves `/slug` + auto-match, filters tool schemas per skill |
 | `src/skills/util.ts` | Pure skill helpers — slug normalisation, `/slug` parsing, import parsing, tool-allowlist filtering (unit-tested) |
@@ -73,6 +80,23 @@
 | `src/llm/ollamaPull.ts` | Shared streaming `/api/pull` client (`pullOllamaModel`, `isModelInstalled`) — handles Ollama's 200-with-error-line and verifies via `/api/tags`; used by the provisioner |
 | `src/agent/escalation.ts` | Act-loop recovery when a turn produced nothing (slice 3): `nextEscalation()` restores withheld MCP tools after a discarded turn, else steps up one rung on `escalationLadder()` (larger eligible local models, user's oversized local pick last, never cloud); each remedy once per run (`escalation.test.ts`) |
 | `src/agent/autoApprove.ts` | Plan approval by blast radius, not category: reversible plans (no deletes) run without the modal when `settings_json.autonomousActions` ≠ false; the run card/toast says so and Undo covers it (`autoApprove.test.ts`) |
+| `src/agent/runEvents.ts` | Run event log — append-only per-run timeline in `run_events` with a per-run `seq` (status, plan, step, tool call/result, interaction, heartbeat, terminal) so a reloaded renderer can replay what it missed (`runEvents.test.ts`) |
+| `src/agent/runEventIpc.ts` | Per-client bookkeeping for `run:subscribe` / `run:unsubscribe`; pushes `run:event` messages; Electron-free for testing (`runEventIpc.test.ts`) |
+| `src/agent/runEventRetention.ts` | `run_events` retention — keeps the last 30 days OR the last 200 runs, whichever keeps more (`runEventRetention.test.ts`) |
+| `src/agent/runTimeline.ts` | Run Inspector timeline query — a run's `run_events` plus its workflow's plan-review events (recorded under the workflow id) (`runTimeline.test.ts`) |
+| `src/agent/interactions.ts` | Unified human-in-the-loop frame — `ask_user`, plan approval, browser handoff and policy `confirm` all open one `Interaction`, persisted in `interactions` so a pending one survives a renderer reload (`interactions.test.ts`) |
+| `src/agent/interactionRunEvents.ts` | Mirrors `ask` and `plan` interactions into the run event log as `interaction` events (`confirm` already records its own) |
+| `src/agent/askUser.ts` | `ask_user` tool — 1–4 multiple-choice clarifying questions mid-run; the answers resolve the same tool call, no new turn (`askUser.test.ts`) |
+| `src/agent/planReview.ts` | Plan review — Accept / Accept with comments / Reject; step comments trigger one planner revision, Reject ends the run as cancelled-by-user. Pure (`planReview.test.ts`, `orchestrator.planReview.test.ts`) |
+| `src/agent/modes.ts` | Permission modes per chat (`chat_sessions.permission_mode`, else derived from `autonomousActions`): ask / accept edits / plan / auto / unattended, and the mode × tool decision matrix (`modes.test.ts`) |
+| `src/agent/checkpoints.ts` | File checkpoints — pre-mutation snapshots into a content-addressed store (`<userData>/checkpoints/<sha256>`) + `checkpoint_files` rows; `rewindRunToStep` restores touched paths (`checkpoints.test.ts`) |
+| `src/agent/resume.ts` | Resume offer for runs left `interrupted` by a quit/crash — listed with Resume / Dismiss, never resumed automatically, scheduled runs included (`resume.test.ts`) |
+| `src/agent/outbox.ts` | Outbox ("type while Artha works") persistence — queued composer messages in `outbox`, reorder/edit/delete/steer, per-session pause (`outbox.test.ts`) |
+| `src/agent/outboxDriver.ts` | `OutboxDriver` — decides when queued items send: drains after a run ends, steers at ReAct tool-call boundaries, never past a pending approval/ask/plan review (`outboxDriver.test.ts`, `outboxDriver.delegate.test.ts`) |
+| `src/agent/outboxTestDb.ts` | Test-only in-memory `node:sqlite` DB loaded with the real outbox DDL; not imported by production code |
+| `src/agent/integrationWiring.test.ts` | Vitest — cross-module wiring, e.g. interaction → run event mirroring |
+| `src/agent/runContext.test.ts` | Vitest — unattended runs block confirm-tier tools |
+| `src/agent/undo.persist.test.ts` | Vitest — undo entries (`undo_entries`) survive a DB reopen |
 | `src/mcp/toolBudget.ts` | Which MCP tools a run is offered: hides MCP tools that shadow a built-in (`move_file` vs `fs_move_file`), offers a server's tools only when the goal names it / it already worked in this chat / the skill allowlists it; the full set is kept for escalation (`toolBudget.test.ts`) |
 | **ipc/** | |
 | `src/ipc/handlers.ts` | All `ipcMain.handle(...)` registrations (chat, llm, mcp, memory, artifacts, scheduler, ide, lan, cloud, …) |
@@ -104,6 +128,7 @@
 | `src/tools/ragFormat.ts` | Formats `rag_search` hits + index lists into model-readable text (with snippet truncation) |
 | `src/tools/browser.ts` | `BROWSER_TOOL_SCHEMAS` + `invokeBrowserTool` — exposes the embedded browser controller as agent tools |
 | `src/tools/desktop.ts` | `DESKTOP_TOOL_SCHEMAS` + `invokeDesktopTool` — mouse/keyboard/screenshot via nut-js + desktopCapturer (opt-in) |
+| `src/tools/desktop.stop.test.ts` | Vitest — desktop tools under the kill switch |
 | `src/tools/email.ts` | `email_compose` — prepares an email and opens it pre-filled (default mail client or Gmail/Outlook/Yahoo web compose); never sends, reports drafted-not-sent |
 | `src/tools/gmailSend.ts` | `email_send` — actually sends: browser-first (rides existing Gmail login in the embedded browser, zero setup) with Gmail-API fallback; always-confirm approval floor + `external_actions` write-ahead log (no double-send) + honest sent/outcome_unknown reporting |
 | `src/tools/gmailBrowserSend.ts` | `sendViaBrowser` — zero-setup "Cowork" send: opens pre-filled Gmail compose in the embedded (logged-in) browser, clicks Send, confirms Gmail's "Message sent"; injectable webContents for testability |
@@ -127,6 +152,20 @@
 | `src/docs/generator.ts` | `generateDocument()` — renders DOCX (`docx`), PPTX (`pptxgenjs`), XLSX (`xlsx`), PDF (`pdf-lib`) from a spec |
 | **scheduler/** | |
 | `src/scheduler/scheduler.ts` | `SchedulerService` — cron / one-shot task runner via `node-schedule` |
+| `src/scheduler/engine.ts` | `AutomationEngine.fire()` — the single fire path for cron, one-shot, missed-run catch-up, folder triggers, local webhooks and Run now: no overlap, hold states checked first, results in `task_executions` (`engine.test.ts`) |
+| `src/scheduler/scheduledRunner.ts` | The one runner every automation trigger uses — runs on the shared app-wide orchestrator so kill switch, cancel and outbox reach scheduled runs (`scheduledRunner.test.ts`) |
+| `src/scheduler/automationPolicy.ts` | Pure automation rules — 15-minute schedule floor, ±90 s jitter and the other unattended-safety decisions (`automationPolicy.test.ts`) |
+| `src/scheduler/folderTrigger.ts` | Folder trigger — fires when a new file appears in a watched folder inside the user's attached scopes; pre-existing files never fire (`folderTrigger.test.ts`) |
+| `src/scheduler/taskFile.ts` | Export/import a scheduled task as Markdown with YAML-style frontmatter (`taskFile.test.ts`) |
+| `src/scheduler/scheduler.test.ts` | Vitest — `SchedulerService.handleWebhook` |
+| **desktop/** | |
+| `src/desktop/killSwitch.ts` | Global kill switch — a system-wide hotkey that stops everything Artha is doing, registered only while a run is active (`killSwitch.test.ts`) |
+| `src/desktop/runtime.ts` | Process-wide kill-switch wiring — every ReAct loop registers a cancel callback; a stop press cancels them all (`runtime.test.ts`) |
+| `src/desktop/actionQueue.ts` | Serialises every nut-js desktop action so the kill switch can reject queued ones and halt the in-flight one (`StoppedByUserError`) |
+| `src/desktop/appGrants.ts` | Per-app grants for desktop control in `app_grants` — Once / Always for this project (30 days) / Deny before acting on an app (`appGrants.test.ts`, `appGrants.adapter.test.ts`) |
+| `src/desktop/desktopGate.ts` | Desktop action gate — resolve target app → check grant → ask (or skip if unattended) → proceed; side effects injected for tests (`desktopGate.test.ts`) |
+| **system/** | |
+| `src/system/keepAwake.ts` | Opt-in keep-awake — holds an Electron `powerSaveBlocker` while any run is active, with a battery toggle (`keepAwake.test.ts`) |
 | **types/** | |
 | `src/types/nut-js.d.ts` | Ambient module shim for the lazily-loaded `@nut-tree-fork/nut-js` optional native dep |
 | `src/types/rag-extractors.d.ts` | Ambient shims for the pdf-parse internal entry + mammoth (avoids debug-mode fixture read / missing types) |
@@ -153,22 +192,34 @@
 | `src/components/OllamaRuntimeUpdater.tsx` | Install/update the Ollama engine through Artha — drives `ollama:runtimeInstall` (download progress with cancel, SHA-256 verify, unpack) then the consent-gated `ollama:runtimeSwitch`; `card` variant = the Models → Browse "Ollama engine" card, `inline` variant = startup banner + onboarding. Shows "done" only after the :11434 server reports the new version |
 | `src/components/WorkingIndicator.tsx` | "Artha is working…" cue — window-edge accent glow + a bottom-center pill while the agent is acting (`isStreaming`). Pre-first-token phase shows the orchestrator's live `agent:status` line ("Planning the steps…", "Plan: a → b → c") instead of a generic spinner. Pill is `z-[90]` so it stays visible over modals. The baseline in-app signal; desktop control + browser pane add their own specific cues |
 | `src/components/TabBar/ModelPicker.tsx` | Inline searchable model switcher (the top-bar chip). "Find model…" filter over all installed Ollama models + configured cloud models; click to switch (`llm:setActiveModel` upserts any model) and pre-warm via `ensureModel`. Replaces the old click-to-open-Settings chip |
+| `src/components/ResumeInterruptedRuns.tsx` | Startup banner listing runs the app interrupted, with Resume / Dismiss; nothing resumes on its own |
+| `src/components/Workflows/SchedulerInbox.tsx` | Automations v2 run inbox — recent `task_executions` with unread count, one-line summaries, Open run, Run now; statuses shown exactly as recorded |
 | **stores/** | |
 | `src/stores/chat.ts` | Zustand store — `ActiveView` + `ActiveTab` unions, messages, pending attachments, clarify state, per-chat `scopes`, `Project` (incl. `default_skill_id`) |
 | `src/stores/browser.ts` | Zustand store for the embedded browser pane — URL, driving mode (agent/user), handoff state |
 | `src/stores/delegate.ts` | Zustand store for the Delegate room — single-task lifecycle (status/goal/plan/result), drives plan→approve→execute, persists the current task to localStorage |
+| `src/stores/interactions.ts` | Zustand store of pending `ask_user` cards — fed by `interaction:pending` / `interaction:resolved`, re-hydrated from `interactions:listPending` on load |
 | **services/** | |
 | `src/services/delegateService.ts` | Delegate types + pluggable `DelegateEngine`. `ipcDelegateEngine` (Electron) plans heuristically for the approval UX, then EXECUTES non-blocking via `delegate.start` + polls `delegate.status` (Bodhi → orchestrator) so long runs stay observable; `mockDelegateEngine` is the non-Electron/test fallback. `delegateEngine` auto-selects |
 | **lib/** | |
 | `src/lib/qrcode.ts` | Dependency-free QR encoder (byte mode + Reed-Solomon, v1–10) — `generateQrMatrix` / `qrToSvg` |
 | `src/lib/tabTheme.ts` | Per-tab accent colours (Artha/Workflows/Code/Delegate) as raw values for dynamic inline styles; mirrors the `artha-tab-*` Tailwind/CSS tokens |
 | `src/lib/newChat.ts` | `createChat()` — the ONE new-chat flow (create session → attach project root scope → activate); shared by Sidebar, ProjectHome, CommandPalette, and SkillsPanel rerun so every entry point starts a chat with the same context |
+| `src/lib/askCard.ts` | Pure helpers for the inline `ask_user` card and the interactions store (`askCard.test.ts`) |
+| `src/lib/outboxQueue.ts` | Pure helpers for the composer outbox UI — send-vs-queue, snapshot reads (`outboxQueue.test.ts`) |
+| `src/lib/delegateParity.ts` | Pure helpers giving Delegate parity with Chat — outbox follow-up composer and related run state (`delegateParity.test.ts`) |
+| `src/lib/goalChip.ts` | Pure view logic for the Delegate goal chip — status labels ("Needs you" for blocked) and which controls to show (`goalChip.test.ts`) |
+| `src/lib/runResume.ts` | Run resume cursor in localStorage (run id + last `seq`) so a reloaded run view calls `run.subscribe(runId, lastSeq)` for exactly the missed events (`runResume.test.ts`) |
+| `src/lib/runTimeline.ts` | Reducer turning a run's `run_events` into Run Inspector rows — tool calls + results, pauses, goal-gate decisions, kill-switch stops, stalls, errors (`runTimeline.test.ts`) |
 | **components/Chat/** | |
 | `ChatWindow.tsx` | Composer with send, attach image/PDF, voice mic, per-chat scope chips (add folder/file), Context Pack chips (save/apply/detach), "Continue with context" scope-inheritance chip, `@chat:`/`@memory:` reference tokens, expected-wait hint (benchmark-derived, task-shaped input on a slow model), cloud-escalation "Retry on ☁ X" in the failure banner (per-message modelOverride, audit-logged); message bubble list |
 | `ClarificationModal.tsx` | Pre-flight Q&A modal (pauses the agent until user answers or skips) |
 | `PlanApproval.tsx` | Approval UI for the ReAct plan before execution |
 | `ToolCallInline.tsx` | Inline, collapsible tool-call + result display within the chat stream |
 | `Citations.tsx` | Source citations rendered under an agent message |
+| `AskUserCard.tsx` | Inline card for the agent's `ask_user` tool — submitting resolves the paused tool call, Cancel resolves it as `declined`; also used in Delegate |
+| `OutboxPanel.tsx` | Queue above the composer while Artha works — drag to reorder, edit, delete, "steer now", Pause/Resume ("Queue paused after cancel") |
+| `PermissionModeSelector.tsx` | Per-chat permission mode in the chat header — Ask, Accept edits, Plan, Auto, or Default (follows Autonomous actions) |
 | **components/Browser/** | |
 | `BrowserPane.tsx` | Host for the embedded browser viewport + close control; width driven by the store, syncs native BrowserView bounds |
 | `BrowserResizer.tsx` | Draggable divider that resizes the chat\|browser split (detaches the native view mid-drag) |
@@ -180,6 +231,8 @@
 | `DelegatePlanView.tsx` | Renders the generated plan — summary, ordered steps (tools/agent/status), expected output, and the approval gate when paused |
 | `DelegateProgressTimeline.tsx` | Vertical stage tracker (understand → context → plan → run → review → complete) derived from the task status |
 | `DelegateResultView.tsx` | Final output — prose summary, generated files, suggested next actions |
+| `DelegateModeSelector.tsx` | Permission mode for the next Delegate task — Ask, Accept edits, Auto, or Default; applied when the task starts |
+| `GoalChip.tsx` | Delegate header goal chip — objective, status, elapsed time, Pause / Resume / Stop; no "mark done" (only the evaluator completes a goal) |
 | **components/ExecutionLog/** | |
 | `ExecutionLog.tsx` | Live step-by-step view of the ReAct loop's actions |
 | `Settings/GuidePanel.tsx` | "How to use Artha" — Workspace Settings ▸ User Guide. Feature list; selecting one floats that feature's card (steps + example prompt). Opened by the TabBar `?` button and once after onboarding |
@@ -212,6 +265,8 @@
 | `TimeTravelPanel.tsx` | Session replay / history — fork a run from any past step |
 | `RouterPanel.tsx` | Model router config — benchmark + manual overrides |
 | `BundlesPanel.tsx` | Skill bundle management — integrity-checksummed export / import (SHA-256; authenticity signing planned) |
+| `GrantsPanel.tsx` | Lists standing "Always allow" grants (what, where, until when) with immediate Revoke; expired/revoked stay dimmed as an audit trail |
+| `KeepAwakeSettings.tsx` | Keep-awake-while-running toggles (off by default) + battery toggle; applied immediately |
 | `vite.config.ts` | Vite config — React plugin, build output to `dist/` |
 | `tailwind.config.js` | Tailwind config — artha colour palette |
 | `tsconfig.json` | TypeScript config for renderer (ESNext, bundler resolution) |
